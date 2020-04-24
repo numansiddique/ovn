@@ -39,7 +39,7 @@ fi
 if [ "$TESTSUITE" ]; then
     # 'distcheck' will reconfigure with required options.
     # Now we only need to prepare the Makefile without sparse-wrapped CC.
-    configure_ovn
+    configure_ovn $OPTS
 
     export DISTCHECK_CONFIGURE_FLAGS="$OPTS --with-ovs-source=$PWD/ovs_src"
     if ! make distcheck -j4 TESTSUITEFLAGS="-j4" RECHECK=yes; then
