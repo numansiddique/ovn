@@ -125,6 +125,11 @@ engine_cleanup(void)
             engine_nodes[i]->cleanup(engine_nodes[i]->data);
         }
         free(engine_nodes[i]->data);
+
+        if (engine_nodes[i]->clear_tracked_data) {
+            engine_nodes[i]->clear_tracked_data(engine_nodes[i]->tracked_data);
+        }
+        free(engine_nodes[i]->tracked_data);
     }
     free(engine_nodes);
     engine_nodes = NULL;
@@ -220,6 +225,23 @@ bool
 engine_node_changed(struct engine_node *node)
 {
     return node->state == EN_UPDATED;
+}
+
+void *
+engine_get_tracked_data(struct engine_node *node)
+{
+    if (engine_node_valid(node)) {
+        return node->tracked_data;
+    }
+
+    return NULL;
+}
+
+void *
+engine_get_input_tracked_data(const char *input_name, struct engine_node *node)
+{
+    struct engine_node *input_node = engine_get_input(input_name, node);
+    return engine_get_tracked_data(input_node);
 }
 
 bool
@@ -370,7 +392,13 @@ engine_run(bool recompute_allowed)
 
         if (engine_nodes[i]->state == EN_ABORTED) {
             engine_run_aborted = true;
-            return;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < engine_n_nodes; i++) {
+        if (engine_nodes[i]->clear_tracked_data) {
+            engine_nodes[i]->clear_tracked_data(engine_nodes[i]->tracked_data);
         }
     }
 }

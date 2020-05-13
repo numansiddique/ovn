@@ -18,6 +18,7 @@
 
 #include "pinctrl.h"
 
+#include "binding.h"
 #include "coverage.h"
 #include "csum.h"
 #include "dirs.h"

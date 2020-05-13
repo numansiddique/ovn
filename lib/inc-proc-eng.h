@@ -123,6 +123,15 @@ struct engine_node {
      */
     void *data;
 
+    /* A pointer to node internal tracked data. The tracke data can be
+     * used by en engine node to provide the changed data during the
+     * engine run if its an input to other engine node. This data can
+     * be accessed during the engine run using the function
+     * engine_get_tracked_data(). This data can be cleared by
+     * calling the clean_tracked_data() engine node function.
+     */
+    void *tracked_data;
+
     /* State of the node after the last engine run. */
     enum engine_node_state state;
 
@@ -149,6 +158,9 @@ struct engine_node {
      * doesn't store pointers to DB records it's still safe to use).
      */
     bool (*is_valid)(struct engine_node *);
+
+    /* Method to clear up tracked data if any. It may be NULL. */
+    void (*clear_tracked_data)(void *tracked_data);
 };
 
 /* Initialize the data for the engine nodes. It calls each node's
@@ -182,6 +194,12 @@ struct engine_node * engine_get_input(const char *input_name,
 
 /* Get the data from the input node with <name> for <node> */
 void *engine_get_input_data(const char *input_name, struct engine_node *);
+
+void *engine_get_tracked_data(struct engine_node *);
+
+/* Get the tracked data from the input node with <name> for <node> */
+void *engine_get_input_tracked_data(const char *input_name,
+                                    struct engine_node *);
 
 /* Add an input (dependency) for <node>, with corresponding change_handler,
  * which can be NULL. If the change_handler is NULL, the engine will not
@@ -270,11 +288,13 @@ void engine_ovsdb_node_add_index(struct engine_node *, const char *name,
     struct engine_node en_##NAME = { \
         .name = NAME_STR, \
         .data = NULL, \
+        .tracked_data = NULL, \
         .state = EN_STALE, \
         .init = en_##NAME##_init, \
         .run = en_##NAME##_run, \
         .cleanup = en_##NAME##_cleanup, \
         .is_valid = en_##NAME##_is_valid, \
+        .clear_tracked_data = NULL, \
     };
 
 #define ENGINE_NODE_CUSTOM_DATA(NAME, NAME_STR) \

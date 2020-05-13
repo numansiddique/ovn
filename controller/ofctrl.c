@@ -667,14 +667,23 @@ ofctrl_check_and_add_flow(struct ovn_desired_flow_table *flow_table,
 
     ovn_flow_log(f, "ofctrl_add_flow");
 
-    if (ovn_flow_lookup(&flow_table->match_flow_table, f, true)) {
-        if (log_duplicate_flow) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
-            if (!VLOG_DROP_DBG(&rl)) {
-                char *s = ovn_flow_to_string(f);
-                VLOG_DBG("dropping duplicate flow: %s", s);
-                free(s);
+    struct ovn_flow *existing_f =
+        ovn_flow_lookup(&flow_table->match_flow_table, f, true);
+    if (existing_f) {
+        if (ofpacts_equal(f->ofpacts, f->ofpacts_len,
+                          existing_f->ofpacts, existing_f->ofpacts_len)) {
+            if (log_duplicate_flow) {
+                static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
+                if (!VLOG_DROP_DBG(&rl)) {
+                    char *s = ovn_flow_to_string(f);
+                    VLOG_DBG("dropping duplicate flow: %s", s);
+                    free(s);
+                }
             }
+        } else {
+            free(existing_f->ofpacts);
+            existing_f->ofpacts = xmemdup(f->ofpacts, f->ofpacts_len);
+            existing_f->ofpacts_len = f->ofpacts_len;
         }
         ovn_flow_destroy(f);
         return;

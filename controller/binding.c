@@ -69,46 +69,11 @@ binding_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_add_column(ovs_idl, &ovsrec_qos_col_type);
 }
 
-static void
-get_local_iface_ids(const struct ovsrec_bridge *br_int,
-                    struct shash *lport_to_iface,
-                    struct sset *local_lports,
-                    struct sset *egress_ifaces)
-{
-    int i;
-
-    for (i = 0; i < br_int->n_ports; i++) {
-        const struct ovsrec_port *port_rec = br_int->ports[i];
-        const char *iface_id;
-        int j;
-
-        if (!strcmp(port_rec->name, br_int->name)) {
-            continue;
-        }
-
-        for (j = 0; j < port_rec->n_interfaces; j++) {
-            const struct ovsrec_interface *iface_rec;
-
-            iface_rec = port_rec->interfaces[j];
-            iface_id = smap_get(&iface_rec->external_ids, "iface-id");
-            int64_t ofport = iface_rec->n_ofport ? *iface_rec->ofport : 0;
-
-            if (iface_id && ofport > 0) {
-                shash_add(lport_to_iface, iface_id, iface_rec);
-                sset_add(local_lports, iface_id);
-            }
-
-            /* Check if this is a tunnel interface. */
-            if (smap_get(&iface_rec->options, "remote_ip")) {
-                const char *tunnel_iface
-                    = smap_get(&iface_rec->status, "tunnel_egress_iface");
-                if (tunnel_iface) {
-                    sset_add(egress_ifaces, tunnel_iface);
-                }
-            }
-        }
-    }
-}
+static struct tracked_binding_datapath *tracked_binding_datapath_create(
+    struct hmap *tracked_dps, const struct sbrec_datapath_binding *,
+    bool is_new);
+static struct tracked_binding_datapath *tracked_binding_datapath_find(
+    struct hmap *, const struct sbrec_datapath_binding *);
 
 static void
 add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
@@ -116,7 +81,8 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                      struct ovsdb_idl_index *sbrec_port_binding_by_name,
                      const struct sbrec_datapath_binding *datapath,
                      bool has_local_l3gateway, int depth,
-                     struct hmap *local_datapaths)
+                     struct hmap *local_datapaths,
+                     struct hmap *updated_dp_bindings)
 {
     uint32_t dp_key = datapath->tunnel_key;
     struct local_datapath *ld = get_local_datapath(local_datapaths, dp_key);
@@ -132,6 +98,11 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     ld->datapath = datapath;
     ld->localnet_port = NULL;
     ld->has_local_l3gateway = has_local_l3gateway;
+
+    if (updated_dp_bindings &&
+        !tracked_binding_datapath_find(updated_dp_bindings, datapath)) {
+        tracked_binding_datapath_create(updated_dp_bindings, datapath, true);
+    }
 
     if (depth >= 100) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
@@ -165,7 +136,8 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                                              sbrec_port_binding_by_datapath,
                                              sbrec_port_binding_by_name,
                                              peer->datapath, false,
-                                             depth + 1, local_datapaths);
+                                             depth + 1, local_datapaths,
+                                             updated_dp_bindings);
                     }
                     ld->n_peer_ports++;
                     if (ld->n_peer_ports > ld->n_allocated_peer_ports) {
@@ -188,12 +160,14 @@ add_local_datapath(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                    struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
                    struct ovsdb_idl_index *sbrec_port_binding_by_name,
                    const struct sbrec_datapath_binding *datapath,
-                   bool has_local_l3gateway, struct hmap *local_datapaths)
+                   bool has_local_l3gateway, struct hmap *local_datapaths,
+                   struct hmap *updated_dp_bindings)
 {
     add_local_datapath__(sbrec_datapath_binding_by_key,
                          sbrec_port_binding_by_datapath,
                          sbrec_port_binding_by_name,
-                         datapath, has_local_l3gateway, 0, local_datapaths);
+                         datapath, has_local_l3gateway, 0, local_datapaths,
+                         updated_dp_bindings);
 }
 
 static void
@@ -390,17 +364,6 @@ setup_qos(const char *egress_iface, struct hmap *queue_map)
     netdev_close(netdev_phy);
 }
 
-static void
-update_local_lport_ids(struct sset *local_lport_ids,
-                       const struct sbrec_port_binding *binding_rec)
-{
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%"PRId64"_%"PRId64,
-                 binding_rec->datapath->tunnel_key,
-                 binding_rec->tunnel_key);
-        sset_add(local_lport_ids, buf);
-}
-
 /*
  * Get the encap from the chassis for this port. The interface
  * may have an external_ids:encap-ip=<encap-ip> set; if so we
@@ -441,28 +404,11 @@ static bool
 is_our_chassis(const struct sbrec_chassis *chassis_rec,
                const struct sbrec_port_binding *binding_rec,
                const struct sset *active_tunnels,
-               const struct shash *lport_to_iface,
                const struct sset *local_lports)
 {
-    const struct ovsrec_interface *iface_rec
-        = shash_find_data(lport_to_iface, binding_rec->logical_port);
-
-    /* Ports of type "virtual" should never be explicitly bound to an OVS
-     * port in the integration bridge. If that's the case, ignore the binding
-     * and log a warning.
-     */
-    if (iface_rec && !strcmp(binding_rec->type, "virtual")) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
-        VLOG_WARN_RL(&rl,
-                     "Virtual port %s should not be bound to OVS port %s",
-                     binding_rec->logical_port, iface_rec->name);
-        return false;
-    }
-
     bool our_chassis = false;
-    if (iface_rec
-        || (binding_rec->parent_port && binding_rec->parent_port[0] &&
-            sset_contains(local_lports, binding_rec->parent_port))) {
+    if (binding_rec->parent_port && binding_rec->parent_port[0] &&
+        sset_contains(local_lports, binding_rec->parent_port)) {
         /* This port is in our chassis unless it is a localport. */
         our_chassis = strcmp(binding_rec->type, "localport");
     } else if (!strcmp(binding_rec->type, "l2gateway")) {
@@ -482,181 +428,6 @@ is_our_chassis(const struct sbrec_chassis *chassis_rec,
     }
 
     return our_chassis;
-}
-
-/* Updates 'binding_rec' and if the port binding is local also updates the
- * local datapaths and ports.
- * Updates and returns the array of local virtual ports that will require
- * additional processing.
- */
-static const struct sbrec_port_binding **
-consider_local_datapath(struct ovsdb_idl_txn *ovnsb_idl_txn,
-                        struct ovsdb_idl_txn *ovs_idl_txn,
-                        struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
-                        struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
-                        struct ovsdb_idl_index *sbrec_port_binding_by_name,
-                        const struct sset *active_tunnels,
-                        const struct sbrec_chassis *chassis_rec,
-                        const struct sbrec_port_binding *binding_rec,
-                        struct hmap *qos_map,
-                        struct hmap *local_datapaths,
-                        struct shash *lport_to_iface,
-                        struct sset *local_lports,
-                        struct sset *local_lport_ids,
-                        const struct sbrec_port_binding **vpbs,
-                        size_t *n_vpbs, size_t *n_allocated_vpbs)
-{
-    const struct ovsrec_interface *iface_rec
-        = shash_find_data(lport_to_iface, binding_rec->logical_port);
-
-    bool our_chassis = is_our_chassis(chassis_rec, binding_rec, active_tunnels,
-                                      lport_to_iface, local_lports);
-    if (iface_rec
-        || (binding_rec->parent_port && binding_rec->parent_port[0] &&
-            sset_contains(local_lports, binding_rec->parent_port))) {
-        if (binding_rec->parent_port && binding_rec->parent_port[0]) {
-            /* Add child logical port to the set of all local ports. */
-            sset_add(local_lports, binding_rec->logical_port);
-        }
-        add_local_datapath(sbrec_datapath_binding_by_key,
-                           sbrec_port_binding_by_datapath,
-                           sbrec_port_binding_by_name,
-                           binding_rec->datapath, false, local_datapaths);
-        if (iface_rec && qos_map && ovs_idl_txn) {
-            get_qos_params(binding_rec, qos_map);
-        }
-    } else if (!strcmp(binding_rec->type, "l2gateway")) {
-        if (our_chassis) {
-            sset_add(local_lports, binding_rec->logical_port);
-            add_local_datapath(sbrec_datapath_binding_by_key,
-                               sbrec_port_binding_by_datapath,
-                               sbrec_port_binding_by_name,
-                               binding_rec->datapath, false, local_datapaths);
-        }
-    } else if (!strcmp(binding_rec->type, "chassisredirect")) {
-        if (ha_chassis_group_contains(binding_rec->ha_chassis_group,
-                                      chassis_rec)) {
-            add_local_datapath(sbrec_datapath_binding_by_key,
-                               sbrec_port_binding_by_datapath,
-                               sbrec_port_binding_by_name,
-                               binding_rec->datapath, false, local_datapaths);
-        }
-    } else if (!strcmp(binding_rec->type, "l3gateway")) {
-        if (our_chassis) {
-            add_local_datapath(sbrec_datapath_binding_by_key,
-                               sbrec_port_binding_by_datapath,
-                               sbrec_port_binding_by_name,
-                               binding_rec->datapath, true, local_datapaths);
-        }
-    } else if (!strcmp(binding_rec->type, "localnet")) {
-        /* Add all localnet ports to local_lports so that we allocate ct zones
-         * for them. */
-        sset_add(local_lports, binding_rec->logical_port);
-        if (qos_map && ovs_idl_txn) {
-            get_qos_params(binding_rec, qos_map);
-        }
-    } else if (!strcmp(binding_rec->type, "external")) {
-        if (ha_chassis_group_contains(binding_rec->ha_chassis_group,
-                                      chassis_rec)) {
-            add_local_datapath(sbrec_datapath_binding_by_key,
-                               sbrec_port_binding_by_datapath,
-                               sbrec_port_binding_by_name,
-                               binding_rec->datapath, false, local_datapaths);
-        }
-    }
-
-    if (our_chassis
-        || !strcmp(binding_rec->type, "patch")
-        || !strcmp(binding_rec->type, "localport")
-        || !strcmp(binding_rec->type, "vtep")
-        || !strcmp(binding_rec->type, "localnet")) {
-        update_local_lport_ids(local_lport_ids, binding_rec);
-    }
-
-    ovs_assert(ovnsb_idl_txn);
-    if (ovnsb_idl_txn) {
-        const char *vif_chassis = smap_get(&binding_rec->options,
-                                           "requested-chassis");
-        bool can_bind = !vif_chassis || !vif_chassis[0]
-                        || !strcmp(vif_chassis, chassis_rec->name)
-                        || !strcmp(vif_chassis, chassis_rec->hostname);
-
-        if (can_bind && our_chassis) {
-            if (binding_rec->chassis != chassis_rec) {
-                if (binding_rec->chassis) {
-                    VLOG_INFO("Changing chassis for lport %s from %s to %s.",
-                              binding_rec->logical_port,
-                              binding_rec->chassis->name,
-                              chassis_rec->name);
-                } else {
-                    VLOG_INFO("Claiming lport %s for this chassis.",
-                              binding_rec->logical_port);
-                }
-                for (int i = 0; i < binding_rec->n_mac; i++) {
-                    VLOG_INFO("%s: Claiming %s",
-                              binding_rec->logical_port, binding_rec->mac[i]);
-                }
-                sbrec_port_binding_set_chassis(binding_rec, chassis_rec);
-            }
-            /* Check if the port encap binding, if any, has changed */
-            struct sbrec_encap *encap_rec = sbrec_get_port_encap(
-                                            chassis_rec, iface_rec);
-            if (encap_rec && binding_rec->encap != encap_rec) {
-                sbrec_port_binding_set_encap(binding_rec, encap_rec);
-            }
-        } else if (binding_rec->chassis == chassis_rec) {
-            if (!strcmp(binding_rec->type, "virtual")) {
-                if (*n_vpbs == *n_allocated_vpbs) {
-                    vpbs = x2nrealloc(vpbs, n_allocated_vpbs, sizeof *vpbs);
-                }
-                vpbs[(*n_vpbs)] = binding_rec;
-                (*n_vpbs)++;
-            } else {
-                VLOG_INFO("Releasing lport %s from this chassis.",
-                          binding_rec->logical_port);
-                if (binding_rec->encap) {
-                    sbrec_port_binding_set_encap(binding_rec, NULL);
-                }
-                sbrec_port_binding_set_chassis(binding_rec, NULL);
-            }
-        } else if (our_chassis) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
-            VLOG_INFO_RL(&rl,
-                         "Not claiming lport %s, chassis %s "
-                         "requested-chassis %s",
-                         binding_rec->logical_port,
-                         chassis_rec->name,
-                         vif_chassis);
-        }
-    }
-    return vpbs;
-}
-
-static void
-consider_local_virtual_port(struct ovsdb_idl_index *sbrec_port_binding_by_name,
-                            const struct sbrec_chassis *chassis_rec,
-                            const struct sbrec_port_binding *binding_rec)
-{
-    if (binding_rec->virtual_parent) {
-        const struct sbrec_port_binding *parent =
-            lport_lookup_by_name(sbrec_port_binding_by_name,
-                                 binding_rec->virtual_parent);
-        if (parent && parent->chassis == chassis_rec) {
-            return;
-        }
-    }
-
-    /* pinctrl module takes care of binding the ports of type 'virtual'.
-     * Release such ports if their virtual parents are no longer claimed by
-     * this chassis.
-     */
-    VLOG_INFO("Releasing lport %s from this chassis.",
-              binding_rec->logical_port);
-    if (binding_rec->encap) {
-        sbrec_port_binding_set_encap(binding_rec, NULL);
-    }
-    sbrec_port_binding_set_chassis(binding_rec, NULL);
-    sbrec_port_binding_set_virtual_parent(binding_rec, NULL);
 }
 
 static void
@@ -721,150 +492,623 @@ consider_localnet_port(const struct sbrec_port_binding *binding_rec,
     ld->localnet_port = binding_rec;
 }
 
-void
-binding_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
-            struct ovsdb_idl_txn *ovs_idl_txn,
-            struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
-            struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
-            struct ovsdb_idl_index *sbrec_port_binding_by_name,
-            const struct ovsrec_port_table *port_table,
-            const struct ovsrec_qos_table *qos_table,
-            const struct sbrec_port_binding_table *port_binding_table,
-            const struct ovsrec_bridge *br_int,
-            const struct sbrec_chassis *chassis_rec,
-            const struct sset *active_tunnels,
-            const struct ovsrec_bridge_table *bridge_table,
-            const struct ovsrec_open_vswitch_table *ovs_table,
-            struct hmap *local_datapaths, struct sset *local_lports,
-            struct sset *local_lport_ids)
+static void
+update_local_lport_ids(struct sset *local_lport_ids,
+                       const struct sbrec_port_binding *binding_rec)
 {
-    if (!chassis_rec) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%"PRId64"_%"PRId64,
+                 binding_rec->datapath->tunnel_key,
+                 binding_rec->tunnel_key);
+        sset_add(local_lport_ids, buf);
+}
+
+static void
+remove_local_lport_ids(const struct sbrec_port_binding *binding_rec,
+                       struct sset *local_lport_ids)
+{
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%"PRId64"_%"PRId64,
+                 binding_rec->datapath->tunnel_key,
+                 binding_rec->tunnel_key);
+        sset_find_and_delete(local_lport_ids, buf);
+}
+
+static struct local_binding *
+local_binding_create(const char *name, const struct ovsrec_interface *iface,
+                     const struct sbrec_port_binding *pb,
+                     enum local_binding_type type)
+{
+    struct local_binding *lbinding = xzalloc(sizeof *lbinding);
+    lbinding->name = xstrdup(name);
+    lbinding->type = type;
+    lbinding->pb = pb;
+    lbinding->iface = iface;
+    ovs_list_init(&lbinding->children);
+    return lbinding;
+}
+
+static void
+local_binding_add(struct shash *local_bindings, struct local_binding *lbinding)
+{
+    shash_add(local_bindings, lbinding->name, lbinding);
+}
+
+static void
+local_binding_destroy(struct local_binding *lbinding)
+{
+    struct local_binding *c, *next;
+    LIST_FOR_EACH_SAFE (c, next, node, &lbinding->children) {
+        ovs_list_remove(&c->node);
+        free(c->name);
+        free(c);
+    }
+    free(lbinding->name);
+    free(lbinding);
+}
+
+static
+void local_binding_delete(struct shash *local_bindings,
+                          struct local_binding *lbinding)
+{
+    shash_find_and_delete(local_bindings, lbinding->name);
+    local_binding_destroy(lbinding);
+}
+
+void
+local_bindings_destroy(struct shash *local_bindings)
+{
+    struct shash_node *node, *next;
+    SHASH_FOR_EACH_SAFE (node, next, local_bindings) {
+        struct local_binding *lbinding = node->data;
+        local_binding_destroy(lbinding);
+    }
+
+    shash_destroy(local_bindings);
+}
+
+static void
+local_binding_add_child(struct local_binding *lbinding,
+                        struct local_binding *child)
+{
+    struct local_binding *l;
+    LIST_FOR_EACH (l, node, &lbinding->children) {
+        if (l == child) {
+            return;
+        }
+    }
+
+    ovs_list_push_back(&lbinding->children, &child->node);
+}
+
+static struct local_binding *
+local_binding_find_child(struct local_binding *lbinding,
+                         const char *child_name)
+{
+    struct local_binding *l;
+    LIST_FOR_EACH (l, node, &lbinding->children) {
+        if (!strcmp(l->name, child_name)) {
+            return l;
+        }
+    }
+
+    return NULL;
+}
+
+static struct tracked_binding_datapath *
+tracked_binding_datapath_create(struct hmap *tracked_datapaths,
+                                const struct sbrec_datapath_binding *dp,
+                                bool is_new)
+{
+    struct tracked_binding_datapath *t_dp = xzalloc(sizeof *t_dp);
+    t_dp->dp = dp;
+    t_dp->is_new = is_new;
+    ovs_list_init(&t_dp->lports_head);
+    hmap_insert(tracked_datapaths, &t_dp->node, uuid_hash(&dp->header_.uuid));
+    return t_dp;
+}
+
+static struct tracked_binding_datapath *
+tracked_binding_datapath_find(struct hmap *tracked_datapaths,
+                              const struct sbrec_datapath_binding *dp)
+{
+    struct tracked_binding_datapath *t_dp;
+    size_t hash = uuid_hash(&dp->header_.uuid);
+    HMAP_FOR_EACH_WITH_HASH (t_dp, node, hash, tracked_datapaths) {
+        if (uuid_equals(&t_dp->dp->header_.uuid, &dp->header_.uuid)) {
+            return t_dp;
+        }
+    }
+
+    return NULL;
+}
+
+static void
+tracked_binding_datapath_lport_add(struct hmap *tracked_datapaths,
+                             const struct sbrec_port_binding *pb,
+                             bool deleted)
+{
+    if (!tracked_datapaths) {
+        return;
+    }
+
+    struct tracked_binding_datapath *tracked_dp =
+        tracked_binding_datapath_find(tracked_datapaths, pb->datapath);
+    if (!tracked_dp) {
+        tracked_dp = tracked_binding_datapath_create(tracked_datapaths,
+                                                     pb->datapath, false);
+    }
+    struct tracked_binding_lport *lport = xmalloc(sizeof *lport);
+    lport->pb = pb;
+    lport->deleted = deleted;
+    ovs_list_push_back(&tracked_dp->lports_head, &lport->list_node);
+}
+
+void
+binding_tracked_dp_destroy(struct hmap *tracked_datapaths)
+{
+    struct tracked_binding_datapath *t_dp;
+    HMAP_FOR_EACH_POP (t_dp, node, tracked_datapaths) {
+    struct tracked_binding_lport *lport, *next;
+        LIST_FOR_EACH_SAFE (lport, next, list_node, &t_dp->lports_head) {
+            ovs_list_remove(&lport->list_node);
+            free(lport);
+        }
+        free(t_dp);
+    }
+
+    hmap_destroy(tracked_datapaths);
+}
+
+void
+binding_add_vport_to_local_bindings(struct shash *local_bindings,
+                                    const struct sbrec_port_binding *parent,
+                                    const struct sbrec_port_binding *vport)
+{
+    struct local_binding *lbinding = local_binding_find(local_bindings,
+                                                        parent->logical_port);
+    ovs_assert(lbinding);
+    struct local_binding *vbinding =
+        local_binding_find_child(lbinding, vport->logical_port);
+    if (!vbinding) {
+        vbinding = local_binding_create(vport->logical_port, lbinding->iface,
+                                        vport, BT_VIRTUAL);
+        local_binding_add_child(lbinding, vbinding);
+    } else {
+        vbinding->type = BT_VIRTUAL;
+    }
+}
+
+static bool
+claim_lport(const struct sbrec_port_binding *pb,
+            const struct sbrec_chassis *chassis_rec,
+            const struct ovsrec_interface *iface_rec,
+            bool cant_update_sb)
+{
+    if (pb->chassis != chassis_rec) {
+        if (pb->chassis) {
+            VLOG_INFO("Changing chassis for lport %s from %s to %s.",
+                    pb->logical_port, pb->chassis->name,
+                    chassis_rec->name);
+        } else {
+            VLOG_INFO("Claiming lport %s for this chassis.", pb->logical_port);
+        }
+        for (int i = 0; i < pb->n_mac; i++) {
+            VLOG_INFO("%s: Claiming %s", pb->logical_port, pb->mac[i]);
+        }
+
+        if (cant_update_sb) {
+            return false;
+        }
+        sbrec_port_binding_set_chassis(pb, chassis_rec);
+    }
+
+    /* Check if the port encap binding, if any, has changed */
+    struct sbrec_encap *encap_rec =
+        sbrec_get_port_encap(chassis_rec, iface_rec);
+    if (encap_rec && pb->encap != encap_rec) {
+        if (cant_update_sb) {
+            return false;
+        }
+        sbrec_port_binding_set_encap(pb, encap_rec);
+    }
+
+    return true;
+}
+
+static bool
+release_lport(const struct sbrec_port_binding *pb, bool cant_update_sb)
+{
+    VLOG_INFO("Releasing lport %s from this chassis.", pb->logical_port);
+    if (pb->encap) {
+        if (pb->encap) {
+            if (cant_update_sb) {
+                return false;
+            }
+            sbrec_port_binding_set_encap(pb, NULL);
+        }
+    }
+
+    if (pb->chassis) {
+        if (cant_update_sb) {
+            return false;
+        }
+        sbrec_port_binding_set_chassis(pb, NULL);
+    }
+
+    if (pb->virtual_parent) {
+        if (cant_update_sb) {
+            return false;
+        }
+        sbrec_port_binding_set_virtual_parent(pb, NULL);
+    }
+
+    return true;
+}
+
+static bool
+release_local_binding_children(struct local_binding *lbinding,
+                               struct hmap *tracked_dp_bindings,
+                               bool cant_update_sb)
+{
+    struct local_binding *l;
+    LIST_FOR_EACH (l, node, &lbinding->children) {
+        if (!release_lport(l->pb, cant_update_sb)) {
+            return false;
+        }
+        if (tracked_dp_bindings) {
+            tracked_binding_datapath_lport_add(tracked_dp_bindings, l->pb,
+                                               true);
+        }
+    }
+
+    return true;
+}
+
+static bool
+release_local_binding(struct local_binding *lbinding,
+                      struct hmap *tracked_dp_bindings,
+                      bool cant_update_sb)
+{
+    if (!release_local_binding_children(lbinding,
+                                        tracked_dp_bindings,
+                                        cant_update_sb)) {
+        return false;
+    }
+
+    if (!release_lport(lbinding->pb, cant_update_sb)) {
+        return false;
+    }
+
+    if (tracked_dp_bindings) {
+        tracked_binding_datapath_lport_add(tracked_dp_bindings, lbinding->pb,
+                                           true);
+    }
+    return true;
+}
+
+static bool
+consider_port_binding_for_vif(const struct sbrec_port_binding *pb,
+                              struct binding_ctx_in *b_ctx_in,
+                              enum local_binding_type binding_type,
+                              struct local_binding *lbinding,
+                              struct binding_ctx_out *b_ctx_out,
+                              struct hmap *qos_map)
+{
+    const char *vif_chassis = smap_get(&pb->options, "requested-chassis");
+    bool can_bind = !vif_chassis || !vif_chassis[0]
+                    || !strcmp(vif_chassis, b_ctx_in->chassis_rec->name)
+                    || !strcmp(vif_chassis, b_ctx_in->chassis_rec->hostname);
+
+    /* Ports of type "virtual" should never be explicitly bound to an OVS
+     * port in the integration bridge. If that's the case, ignore the binding
+     * and log a warning.
+     */
+    if (!strcmp(pb->type, "virtual") && lbinding && lbinding->iface &&
+        binding_type == BT_VIF) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+        VLOG_WARN_RL(&rl,
+                     "Virtual port %s should not be bound to OVS port %s",
+                     pb->logical_port, lbinding->iface->name);
+        lbinding->pb = NULL;
+        return false;
+    }
+
+    if (lbinding && lbinding->pb && can_bind) {
+        if (!claim_lport(pb, b_ctx_in->chassis_rec, lbinding->iface,
+                         !b_ctx_in->ovnsb_idl_txn)) {
+            return false;
+        }
+
+        switch (binding_type) {
+        case BT_VIF:
+            lbinding->pb = pb;
+            break;
+        case BT_CHILD:
+        case BT_VIRTUAL:
+        {
+            /* Add child logical port to the set of all local ports. */
+            sset_add(b_ctx_out->local_lports, pb->logical_port);
+            struct local_binding *child =
+                local_binding_find_child(lbinding, pb->logical_port);
+            if (!child) {
+                child = local_binding_create(pb->logical_port, lbinding->iface,
+                                             pb, binding_type);
+                local_binding_add_child(lbinding, child);
+                if (b_ctx_out->tracked_dp_bindings) {
+                    tracked_binding_datapath_lport_add(
+                        b_ctx_out->tracked_dp_bindings, pb, false);
+                }
+            } else {
+                ovs_assert(child->type == BT_CHILD ||
+                           child->type == BT_VIRTUAL);
+                child->pb = pb;
+                child->iface = lbinding->iface;
+            }
+            break;
+        }
+        default:
+            OVS_NOT_REACHED();
+        }
+
+        add_local_datapath(b_ctx_in->sbrec_datapath_binding_by_key,
+                           b_ctx_in->sbrec_port_binding_by_datapath,
+                           b_ctx_in->sbrec_port_binding_by_name,
+                           pb->datapath, false, b_ctx_out->local_datapaths,
+                           b_ctx_out->tracked_dp_bindings);
+        update_local_lport_ids(b_ctx_out->local_lport_ids, pb);
+        if (lbinding->iface && qos_map && b_ctx_in->ovs_idl_txn) {
+            get_qos_params(pb, qos_map);
+        }
+    } else if (lbinding && lbinding->pb && !can_bind) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+            VLOG_INFO_RL(&rl,
+                         "Not claiming lport %s, chassis %s "
+                         "requested-chassis %s",
+                         pb->logical_port,
+                         b_ctx_in->chassis_rec->name,
+                         vif_chassis);
+    }
+
+    if (pb->chassis == b_ctx_in->chassis_rec) {
+        if (!lbinding || !lbinding->pb || !can_bind) {
+            if (!release_lport(pb, !b_ctx_in->ovnsb_idl_txn)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool
+consider_port_binding(const struct sbrec_port_binding *pb,
+                      struct binding_ctx_in *b_ctx_in,
+                      struct binding_ctx_out *b_ctx_out,
+                      struct hmap *qos_map)
+{
+    bool our_chassis = is_our_chassis(b_ctx_in->chassis_rec, pb,
+                                      b_ctx_in->active_tunnels,
+                                      b_ctx_out->local_lports);
+
+    bool success = true;
+    if (!strcmp(pb->type, "l2gateway")) {
+        if (our_chassis) {
+            sset_add(b_ctx_out->local_lports, pb->logical_port);
+            add_local_datapath(b_ctx_in->sbrec_datapath_binding_by_key,
+                               b_ctx_in->sbrec_port_binding_by_datapath,
+                               b_ctx_in->sbrec_port_binding_by_name,
+                               pb->datapath, false,
+                               b_ctx_out->local_datapaths,
+                               b_ctx_out->tracked_dp_bindings);
+        }
+    } else if (!strcmp(pb->type, "chassisredirect")) {
+        if (ha_chassis_group_contains(pb->ha_chassis_group,
+                                      b_ctx_in->chassis_rec)) {
+            add_local_datapath(b_ctx_in->sbrec_datapath_binding_by_key,
+                               b_ctx_in->sbrec_port_binding_by_datapath,
+                               b_ctx_in->sbrec_port_binding_by_name,
+                               pb->datapath, false,
+                               b_ctx_out->local_datapaths,
+                               b_ctx_out->tracked_dp_bindings);
+        }
+    } else if (!strcmp(pb->type, "l3gateway")) {
+        if (our_chassis) {
+            add_local_datapath(b_ctx_in->sbrec_datapath_binding_by_key,
+                               b_ctx_in->sbrec_port_binding_by_datapath,
+                               b_ctx_in->sbrec_port_binding_by_name,
+                               pb->datapath, true, b_ctx_out->local_datapaths,
+                               b_ctx_out->tracked_dp_bindings);
+        }
+    } else if (!strcmp(pb->type, "localnet")) {
+        /* Add all localnet ports to local_lports so that we allocate ct zones
+         * for them. */
+        sset_add(b_ctx_out->local_lports, pb->logical_port);
+        if (qos_map && b_ctx_in->ovs_idl_txn) {
+            get_qos_params(pb, qos_map);
+        }
+    } else if (!strcmp(pb->type, "external")) {
+        if (ha_chassis_group_contains(pb->ha_chassis_group,
+                                      b_ctx_in->chassis_rec)) {
+            add_local_datapath(b_ctx_in->sbrec_datapath_binding_by_key,
+                               b_ctx_in->sbrec_port_binding_by_datapath,
+                               b_ctx_in->sbrec_port_binding_by_name,
+                               pb->datapath, false,
+                               b_ctx_out->local_datapaths,
+                               b_ctx_out->tracked_dp_bindings);
+        }
+    }
+
+    if (our_chassis || !strcmp(pb->type, "localnet")) {
+        update_local_lport_ids(b_ctx_out->local_lport_ids, pb);
+    }
+
+    if (our_chassis) {
+        success = claim_lport(pb, b_ctx_in->chassis_rec, NULL,
+                              !b_ctx_in->ovnsb_idl_txn);
+    } else if (pb->chassis == b_ctx_in->chassis_rec) {
+        success = release_lport(pb, !b_ctx_in->ovnsb_idl_txn);
+    }
+
+    return success;
+}
+
+static void
+build_local_bindings_from_local_ifaces(struct binding_ctx_in *b_ctx_in,
+                                       struct binding_ctx_out *b_ctx_out)
+{
+    int i;
+    for (i = 0; i < b_ctx_in->br_int->n_ports; i++) {
+        const struct ovsrec_port *port_rec = b_ctx_in->br_int->ports[i];
+        const char *iface_id;
+        int j;
+
+        if (!strcmp(port_rec->name, b_ctx_in->br_int->name)) {
+            continue;
+        }
+
+        for (j = 0; j < port_rec->n_interfaces; j++) {
+            const struct ovsrec_interface *iface_rec;
+
+            iface_rec = port_rec->interfaces[j];
+            iface_id = smap_get(&iface_rec->external_ids, "iface-id");
+            int64_t ofport = iface_rec->n_ofport ? *iface_rec->ofport : 0;
+
+            if (iface_id && ofport > 0) {
+                const struct sbrec_port_binding *pb
+                    = lport_lookup_by_name(
+                        b_ctx_in->sbrec_port_binding_by_name, iface_id);
+                struct local_binding *lbinding =
+                    local_binding_find(b_ctx_out->local_bindings, iface_id);
+                if (!lbinding) {
+                    lbinding = local_binding_create(iface_id, iface_rec, pb,
+                                                    BT_VIF);
+                    local_binding_add(b_ctx_out->local_bindings, lbinding);
+                } else {
+                    lbinding->type = BT_VIF;
+                    lbinding->pb = pb;
+                }
+                sset_add(b_ctx_out->local_lports, iface_id);
+                smap_replace(b_ctx_out->local_iface_ids, iface_rec->name,
+                             iface_id);
+            }
+
+            /* Check if this is a tunnel interface. */
+            if (smap_get(&iface_rec->options, "remote_ip")) {
+                const char *tunnel_iface
+                    = smap_get(&iface_rec->status, "tunnel_egress_iface");
+                if (tunnel_iface) {
+                    sset_add(b_ctx_out->egress_ifaces, tunnel_iface);
+                }
+            }
+        }
+    }
+
+    struct shash_node *node, *next;
+    SHASH_FOR_EACH_SAFE (node, next, b_ctx_out->local_bindings) {
+        struct local_binding *lbinding = node->data;
+        if (!sset_contains(b_ctx_out->local_lports, lbinding->name)) {
+            local_binding_destroy(lbinding);
+            shash_delete(b_ctx_out->local_bindings, node);
+        }
+    }
+}
+
+void
+binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
+{
+    if (!b_ctx_in->chassis_rec) {
         return;
     }
 
     const struct sbrec_port_binding *binding_rec;
     struct shash bridge_mappings = SHASH_INITIALIZER(&bridge_mappings);
-    struct shash lport_to_iface = SHASH_INITIALIZER(&lport_to_iface);
-    struct sset egress_ifaces = SSET_INITIALIZER(&egress_ifaces);
     struct hmap qos_map;
 
     hmap_init(&qos_map);
-    if (br_int) {
-        get_local_iface_ids(br_int, &lport_to_iface, local_lports,
-                            &egress_ifaces);
+    if (b_ctx_in->br_int) {
+        build_local_bindings_from_local_ifaces(b_ctx_in, b_ctx_out);
     }
 
-    /* Array to store pointers to local virtual ports. It is populated by
-     * consider_local_datapath.
-     */
-    const struct sbrec_port_binding **vpbs = NULL;
-    size_t n_vpbs = 0;
-    size_t n_allocated_vpbs = 0;
+    struct hmap *qos_map_ptr =
+        !sset_is_empty(b_ctx_out->egress_ifaces) ? &qos_map : NULL;
 
     /* Run through each binding record to see if it is resident on this
      * chassis and update the binding accordingly.  This includes both
-     * directly connected logical ports and children of those ports.
-     * Virtual ports are just added to vpbs array and will be processed
-     * later. This is special case for virtual ports is needed in order to
-     * make sure we update the virtual_parent port bindings first.
+     * directly connected logical ports and children of those ports
+     * (which also includes virtual ports).
      */
-    SBREC_PORT_BINDING_TABLE_FOR_EACH (binding_rec, port_binding_table) {
-        vpbs =
-            consider_local_datapath(ovnsb_idl_txn, ovs_idl_txn,
-                                    sbrec_datapath_binding_by_key,
-                                    sbrec_port_binding_by_datapath,
-                                    sbrec_port_binding_by_name,
-                                    active_tunnels, chassis_rec, binding_rec,
-                                    sset_is_empty(&egress_ifaces) ? NULL :
-                                    &qos_map, local_datapaths, &lport_to_iface,
-                                    local_lports, local_lport_ids,
-                                    vpbs, &n_vpbs, &n_allocated_vpbs);
+    SBREC_PORT_BINDING_TABLE_FOR_EACH (binding_rec,
+                                       b_ctx_in->port_binding_table) {
+        if (!strcmp(binding_rec->type, "patch") ||
+            !strcmp(binding_rec->type, "localport") ||
+            !strcmp(binding_rec->type, "vtep")) {
+            update_local_lport_ids(b_ctx_out->local_lport_ids, binding_rec);
+            continue;
+        }
+
+        bool consider_for_vif = false;
+        struct local_binding *lbinding = NULL;
+        enum local_binding_type binding_type = BT_VIF;
+        if (!binding_rec->type[0]) {
+            if (!binding_rec->parent_port || !binding_rec->parent_port[0]) {
+                lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                              binding_rec->logical_port);
+            } else {
+                lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                              binding_rec->parent_port);
+                binding_type = BT_CHILD;
+            }
+
+            consider_for_vif = true;
+        } else if (!strcmp(binding_rec->type, "virtual") &&
+                   binding_rec->virtual_parent &&
+                   binding_rec->virtual_parent[0]) {
+            lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                          binding_rec->virtual_parent);
+            consider_for_vif = true;
+            binding_type = BT_VIRTUAL;
+        }
+
+        if (consider_for_vif) {
+            consider_port_binding_for_vif(binding_rec, b_ctx_in,
+                                          binding_type, lbinding, b_ctx_out,
+                                          qos_map_ptr);
+            if (lbinding && lbinding->pb &&
+                lbinding->pb->chassis == b_ctx_in->chassis_rec) {
+            }
+        } else {
+            consider_port_binding(binding_rec, b_ctx_in, b_ctx_out,
+                                  qos_map_ptr);
+        }
     }
 
-    /* Now also update the virtual ports in case their parent ports were
-     * updated above.
-     */
-    for (size_t i = 0; i < n_vpbs; i++) {
-        consider_local_virtual_port(sbrec_port_binding_by_name, chassis_rec,
-                                    vpbs[i]);
-    }
-    free(vpbs);
-
-    add_ovs_bridge_mappings(ovs_table, bridge_table, &bridge_mappings);
+    add_ovs_bridge_mappings(b_ctx_in->ovs_table, b_ctx_in->bridge_table,
+                            &bridge_mappings);
 
     /* Run through each binding record to see if it is a localnet port
      * on local datapaths discovered from above loop, and update the
      * corresponding local datapath accordingly. */
-    SBREC_PORT_BINDING_TABLE_FOR_EACH (binding_rec, port_binding_table) {
+    SBREC_PORT_BINDING_TABLE_FOR_EACH (binding_rec,
+                                       b_ctx_in->port_binding_table) {
         if (!strcmp(binding_rec->type, "localnet")) {
             consider_localnet_port(binding_rec, &bridge_mappings,
-                                   &egress_ifaces, local_datapaths);
+                                   b_ctx_out->egress_ifaces,
+                                   b_ctx_out->local_datapaths);
         }
     }
     shash_destroy(&bridge_mappings);
 
-    if (!sset_is_empty(&egress_ifaces)
-        && set_noop_qos(ovs_idl_txn, port_table, qos_table, &egress_ifaces)) {
+    if (!sset_is_empty(b_ctx_out->egress_ifaces)
+        && set_noop_qos(b_ctx_in->ovs_idl_txn, b_ctx_in->port_table,
+                        b_ctx_in->qos_table, b_ctx_out->egress_ifaces)) {
         const char *entry;
-        SSET_FOR_EACH (entry, &egress_ifaces) {
+        SSET_FOR_EACH (entry, b_ctx_out->egress_ifaces) {
             setup_qos(entry, &qos_map);
         }
     }
 
-    shash_destroy(&lport_to_iface);
-    sset_destroy(&egress_ifaces);
     hmap_destroy(&qos_map);
-}
-
-/* Returns true if port-binding changes potentially require flow changes on
- * the current chassis. Returns false if we are sure there is no impact. */
-bool
-binding_evaluate_port_binding_changes(
-        const struct sbrec_port_binding_table *pb_table,
-        const struct ovsrec_bridge *br_int,
-        const struct sbrec_chassis *chassis_rec,
-        struct sset *active_tunnels,
-        struct sset *local_lports)
-{
-    if (!chassis_rec) {
-        return true;
-    }
-
-    bool changed = false;
-
-    const struct sbrec_port_binding *binding_rec;
-    struct shash lport_to_iface = SHASH_INITIALIZER(&lport_to_iface);
-    struct sset egress_ifaces = SSET_INITIALIZER(&egress_ifaces);
-    if (br_int) {
-        get_local_iface_ids(br_int, &lport_to_iface, local_lports,
-                            &egress_ifaces);
-    }
-    SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (binding_rec, pb_table) {
-        /* XXX: currently OVSDB change tracking doesn't support getting old
-         * data when the operation is update, so if a port-binding moved from
-         * this chassis to another, there is no easy way to find out the
-         * change. To workaround this problem, we just makes sure if
-         * any port *related to* this chassis has any change, then trigger
-         * recompute.
-         *
-         * - If a regular VIF is unbound from this chassis, the local ovsdb
-         *   interface table will be updated, which will trigger recompute.
-         *
-         * - If the port is not a regular VIF, and not a "remote" port,
-         *   always trigger recompute. */
-        if (binding_rec->chassis == chassis_rec
-            || is_our_chassis(chassis_rec, binding_rec,
-                              active_tunnels, &lport_to_iface, local_lports)
-            || (strcmp(binding_rec->type, "") && strcmp(binding_rec->type,
-                                                        "remote"))) {
-            changed = true;
-            break;
-        }
-    }
-
-    shash_destroy(&lport_to_iface);
-    sset_destroy(&egress_ifaces);
-    return changed;
 }
 
 /* Returns true if the database is all cleaned up, false if more work is
@@ -900,4 +1144,416 @@ binding_cleanup(struct ovsdb_idl_txn *ovnsb_idl_txn,
     }
 
     return !any_changes;
+}
+
+static void
+add_local_datapath_peer_port(const struct sbrec_port_binding *pb,
+                             struct binding_ctx_in *b_ctx_in,
+                             struct binding_ctx_out *b_ctx_out,
+                             struct local_datapath *ld)
+{
+    bool present = false;
+    for (size_t i = 0; i < ld->n_peer_ports; i++) {
+        if (ld->peer_ports[i].local == pb) {
+            present = true;
+            break;
+        }
+    }
+
+    const char *peer_name = smap_get(&pb->options, "peer");
+    if (strcmp(pb->type, "patch") || !peer_name) {
+        return;
+    }
+
+    const struct sbrec_port_binding *peer;
+    peer = lport_lookup_by_name(b_ctx_in->sbrec_port_binding_by_name,
+                                peer_name);
+
+    if (!peer || !peer->datapath) {
+        return;
+    }
+
+    if (!present) {
+        ld->n_peer_ports++;
+        if (ld->n_peer_ports > ld->n_allocated_peer_ports) {
+            ld->peer_ports =
+                x2nrealloc(ld->peer_ports,
+                           &ld->n_allocated_peer_ports,
+                           sizeof *ld->peer_ports);
+        }
+        ld->peer_ports[ld->n_peer_ports - 1].local = pb;
+        ld->peer_ports[ld->n_peer_ports - 1].remote = peer;
+    }
+
+    struct local_datapath *peer_ld =
+        get_local_datapath(b_ctx_out->local_datapaths,
+                           peer->datapath->tunnel_key);
+    if (!peer_ld) {
+        add_local_datapath__(b_ctx_in->sbrec_datapath_binding_by_key,
+                             b_ctx_in->sbrec_port_binding_by_datapath,
+                             b_ctx_in->sbrec_port_binding_by_name,
+                             peer->datapath, false,
+                             1, b_ctx_out->local_datapaths,
+                             b_ctx_out->tracked_dp_bindings);
+        return;
+    }
+
+    for (size_t i = 0; i < peer_ld->n_peer_ports; i++) {
+        if (peer_ld->peer_ports[i].local == peer) {
+            return;
+        }
+    }
+
+    peer_ld->n_peer_ports++;
+    if (peer_ld->n_peer_ports > peer_ld->n_allocated_peer_ports) {
+        peer_ld->peer_ports =
+            x2nrealloc(peer_ld->peer_ports,
+                        &peer_ld->n_allocated_peer_ports,
+                        sizeof *peer_ld->peer_ports);
+    }
+    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].local = peer;
+    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].remote = pb;
+}
+
+static void
+remove_local_datapath_peer_port(const struct sbrec_port_binding *pb,
+                                struct local_datapath *ld,
+                                struct hmap *local_datapaths)
+{
+    size_t i =0;
+    for (i = 0; i < ld->n_peer_ports; i++) {
+        if (ld->peer_ports[i].local == pb) {
+            break;
+        }
+    }
+
+    if (i == ld->n_peer_ports) {
+        return;
+    }
+
+    const struct sbrec_port_binding *peer = ld->peer_ports[i].remote;
+
+    ld->peer_ports[i].local = ld->peer_ports[ld->n_peer_ports - 1].local;
+    ld->peer_ports[i].remote = ld->peer_ports[ld->n_peer_ports - 1].remote;
+    ld->n_peer_ports--;
+
+    struct local_datapath *peer_ld =
+        get_local_datapath(local_datapaths, peer->datapath->tunnel_key);
+    if (peer_ld) {
+        remove_local_datapath_peer_port(peer, peer_ld, local_datapaths);
+    }
+}
+
+static void
+update_local_datapath_for_pb(const struct sbrec_port_binding *pb,
+                             struct binding_ctx_in *b_ctx_in,
+                             struct binding_ctx_out *b_ctx_out,
+                             struct local_datapath *ld)
+{
+    if (!strcmp(pb->type, "patch")) {
+        add_local_datapath_peer_port(pb, b_ctx_in, b_ctx_out, ld);
+    } else if (!strcmp(pb->type, "localnet")) {
+        struct shash bridge_mappings = SHASH_INITIALIZER(&bridge_mappings);
+        add_ovs_bridge_mappings(b_ctx_in->ovs_table, b_ctx_in->bridge_table,
+                                &bridge_mappings);
+        consider_localnet_port(pb, &bridge_mappings, b_ctx_out->egress_ifaces,
+                               b_ctx_out->local_datapaths);
+        shash_destroy(&bridge_mappings);
+    } else if (!strcmp(pb->type, "l3gateway")) {
+        const char *chassis_id = smap_get(&pb->options,
+                                          "l3gateway-chassis");
+        if (chassis_id && !strcmp(chassis_id, b_ctx_in->chassis_rec->name)) {
+            ld->has_local_l3gateway = true;
+        }
+    }
+
+    if (!strcmp(pb->type, "patch") ||
+        !strcmp(pb->type, "localport") ||
+        !strcmp(pb->type, "vtep")) {
+        update_local_lport_ids(b_ctx_out->local_lport_ids, pb);
+    }
+}
+
+static void
+remove_pb_from_local_datapath(const struct sbrec_port_binding *pb,
+                              const struct sbrec_chassis *chassis_rec,
+                              struct binding_ctx_out *b_ctx_out,
+                              struct local_datapath *ld)
+{
+    remove_local_lport_ids(pb, b_ctx_out->local_lport_ids);
+    if (!strcmp(pb->type, "patch") ||
+        !strcmp(pb->type, "l3gateway")) {
+        remove_local_datapath_peer_port(pb, ld, b_ctx_out->local_datapaths);
+    } else if (!strcmp(pb->type, "localnet")) {
+        if (ld->localnet_port && !strcmp(ld->localnet_port->logical_port,
+                                         pb->logical_port)) {
+            ld->localnet_port = NULL;
+        }
+    } else if (!strcmp(pb->type, "l3gateway")) {
+        const char *chassis_id = smap_get(&pb->options,
+                                          "l3gateway-chassis");
+        if (chassis_id && !strcmp(chassis_id, chassis_rec->name)) {
+            ld->has_local_l3gateway = false;
+        }
+    }
+}
+
+/* Returns true if the ovs interface changes were handled successfully,
+ * false otherwise.
+ */
+bool
+binding_handle_ovs_interface_changes(struct binding_ctx_in *b_ctx_in,
+                                     struct binding_ctx_out *b_ctx_out,
+                                     bool *changed)
+{
+    if (!b_ctx_in->chassis_rec) {
+        return false;
+    }
+
+    bool handled = true;
+    *changed = false;
+
+    struct hmap qos_map = HMAP_INITIALIZER(&qos_map);
+    struct hmap *qos_map_ptr =
+        sset_is_empty(b_ctx_out->egress_ifaces) ? NULL : &qos_map;
+
+    *b_ctx_out->local_lports_changed = false;
+    const struct ovsrec_interface *iface_rec;
+    OVSREC_INTERFACE_TABLE_FOR_EACH_TRACKED (iface_rec,
+                                             b_ctx_in->iface_table) {
+        const char *iface_id = smap_get(&iface_rec->external_ids, "iface-id");
+        const char *old_iface_id = smap_get(b_ctx_out->local_iface_ids,
+                                            iface_rec->name);
+        if (iface_rec->type && iface_rec->type[0] &&
+            strcmp(iface_rec->type, "internal")) {
+            /* Right now are not handling ovs_interface changes of
+             * other types. This can be enhanced to handle of
+             * types - patch and tunnel. */
+            handled = false;
+            goto out;
+        }
+
+        struct local_binding *lbinding = NULL;
+        struct local_binding *claim_lbinding = NULL;
+        const char *cleared_iface_id = NULL;
+        int64_t ofport = iface_rec->n_ofport ? *iface_rec->ofport : 0;
+        if (!ovsrec_interface_is_deleted(iface_rec)) {
+            if (iface_id) {
+                /* Check if iface_id is changed. If so we need to
+                 * release the old port binding and associate this
+                 * inteface to new port binding. */
+                if (old_iface_id && strcmp(iface_id, old_iface_id)) {
+                    cleared_iface_id = old_iface_id;
+                }
+            } else if (old_iface_id) {
+                cleared_iface_id = old_iface_id;
+            }
+        } else {
+            cleared_iface_id = iface_id;
+            iface_id = NULL;
+        }
+
+        if (cleared_iface_id) {
+            lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                          cleared_iface_id);
+            if (lbinding && lbinding->pb &&
+                lbinding->pb->chassis == b_ctx_in->chassis_rec) {
+
+                if (!release_local_binding(lbinding,
+                                           b_ctx_out->tracked_dp_bindings,
+                                           !b_ctx_in->ovnsb_idl_txn)) {
+                    handled = false;
+                    goto out;
+                }
+                struct local_datapath *ld =
+                    get_local_datapath(b_ctx_out->local_datapaths,
+                                       lbinding->pb->datapath->tunnel_key);
+                if (ld) {
+                    remove_pb_from_local_datapath(lbinding->pb,
+                                                  b_ctx_in->chassis_rec,
+                                                  b_ctx_out, ld);
+                }
+
+                local_binding_delete(b_ctx_out->local_bindings, lbinding);
+                *changed = true;
+            }
+
+            sset_find_and_delete(b_ctx_out->local_lports, cleared_iface_id);
+            smap_remove(b_ctx_out->local_iface_ids, iface_rec->name);
+            *b_ctx_out->local_lports_changed = true;
+        }
+
+        if (iface_id && ofport > 0) {
+            *changed = true;
+            sset_add(b_ctx_out->local_lports, iface_id);
+            smap_replace(b_ctx_out->local_iface_ids, iface_rec->name,
+                             iface_id);
+            *b_ctx_out->local_lports_changed = true;
+            claim_lbinding =
+                local_binding_find(b_ctx_out->local_bindings, iface_id);
+            if (!claim_lbinding) {
+                claim_lbinding = local_binding_create(iface_id, iface_rec,
+                                                      NULL, BT_VIF);
+                local_binding_add(b_ctx_out->local_bindings, claim_lbinding);
+            } else {
+                claim_lbinding->iface = iface_rec;
+            }
+
+            if (!claim_lbinding->pb ||
+                strcmp(claim_lbinding->name,
+                       claim_lbinding->pb->logical_port)) {
+                claim_lbinding->pb =
+                    lport_lookup_by_name(b_ctx_in->sbrec_port_binding_by_name,
+                                         claim_lbinding->name);
+                if (claim_lbinding->pb &&
+                    !strcmp(claim_lbinding->pb->type, "virtual")) {
+                    claim_lbinding->pb = NULL;
+                }
+            }
+
+            if (claim_lbinding->pb) {
+                bool claimed =
+                    (claim_lbinding->pb->chassis == b_ctx_in->chassis_rec);
+                if (!consider_port_binding_for_vif(claim_lbinding->pb,
+                                                   b_ctx_in, BT_VIF,
+                                                   claim_lbinding,
+                                                   b_ctx_out, qos_map_ptr)) {
+                    handled = false;
+                    goto out;
+                }
+                bool now_claimed = (claim_lbinding->pb && (
+                    claim_lbinding->pb->chassis == b_ctx_in->chassis_rec));
+                if (!claimed && now_claimed) {
+                     /* Add this to the updated tracked datapath bindings. */
+                    tracked_binding_datapath_lport_add(
+                        b_ctx_out->tracked_dp_bindings, claim_lbinding->pb,
+                        false);
+                }
+            }
+        }
+    }
+
+    if (qos_map_ptr && set_noop_qos(b_ctx_in->ovs_idl_txn,
+                                    b_ctx_in->port_table,
+                                    b_ctx_in->qos_table,
+                                    b_ctx_out->egress_ifaces)) {
+        const char *entry;
+        SSET_FOR_EACH (entry, b_ctx_out->egress_ifaces) {
+            setup_qos(entry, &qos_map);
+        }
+    }
+
+    hmap_destroy(&qos_map);
+out:
+    return handled;
+}
+
+/* Returns true if the port binding changes resulted in local binding
+ * updates, false otherwise.
+ */
+bool
+binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
+                                    struct binding_ctx_out *b_ctx_out,
+                                    bool *changed)
+{
+    bool handled = true;
+    struct hmap qos_map = HMAP_INITIALIZER(&qos_map);
+    struct hmap *qos_map_ptr =
+        sset_is_empty(b_ctx_out->egress_ifaces) ? NULL : &qos_map;
+
+    *changed = false;
+
+    const struct sbrec_port_binding *pb;
+    SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb,
+                                               b_ctx_in->port_binding_table) {
+        bool consider_for_vif = false;
+        struct local_binding *lbinding = NULL;
+        enum local_binding_type binding_type = BT_VIF;
+        bool is_deleted = sbrec_port_binding_is_deleted(pb);
+        if (!pb->type[0]) {
+            if (!pb->parent_port || !pb->parent_port[0]) {
+                lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                              pb->logical_port);
+            } else {
+                lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                              pb->parent_port);
+                binding_type = BT_CHILD;
+            }
+
+            consider_for_vif = true;
+        } else if (!strcmp(pb->type, "virtual") &&
+                   pb->virtual_parent && pb->virtual_parent[0]) {
+            lbinding = local_binding_find(b_ctx_out->local_bindings,
+                                          pb->virtual_parent);
+            consider_for_vif = true;
+            binding_type = BT_VIRTUAL;
+        }
+
+        if (is_deleted) {
+            if (lbinding) {
+                lbinding->pb = NULL;
+                /* Add this to the deleted tracked datapath bindings. */
+                tracked_binding_datapath_lport_add(
+                    b_ctx_out->tracked_dp_bindings, pb, true);
+                if (binding_type == BT_VIF &&
+                    !release_local_binding_children(
+                        lbinding, b_ctx_out->tracked_dp_bindings,
+                        !b_ctx_in->ovnsb_idl_txn)) {
+                    handled = false;
+                    break;
+                }
+                *changed = true;
+            }
+
+            struct local_datapath *ld =
+                get_local_datapath(b_ctx_out->local_datapaths,
+                                   pb->datapath->tunnel_key);
+            if (ld) {
+                remove_pb_from_local_datapath(pb, b_ctx_in->chassis_rec,
+                                              b_ctx_out, ld);
+            }
+        } else {
+            if (consider_for_vif) {
+                if (lbinding) {
+                    lbinding->pb = pb;
+                    bool claimed = (pb->chassis == b_ctx_in->chassis_rec);
+                    if (!consider_port_binding_for_vif(
+                            pb, b_ctx_in, binding_type, lbinding, b_ctx_out,
+                            qos_map_ptr)) {
+                        handled = false;
+                        break;
+                    }
+                    bool now_claimed = (pb->chassis == b_ctx_in->chassis_rec);
+                    if (!claimed && now_claimed) {
+                        *changed = true;
+
+                        /* Add this to the updated tracked datapath
+                         * bindings. */
+                        tracked_binding_datapath_lport_add(
+                            b_ctx_out->tracked_dp_bindings, pb, false);
+                    }
+                }
+            } else {
+                if (!consider_port_binding(pb, b_ctx_in, b_ctx_out,
+                                           qos_map_ptr)) {
+                    handled = false;
+                    break;
+                }
+                struct local_datapath *ld =
+                    get_local_datapath(b_ctx_out->local_datapaths,
+                                       pb->datapath->tunnel_key);
+                if (ld) {
+                    update_local_datapath_for_pb(pb, b_ctx_in, b_ctx_out, ld);
+                }
+                *changed = true;
+                if (!strcmp(pb->type, "patch") ||
+                    !strcmp(pb->type, "localport") ||
+                    !strcmp(pb->type, "vtep")) {
+                    update_local_lport_ids(b_ctx_out->local_lport_ids, pb);
+                }
+            }
+        }
+    }
+
+    return handled;
 }

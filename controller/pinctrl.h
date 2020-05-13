@@ -31,6 +31,7 @@ struct sbrec_chassis;
 struct sbrec_dns_table;
 struct sbrec_controller_event_table;
 struct sbrec_service_monitor_table;
+struct shash;
 
 void pinctrl_init(void);
 void pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,

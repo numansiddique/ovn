@@ -18,6 +18,9 @@
 #define OVN_BINDING_H 1
 
 #include <stdbool.h>
+#include "openvswitch/hmap.h"
+#include "openvswitch/uuid.h"
+#include "openvswitch/list.h"
 
 struct hmap;
 struct ovsdb_idl;
@@ -31,31 +34,50 @@ struct ovsrec_open_vswitch_table;
 struct sbrec_chassis;
 struct sbrec_port_binding_table;
 struct sset;
+struct sbrec_port_binding;
+
+struct binding_ctx_in {
+    struct ovsdb_idl_txn *ovnsb_idl_txn;
+    struct ovsdb_idl_txn *ovs_idl_txn;
+    struct ovsdb_idl_index *sbrec_datapath_binding_by_key;
+    struct ovsdb_idl_index *sbrec_port_binding_by_datapath;
+    struct ovsdb_idl_index *sbrec_port_binding_by_name;
+    const struct ovsrec_port_table *port_table;
+    const struct ovsrec_qos_table *qos_table;
+    const struct sbrec_port_binding_table *port_binding_table;
+    const struct ovsrec_bridge *br_int;
+    const struct sbrec_chassis *chassis_rec;
+    const struct sset *active_tunnels;
+    const struct ovsrec_bridge_table *bridge_table;
+    const struct ovsrec_open_vswitch_table *ovs_table;
+    const struct ovsrec_interface_table *iface_table;
+};
+
+struct binding_ctx_out {
+    struct hmap *local_datapaths;
+    struct shash *local_bindings;
+    struct sset *local_lports;
+    struct sset *local_lport_ids;
+    struct sset *egress_ifaces;
+    struct smap *local_iface_ids;
+    struct hmap *tracked_dp_bindings;
+    bool *local_lports_changed;
+};
 
 void binding_register_ovs_idl(struct ovsdb_idl *);
-void binding_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
-                 struct ovsdb_idl_txn *ovs_idl_txn,
-                 struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
-                 struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
-                 struct ovsdb_idl_index *sbrec_port_binding_by_name,
-                 const struct ovsrec_port_table *,
-                 const struct ovsrec_qos_table *,
-                 const struct sbrec_port_binding_table *,
-                 const struct ovsrec_bridge *br_int,
-                 const struct sbrec_chassis *,
-                 const struct sset *active_tunnels,
-                 const struct ovsrec_bridge_table *bridge_table,
-                 const struct ovsrec_open_vswitch_table *ovs_table,
-                 struct hmap *local_datapaths,
-                 struct sset *local_lports, struct sset *local_lport_ids);
+void binding_run(struct binding_ctx_in *, struct binding_ctx_out *);
 bool binding_cleanup(struct ovsdb_idl_txn *ovnsb_idl_txn,
                      const struct sbrec_port_binding_table *,
                      const struct sbrec_chassis *);
-bool binding_evaluate_port_binding_changes(
-        const struct sbrec_port_binding_table *,
-        const struct ovsrec_bridge *br_int,
-        const struct sbrec_chassis *,
-        struct sset *active_tunnels,
-        struct sset *local_lports);
-
+void local_bindings_destroy(struct shash *local_bindings);
+void binding_add_vport_to_local_bindings(
+    struct shash *local_bindings, const struct sbrec_port_binding *parent,
+    const struct sbrec_port_binding *vport);
+bool binding_handle_ovs_interface_changes(struct binding_ctx_in *,
+                                          struct binding_ctx_out *,
+                                          bool *changed);
+bool binding_handle_port_binding_changes(struct binding_ctx_in *,
+                                         struct binding_ctx_out *,
+                                         bool *changed);
+void binding_tracked_dp_destroy(struct hmap *tracked_datapaths);
 #endif /* controller/binding.h */
