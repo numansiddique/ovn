@@ -104,9 +104,8 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
         return;
     }
 
-    ld = xzalloc(sizeof *ld);
+    ld = local_datapath_alloc(datapath);
     hmap_insert(local_datapaths, &ld->hmap_node, dp_key);
-    ld->datapath = datapath;
     ld->localnet_port = NULL;
     ld->has_local_l3gateway = has_local_l3gateway;
 

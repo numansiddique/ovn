@@ -49,6 +49,7 @@
 #include "lib/chassis-index.h"
 #include "lib/extend-table.h"
 #include "lib/ip-mcast-index.h"
+#include "lib/lflow.h"
 #include "lib/mcast-group-index.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
@@ -129,6 +130,27 @@ get_local_datapath(const struct hmap *local_datapaths, uint32_t tunnel_key)
     return (node
             ? CONTAINER_OF(node, struct local_datapath, hmap_node)
             : NULL);
+}
+
+struct local_datapath *
+local_datapath_alloc(const struct sbrec_datapath_binding *dp)
+{
+    struct local_datapath *ld = xzalloc(sizeof *ld);
+    ld->datapath = dp;
+    ld->is_switch = datapath_is_switch(dp);
+    hmap_init(&ld->ctrl_lflows);
+    ovn_desired_flow_table_init(&ld->flow_table);
+
+    return ld;
+}
+
+static void
+local_datapath_destroy(struct local_datapath *ld)
+{
+    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows);
+    ovn_desired_flow_table_destroy(&ld->flow_table);
+    free(ld->peer_ports);
+    free(ld);
 }
 
 uint32_t
@@ -1079,9 +1101,8 @@ en_runtime_data_cleanup(void *data)
     struct local_datapath *cur_node, *next_node;
     HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node,
                         &rt_data->local_datapaths) {
-        free(cur_node->peer_ports);
         hmap_remove(&rt_data->local_datapaths, &cur_node->hmap_node);
-        free(cur_node);
+        local_datapath_destroy(cur_node);
     }
     hmap_destroy(&rt_data->local_datapaths);
     local_binding_data_destroy(&rt_data->lbinding_data);
@@ -1879,6 +1900,87 @@ struct ed_type_lflow_output {
     struct lflow_output_persistent_data pd;
 };
 
+struct ed_type_lflow_generate {
+    struct hmap generic_lswitch_lflows;
+    struct hmap generic_lrouter_lflows;
+};
+
+static void *
+en_lflow_generate_init(struct engine_node *node OVS_UNUSED,
+                       struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_lflow_generate *data = xzalloc(sizeof *data);
+
+    hmap_init(&data->generic_lswitch_lflows);
+    hmap_init(&data->generic_lrouter_lflows);
+
+    build_lswitch_generic_lflows(&data->generic_lswitch_lflows);
+    build_lrouter_generic_lflows(&data->generic_lrouter_lflows);
+
+    return data;
+}
+
+static void
+en_lflow_generate_cleanup(void *data)
+{
+    struct ed_type_lflow_generate *lflow_generate_data = data;
+
+    ovn_ctrl_lflows_destroy(&lflow_generate_data->generic_lswitch_lflows);
+    ovn_ctrl_lflows_destroy(&lflow_generate_data->generic_lrouter_lflows);
+}
+
+static void
+en_lflow_generate_run(struct engine_node *node OVS_UNUSED,
+                      void *data OVS_UNUSED)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    struct local_datapath *ld;
+    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
+        ovn_ctrl_lflows_clear(&ld->ctrl_lflows);
+        ovn_desired_flow_table_clear(&ld->flow_table);
+    }
+
+    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
+        ovn_ctrl_lflows_build_dp_lflows(&ld->ctrl_lflows, ld->datapath);
+    }
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+static bool
+lflow_generate_runtime_data_handler(struct engine_node *node OVS_UNUSED,
+                                    void *data OVS_UNUSED)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    /* There is no tracked data. Fall back to full recompute of
+     * flow_output. */
+    if (!rt_data->tracked) {
+        return false;
+    }
+
+    struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
+    if (hmap_is_empty(tracked_dp_bindings)) {
+        return true;
+    }
+
+    struct tracked_binding_datapath *tdp;
+    HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
+        if (tdp->is_new) {
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                   tdp->dp->tunnel_key);
+            ovs_assert(ld);
+            ovn_ctrl_lflows_build_dp_lflows(&ld->ctrl_lflows, tdp->dp);
+            engine_set_node_state(node, EN_UPDATED);
+        }
+    }
+
+    return true;
+}
+
 static void
 init_lflow_ctx(struct engine_node *node,
                struct ed_type_runtime_data *rt_data,
@@ -2022,6 +2124,8 @@ en_lflow_output_run(struct engine_node *node, void *data)
 {
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
+    struct ed_type_lflow_generate *lflow_gen_data =
+        engine_get_input_data("lflow_generate", node);
 
     struct ovsrec_open_vswitch_table *ovs_table =
         (struct ovsrec_open_vswitch_table *)EN_OVSDB_GET(
@@ -2071,6 +2175,7 @@ en_lflow_output_run(struct engine_node *node, void *data)
     struct lflow_ctx_in l_ctx_in;
     struct lflow_ctx_out l_ctx_out;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
+
     lflow_run(&l_ctx_in, &l_ctx_out);
 
     if (l_ctx_out.conj_id_overflow) {
@@ -2086,6 +2191,22 @@ en_lflow_output_run(struct engine_node *node, void *data)
         lflow_run(&l_ctx_in, &l_ctx_out);
         if (l_ctx_out.conj_id_overflow) {
             VLOG_WARN("Conjunction id overflow.");
+        }
+    }
+
+    struct local_datapath *ld;
+    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
+        lflow_process_ctrl_lflows(&ld->ctrl_lflows, ld->datapath,
+                                  &l_ctx_in, &l_ctx_out);
+
+        if (ld->is_switch) {
+            lflow_process_ctrl_lflows(&lflow_gen_data->generic_lswitch_lflows,
+                                      ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+        } else {
+            lflow_process_ctrl_lflows(&lflow_gen_data->generic_lrouter_lflows,
+                                      ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
         }
     }
 
@@ -2261,6 +2382,8 @@ lflow_output_runtime_data_handler(struct engine_node *node,
 {
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
+    struct ed_type_lflow_generate *lflow_gen_data =
+        engine_get_input_data("lflow_generate", node);
 
     /* There is no tracked data. Fall back to full recompute of
      * flow_output. */
@@ -2287,6 +2410,22 @@ lflow_output_runtime_data_handler(struct engine_node *node,
             if (!lflow_add_flows_for_datapath(tdp->dp, &l_ctx_in,
                                               &l_ctx_out)) {
                 return false;
+            }
+
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                   tdp->dp->tunnel_key);
+            ovs_assert(ld);
+            lflow_process_ctrl_lflows(&ld->ctrl_lflows, ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+            if (ld->is_switch) {
+                lflow_process_ctrl_lflows(
+                    &lflow_gen_data->generic_lswitch_lflows,
+                    ld->datapath, &l_ctx_in, &l_ctx_out);
+            } else {
+                lflow_process_ctrl_lflows(
+                    &lflow_gen_data->generic_lrouter_lflows,
+                    ld->datapath, &l_ctx_in, &l_ctx_out);
             }
         } else {
             struct shash_node *shash_node;
@@ -2758,6 +2897,7 @@ main(int argc, char *argv[])
     ENGINE_NODE(flow_output, "flow_output");
     ENGINE_NODE(addr_sets, "addr_sets");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(port_groups, "port_groups");
+    ENGINE_NODE(lflow_generate, "lflow_generate");
 
 #define SB_NODE(NAME, NAME_STR) ENGINE_NODE_SB(NAME, NAME_STR);
     SB_NODES
@@ -2803,6 +2943,8 @@ main(int argc, char *argv[])
                      lflow_output_addr_sets_handler);
     engine_add_input(&en_lflow_output, &en_port_groups,
                      lflow_output_port_groups_handler);
+    engine_add_input(&en_lflow_output, &en_lflow_generate,
+                     engine_noop_handler);
     engine_add_input(&en_lflow_output, &en_runtime_data,
                      lflow_output_runtime_data_handler);
 
@@ -2850,6 +2992,9 @@ main(int argc, char *argv[])
                      ct_zones_datapath_binding_handler);
     engine_add_input(&en_ct_zones, &en_runtime_data,
                      ct_zones_runtime_data_handler);
+
+    engine_add_input(&en_lflow_generate, &en_runtime_data,
+                     lflow_generate_runtime_data_handler);
 
     engine_add_input(&en_runtime_data, &en_ofctrl_is_connected, NULL);
 
