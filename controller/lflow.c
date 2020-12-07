@@ -28,6 +28,7 @@
 #include "ovn/actions.h"
 #include "ovn/expr.h"
 #include "lib/lb.h"
+#include "lib/lflow.h"
 #include "lib/ovn-l7.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/extend-table.h"
@@ -96,6 +97,10 @@ lookup_port_cb(const void *aux_, const char *port_name, unsigned int *portp)
 
     const struct lookup_port_aux *aux = aux_;
 
+    if (!aux) {
+        return false;
+    }
+
     const struct sbrec_port_binding *pb
         = lport_lookup_by_name(aux->sbrec_port_binding_by_name, port_name);
     if (pb && pb->datapath == aux->dp) {
@@ -118,6 +123,10 @@ static bool
 tunnel_ofport_cb(const void *aux_, const char *port_name, ofp_port_t *ofport)
 {
     const struct lookup_port_aux *aux = aux_;
+
+    if (!aux) {
+        return false;
+    }
 
     const struct sbrec_port_binding *pb
         = lport_lookup_by_name(aux->sbrec_port_binding_by_name, port_name);
@@ -558,10 +567,72 @@ update_conj_id_ofs(uint32_t *conj_id_ofs, uint32_t n_conjs)
 }
 
 static void
+add_matches_to_flow_table__(struct hmap *matches, uint8_t ptable, bool ingress,
+                            const struct sbrec_datapath_binding *dp,
+                            const struct uuid *lflow_uuid,
+                            uint16_t lflow_priority,
+                            const struct sset *local_lport_ids,
+                            struct ofpbuf *ofpacts,
+                            struct lflow_resource_ref *lfrr,
+                            struct ovn_desired_flow_table *flow_table)
+{
+    struct expr_match *m;
+    HMAP_FOR_EACH (m, hmap_node, matches) {
+        match_set_metadata(&m->match, htonll(dp->tunnel_key));
+        if (datapath_is_switch(dp)) {
+            unsigned int reg_index
+                = (ingress ? MFF_LOG_INPORT : MFF_LOG_OUTPORT) - MFF_REG0;
+            int64_t port_id = m->match.flow.regs[reg_index];
+            if (port_id) {
+                int64_t dp_id = dp->tunnel_key;
+                char buf[16];
+                get_unique_lport_key(dp_id, port_id, buf, sizeof(buf));
+                if (lfrr) {
+                    lflow_resource_add(lfrr, REF_TYPE_PORTBINDING, buf,
+                                       lflow_uuid);
+                }
+                if (!sset_contains(local_lport_ids, buf)) {
+                    VLOG_DBG("lflow "UUID_FMT
+                             " port %s in match is not local, skip",
+                             UUID_ARGS(lflow_uuid),
+                             buf);
+                    continue;
+                }
+            }
+        }
+        if (!m->n) {
+            ofctrl_add_flow(flow_table, ptable, lflow_priority,
+                            lflow_uuid->parts[0], &m->match, ofpacts,
+                            lflow_uuid);
+        } else {
+            uint64_t conj_stubs[64 / 8];
+            struct ofpbuf conj;
+
+            ofpbuf_use_stub(&conj, conj_stubs, sizeof conj_stubs);
+            for (int i = 0; i < m->n; i++) {
+                const struct cls_conjunction *src = &m->conjunctions[i];
+                struct ofpact_conjunction *dst;
+
+                dst = ofpact_put_CONJUNCTION(&conj);
+                dst->id = src->id;
+                dst->clause = src->clause;
+                dst->n_clauses = src->n_clauses;
+            }
+
+            ofctrl_add_or_append_flow(flow_table, ptable,
+                                      lflow_priority, 0,
+                                      &m->match, &conj, lflow_uuid);
+            ofpbuf_uninit(&conj);
+        }
+    }
+}
+
+static void
 add_matches_to_flow_table(const struct sbrec_logical_flow *lflow,
                           const struct sbrec_datapath_binding *dp,
-                          struct hmap *matches, uint8_t ptable,
-                          uint8_t output_ptable, struct ofpbuf *ovnacts,
+                          struct hmap *matches,
+                          uint8_t ptable, uint8_t output_ptable,
+                          struct ofpbuf *ovnacts,
                           bool ingress, struct lflow_ctx_in *l_ctx_in,
                           struct lflow_ctx_out *l_ctx_out)
 {
@@ -598,54 +669,10 @@ add_matches_to_flow_table(const struct sbrec_logical_flow *lflow,
     };
     ovnacts_encode(ovnacts->data, ovnacts->size, &ep, &ofpacts);
 
-    struct expr_match *m;
-    HMAP_FOR_EACH (m, hmap_node, matches) {
-        match_set_metadata(&m->match, htonll(dp->tunnel_key));
-        if (datapath_is_switch(dp)) {
-            unsigned int reg_index
-                = (ingress ? MFF_LOG_INPORT : MFF_LOG_OUTPORT) - MFF_REG0;
-            int64_t port_id = m->match.flow.regs[reg_index];
-            if (port_id) {
-                int64_t dp_id = dp->tunnel_key;
-                char buf[16];
-                get_unique_lport_key(dp_id, port_id, buf, sizeof(buf));
-                lflow_resource_add(l_ctx_out->lfrr, REF_TYPE_PORTBINDING, buf,
-                                   &lflow->header_.uuid);
-                if (!sset_contains(l_ctx_in->local_lport_ids, buf)) {
-                    VLOG_DBG("lflow "UUID_FMT
-                             " port %s in match is not local, skip",
-                             UUID_ARGS(&lflow->header_.uuid),
-                             buf);
-                    continue;
-                }
-            }
-        }
-        if (!m->n) {
-            ofctrl_add_flow(l_ctx_out->flow_table, ptable, lflow->priority,
-                            lflow->header_.uuid.parts[0], &m->match, &ofpacts,
-                            &lflow->header_.uuid);
-        } else {
-            uint64_t conj_stubs[64 / 8];
-            struct ofpbuf conj;
-
-            ofpbuf_use_stub(&conj, conj_stubs, sizeof conj_stubs);
-            for (int i = 0; i < m->n; i++) {
-                const struct cls_conjunction *src = &m->conjunctions[i];
-                struct ofpact_conjunction *dst;
-
-                dst = ofpact_put_CONJUNCTION(&conj);
-                dst->id = src->id;
-                dst->clause = src->clause;
-                dst->n_clauses = src->n_clauses;
-            }
-
-            ofctrl_add_or_append_flow(l_ctx_out->flow_table, ptable,
-                                      lflow->priority, 0,
-                                      &m->match, &conj, &lflow->header_.uuid);
-            ofpbuf_uninit(&conj);
-        }
-    }
-
+    add_matches_to_flow_table__(matches, ptable, ingress, dp,
+                                &lflow->header_.uuid, lflow->priority,
+                                l_ctx_in->local_lport_ids, &ofpacts,
+                                l_ctx_out->lfrr, l_ctx_out->flow_table);
     ofpbuf_uninit(&ofpacts);
 }
 
@@ -655,8 +682,9 @@ add_matches_to_flow_table(const struct sbrec_logical_flow *lflow,
  * If parsing is successful, '*prereqs' is also consumed.
  */
 static struct expr *
-convert_match_to_expr(const struct sbrec_logical_flow *lflow,
-                      const struct sbrec_datapath_binding *dp,
+convert_match_to_expr(char *lflow_match,
+                      const struct uuid *lflow_uuid,
+                      int64_t dp_id,
                       struct expr **prereqs,
                       const struct shash *addr_sets,
                       const struct shash *port_groups,
@@ -667,19 +695,22 @@ convert_match_to_expr(const struct sbrec_logical_flow *lflow,
     struct sset port_groups_ref = SSET_INITIALIZER(&port_groups_ref);
     char *error = NULL;
 
-    struct expr *e = expr_parse_string(lflow->match, &symtab, addr_sets,
+    struct expr *e = expr_parse_string(lflow_match, &symtab, addr_sets,
                                        port_groups, &addr_sets_ref,
-                                       &port_groups_ref, dp->tunnel_key,
+                                       &port_groups_ref, dp_id,
                                        &error);
-    const char *addr_set_name;
-    SSET_FOR_EACH (addr_set_name, &addr_sets_ref) {
-        lflow_resource_add(lfrr, REF_TYPE_ADDRSET, addr_set_name,
-                           &lflow->header_.uuid);
-    }
-    const char *port_group_name;
-    SSET_FOR_EACH (port_group_name, &port_groups_ref) {
-        lflow_resource_add(lfrr, REF_TYPE_PORTGROUP, port_group_name,
-                           &lflow->header_.uuid);
+
+    if (lflow_uuid) {
+        const char *addr_set_name;
+        SSET_FOR_EACH (addr_set_name, &addr_sets_ref) {
+            lflow_resource_add(lfrr, REF_TYPE_ADDRSET, addr_set_name,
+                               lflow_uuid);
+        }
+        const char *port_group_name;
+        SSET_FOR_EACH (port_group_name, &port_groups_ref) {
+            lflow_resource_add(lfrr, REF_TYPE_PORTGROUP, port_group_name,
+                               lflow_uuid);
+        }
     }
 
     if (pg_addr_set_ref) {
@@ -699,7 +730,7 @@ convert_match_to_expr(const struct sbrec_logical_flow *lflow,
     if (error) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
         VLOG_WARN_RL(&rl, "error parsing match \"%s\": %s",
-                    lflow->match, error);
+                     lflow_match, error);
         free(error);
         return NULL;
     }
@@ -799,7 +830,9 @@ consider_logical_flow__(const struct sbrec_logical_flow *lflow,
     switch (lcv_type) {
     case LCACHE_T_NONE:
     case LCACHE_T_CONJ_ID:
-        expr = convert_match_to_expr(lflow, dp, &prereqs, l_ctx_in->addr_sets,
+        expr = convert_match_to_expr(lflow->match, &lflow->header_.uuid,
+                                     dp->tunnel_key, &prereqs,
+                                     l_ctx_in->addr_sets,
                                      l_ctx_in->port_groups, l_ctx_out->lfrr,
                                      &pg_addr_set_ref);
         if (!expr) {
@@ -1811,4 +1844,163 @@ lflow_handle_changed_fdbs(struct lflow_ctx_in *l_ctx_in,
     }
 
     return true;
+}
+
+static void
+lflow_process_ctrl_lflow(struct ovn_ctrl_lflow *ctrl_lflow,
+                         struct hmap *dhcp_opts, struct hmap *dhcpv6_opts,
+                         struct hmap *nd_ra_opts,
+                         struct controller_event_options *event_opts,
+                         struct lflow_ctx_out *l_ctx_out)
+{
+    bool ingress =  (ovn_stage_get_pipeline(ctrl_lflow->stage) == P_IN);
+    uint8_t output_ptable = (ingress
+                             ? OFTABLE_REMOTE_OUTPUT
+                             : OFTABLE_SAVE_INPORT);
+
+    struct ovnact_parse_params pp = {
+        .symtab = &symtab,
+        .dhcp_opts = dhcp_opts,
+        .dhcpv6_opts = dhcpv6_opts,
+        .nd_ra_opts = nd_ra_opts,
+        .controller_event_opts = event_opts,
+
+        .pipeline = ingress ? OVNACT_P_INGRESS : OVNACT_P_EGRESS,
+        .n_tables = LOG_PIPELINE_LEN,
+        .cur_ltable = ovn_stage_get_table(ctrl_lflow->stage),
+    };
+
+    struct expr *prereqs;
+    char *error;
+
+    uint64_t ovnacts_stub[1024 / 8];
+    struct ofpbuf ovnacts = OFPBUF_STUB_INITIALIZER(ovnacts_stub);
+    error = ovnacts_parse_string(ctrl_lflow->actions, &pp,
+                                 &ovnacts, &prereqs);
+    ovs_assert(!error);
+
+    struct expr *expr;
+    expr = convert_match_to_expr(ctrl_lflow->match, NULL,
+                                 0, &prereqs, NULL, NULL, NULL, NULL);
+
+    ovs_assert(expr);
+
+    expr = expr_normalize(expr);
+
+    uint32_t n_conjs = expr_to_matches(expr, lookup_port_cb, NULL,
+                                       &ctrl_lflow->expr_matches);
+
+    ctrl_lflow->n_conjs = n_conjs;
+    expr_destroy(expr);
+
+    /* Encode OVN logical actions into OpenFlow. */
+    struct ovnact_encode_params ep = {
+        .lookup_port = lookup_port_cb,
+        .tunnel_ofport = tunnel_ofport_cb,
+        .aux = NULL,
+        .is_switch =
+            (ovn_stage_to_datapath_type(ctrl_lflow->stage) == DP_SWITCH),
+        .group_table = l_ctx_out->group_table,
+        .meter_table = l_ctx_out->meter_table,
+        .lflow_uuid = ctrl_lflow->uuid_,
+
+        .pipeline = ingress ? OVNACT_P_INGRESS : OVNACT_P_EGRESS,
+        .ingress_ptable = OFTABLE_LOG_INGRESS_PIPELINE,
+        .egress_ptable = OFTABLE_LOG_EGRESS_PIPELINE,
+        .output_ptable = output_ptable,
+        .mac_bind_ptable = OFTABLE_MAC_BINDING,
+        .mac_lookup_ptable = OFTABLE_MAC_LOOKUP,
+        .lb_hairpin_ptable = OFTABLE_CHK_LB_HAIRPIN,
+        .lb_hairpin_reply_ptable = OFTABLE_CHK_LB_HAIRPIN_REPLY,
+        .ct_snat_vip_ptable = OFTABLE_CT_SNAT_FOR_VIP,
+        .fdb_ptable = OFTABLE_GET_FDB,
+        .fdb_lookup_ptable = OFTABLE_LOOKUP_FDB,
+    };
+    ovnacts_encode(ovnacts.data, ovnacts.size, &ep, ctrl_lflow->ofpacts);
+
+    ovnacts_free(ovnacts.data, ovnacts.size);
+    ofpbuf_uninit(&ovnacts);
+}
+
+void
+lflow_process_ctrl_lflows(struct hmap *ctrl_lflows,
+                          struct lflow_ctx_in *l_ctx_in,
+                          struct lflow_ctx_out *l_ctx_out)
+{
+    struct hmap dhcp_opts = HMAP_INITIALIZER(&dhcp_opts);
+    struct hmap dhcpv6_opts = HMAP_INITIALIZER(&dhcpv6_opts);
+    const struct sbrec_dhcp_options *dhcp_opt_row;
+    SBREC_DHCP_OPTIONS_TABLE_FOR_EACH (dhcp_opt_row,
+                                       l_ctx_in->dhcp_options_table) {
+        dhcp_opt_add(&dhcp_opts, dhcp_opt_row->name, dhcp_opt_row->code,
+                     dhcp_opt_row->type);
+    }
+
+
+    const struct sbrec_dhcpv6_options *dhcpv6_opt_row;
+    SBREC_DHCPV6_OPTIONS_TABLE_FOR_EACH (dhcpv6_opt_row,
+                                         l_ctx_in->dhcpv6_options_table) {
+       dhcp_opt_add(&dhcpv6_opts, dhcpv6_opt_row->name, dhcpv6_opt_row->code,
+                    dhcpv6_opt_row->type);
+    }
+
+    struct hmap nd_ra_opts = HMAP_INITIALIZER(&nd_ra_opts);
+    nd_ra_opts_init(&nd_ra_opts);
+
+    struct controller_event_options controller_event_opts;
+    controller_event_opts_init(&controller_event_opts);
+
+
+    struct ovn_ctrl_lflow *ctrl_lflow;
+
+    HMAP_FOR_EACH (ctrl_lflow, hmap_node, ctrl_lflows) {
+        lflow_process_ctrl_lflow(ctrl_lflow, &dhcp_opts, &dhcpv6_opts,
+                                 &nd_ra_opts, &controller_event_opts,
+                                 l_ctx_out);
+    }
+
+    dhcp_opts_destroy(&dhcp_opts);
+    dhcp_opts_destroy(&dhcpv6_opts);
+    nd_ra_opts_destroy(&nd_ra_opts);
+    controller_event_opts_destroy(&controller_event_opts);
+}
+
+static void
+lflow_convert_ctrl_lflow(struct ovn_ctrl_lflow *ctrl_lflow,
+                         const struct sbrec_datapath_binding *dp,
+                         struct lflow_ctx_in *l_ctx_in,
+                         struct lflow_ctx_out *l_ctx_out)
+{
+    if (hmap_is_empty(&ctrl_lflow->expr_matches)) {
+        return;
+    }
+
+    bool ingress =  (ovn_stage_get_pipeline(ctrl_lflow->stage) == P_IN);
+    uint8_t first_ptable = (ingress
+                            ? OFTABLE_LOG_INGRESS_PIPELINE
+                            : OFTABLE_LOG_EGRESS_PIPELINE);
+    uint8_t ptable = first_ptable + ovn_stage_get_table(ctrl_lflow->stage);
+
+    /* TODO: Revisit this. */
+    expr_matches_prepare(&ctrl_lflow->expr_matches, *l_ctx_out->conj_id_ofs);
+    add_matches_to_flow_table__(&ctrl_lflow->expr_matches, ptable,
+                                ingress, dp, &ctrl_lflow->uuid_,
+                                ctrl_lflow->priority,
+                                l_ctx_in->local_lport_ids,
+                                ctrl_lflow->ofpacts, l_ctx_out->lfrr,
+                                l_ctx_out->flow_table);
+    update_conj_id_ofs(l_ctx_out->conj_id_ofs, ctrl_lflow->n_conjs);
+}
+
+void
+lflow_convert_ctrl_lflows(struct hmap *ctrl_lflows,
+                          const struct sbrec_datapath_binding *dp,
+                          struct lflow_ctx_in *l_ctx_in,
+                          struct lflow_ctx_out *l_ctx_out)
+{
+    struct ovn_ctrl_lflow *ctrl_lflow;
+
+    HMAP_FOR_EACH (ctrl_lflow, hmap_node, ctrl_lflows) {
+        lflow_convert_ctrl_lflow(ctrl_lflow, dp, l_ctx_in, l_ctx_out);
+    }
 }

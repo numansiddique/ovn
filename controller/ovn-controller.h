@@ -17,6 +17,8 @@
 #ifndef OVN_CONTROLLER_H
 #define OVN_CONTROLLER_H 1
 
+#include "ofctrl.h"
+
 #include "simap.h"
 #include "lib/ovn-sb-idl.h"
 
@@ -52,6 +54,7 @@ struct ct_zone_pending_entry {
 struct local_datapath {
     struct hmap_node hmap_node;
     const struct sbrec_datapath_binding *datapath;
+    bool is_switch;
 
     /* The localnet port in this datapath, if any (at most one is allowed). */
     const struct sbrec_port_binding *localnet_port;
@@ -67,8 +70,13 @@ struct local_datapath {
 
     size_t n_peer_ports;
     size_t n_allocated_peer_ports;
+
+    struct hmap ctrl_lflows;
+    struct ovn_desired_flow_table flow_table; /* Flow table per datapath. */
 };
 
+struct local_datapath *local_datapath_alloc(
+    const struct sbrec_datapath_binding *);
 struct local_datapath *get_local_datapath(const struct hmap *,
                                           uint32_t tunnel_key);
 

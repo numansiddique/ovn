@@ -2630,6 +2630,12 @@ tcp.flags = RST;
       </p>
     </column>
 
+    <column name="options">
+      <p>
+        Options.
+      </p>
+    </column>
+
     <group title="OVN_Northbound Relationship">
       <p>
         Each row in <ref table="Datapath_Binding"/> is associated with some
