@@ -45,6 +45,7 @@
 #include "openvswitch/vlog.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
+#include "lib/lflow.h"
 #include "memory.h"
 #include "ovn-dbctl.h"
 #include "ovsdb-data.h"
@@ -319,6 +320,8 @@ pre_get_info(struct ctl_context *ctx)
     ovsdb_idl_add_column(ctx->idl, &sbrec_logical_dp_group_col_datapaths);
 
     ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_external_ids);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_options);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_load_balancers);
 
     ovsdb_idl_add_column(ctx->idl, &sbrec_ip_multicast_col_datapath);
     ovsdb_idl_add_column(ctx->idl, &sbrec_ip_multicast_col_seq_no);
@@ -1039,6 +1042,137 @@ cmd_lflow_list(struct ctl_context *ctx)
     free(lflows);
 }
 
+static int
+sbctl_gen_lflow_cmp(const void *a_, const void *b_)
+{
+    const struct ovn_ctrl_lflow *const *ap = a_;
+    const struct ovn_ctrl_lflow *const *bp = b_;
+
+    const struct ovn_ctrl_lflow *a = *ap;
+    const struct ovn_ctrl_lflow *b = *bp;
+
+    int a_pipeline = ovn_stage_get_pipeline(a->stage);
+    int b_pipeline = ovn_stage_get_pipeline(b->stage);
+    int a_table_id = ovn_stage_get_table(a->stage);
+    int b_table_id = ovn_stage_get_table(b->stage);
+    int cmp = (a_pipeline > b_pipeline ? 1
+               : a_pipeline < b_pipeline ? -1
+               : a_table_id > b_table_id ? 1
+               : a_table_id < b_table_id ? -1
+               : a->priority > b->priority ? -1
+               : a->priority < b->priority ? 1
+               : strcmp(a->match, b->match));
+    return cmp ? cmp : strcmp(a->actions, b->actions);
+}
+
+static void
+ctrl_lflow_list(struct hmap *lflows, struct hmap *gen_flows, bool print_uuid,
+                const struct sbrec_datapath_binding *dp,
+                struct ctl_context *ctx)
+{
+    size_t n_total_flows = hmap_count(lflows) + hmap_count(gen_flows);
+    struct ovn_ctrl_lflow **ctrl_lflows =
+        xmalloc(n_total_flows * sizeof *ctrl_lflows);
+
+    struct ovn_ctrl_lflow *f;
+    size_t i = 0;
+    HMAP_FOR_EACH (f, hmap_node, lflows) {
+        ctrl_lflows[i++] = f;
+    }
+
+    HMAP_FOR_EACH (f, hmap_node, gen_flows) {
+        ctrl_lflows[i++] = f;
+    }
+
+    ovs_assert(i == n_total_flows);
+
+    qsort(ctrl_lflows, n_total_flows, sizeof *ctrl_lflows,
+          sbctl_gen_lflow_cmp);
+
+    const struct ovn_ctrl_lflow *curr, *prev = NULL;
+    for (i = 0; i < n_total_flows; i++) {
+        curr = ctrl_lflows[i];
+
+        /* Print a header line for this datapath or pipeline, if we haven't
+         * already done so. */
+        if (!prev
+            || ovn_stage_get_pipeline(curr->stage) !=
+                ovn_stage_get_pipeline(prev->stage)) {
+            ds_put_cstr(&ctx->output, "Datapath: ");
+            print_datapath_name(dp, &ctx->output);
+            ds_put_format(&ctx->output, "("UUID_FMT")  Pipeline: %s\n",
+                          UUID_ARGS(&dp->header_.uuid),
+                          ovn_stage_get_pipeline(curr->stage) == P_IN ?
+                          "ingress" : "egress");
+        }
+
+        /* Print the flow. */
+        ds_put_cstr(&ctx->output, "  ");
+        print_uuid_part(&curr->uuid_, print_uuid, &ctx->output);
+        ds_put_format(
+            &ctx->output, "table=%-2"PRId8"(%-19s), priority=%-5"PRId16
+            ", match=(%s), action=(%s)\n",
+            ovn_stage_get_table(curr->stage),
+            ovn_stage_to_str(curr->stage),
+            curr->priority, curr->match,
+            curr->actions);
+        prev = curr;
+    }
+
+    free(ctrl_lflows);
+}
+
+static void
+cmd_ctrl_lflow_list(struct ctl_context *ctx)
+{
+    struct hmap gen_lswitch_flows = HMAP_INITIALIZER(&gen_lswitch_flows);
+    struct hmap gen_lrouter_flows = HMAP_INITIALIZER(&gen_lrouter_flows);
+
+    build_lswitch_generic_lflows(&gen_lswitch_flows);
+    build_lrouter_generic_lflows(&gen_lrouter_flows);
+
+    bool print_uuid = shash_find(&ctx->options, "--uuid") != NULL;
+
+    const struct sbrec_datapath_binding *dp = NULL;
+    if (ctx->argc > 1) {
+        const struct ovsdb_idl_row *row;
+        char *error = ctl_get_row(ctx, &sbrec_table_datapath_binding,
+                                  ctx->argv[1], false, &row);
+        if (error) {
+            ctl_error(ctx, "%s", error);
+            free(error);
+            return;
+        }
+
+        dp = (const struct sbrec_datapath_binding *)row;
+        if (dp) {
+            ctx->argc--;
+            ctx->argv++;
+        }
+    }
+
+    if (dp) {
+        struct hmap dp_flows = HMAP_INITIALIZER(&dp_flows);
+        ovn_ctrl_lflows_build_dp_lflows(&dp_flows, dp);
+        ctrl_lflow_list(&dp_flows, datapath_is_switch(dp) ?
+                        &gen_lswitch_flows : &gen_lrouter_flows,
+                        print_uuid, dp, ctx);
+        ovn_ctrl_lflows_destroy(&dp_flows);
+    } else {
+        SBREC_DATAPATH_BINDING_FOR_EACH (dp, ctx->idl) {
+            struct hmap dp_flows = HMAP_INITIALIZER(&dp_flows);
+            ovn_ctrl_lflows_build_dp_lflows(&dp_flows, dp);
+            ctrl_lflow_list(&dp_flows, datapath_is_switch(dp) ?
+                            &gen_lswitch_flows : &gen_lrouter_flows,
+                            print_uuid, dp, ctx);
+            ovn_ctrl_lflows_destroy(&dp_flows);
+        }
+    }
+
+    ovn_ctrl_lflows_destroy(&gen_lswitch_flows);
+    ovn_ctrl_lflows_destroy(&gen_lrouter_flows);
+}
+
 static void
 sbctl_ip_mcast_flush_switch(struct ctl_context *ctx,
                             const struct sbrec_datapath_binding *dp)
@@ -1387,6 +1521,9 @@ static const struct ctl_command_syntax sbctl_commands[] = {
      pre_get_info, cmd_lflow_list, NULL,
      "--uuid,--ovs?,--stats,--vflows?",
      RO}, /* Friendly alias for lflow-list */
+    {"ctrl-lflow-list", 0, INT_MAX, "[DATAPATH] [LFLOW...]",
+     pre_get_info, cmd_ctrl_lflow_list, NULL,
+     "--uuid,--ovs?,--stats,--vflows?", RO},
 
     /* IP multicast commands. */
     {"ip-multicast-flush", 0, 1, "SWITCH",

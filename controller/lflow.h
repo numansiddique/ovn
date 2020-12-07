@@ -54,6 +54,7 @@ struct sbrec_port_binding;
 struct simap;
 struct sset;
 struct uuid;
+struct ovn_ctrl_lflow;
 
 /* OpenFlow table numbers.
  *
@@ -179,4 +180,9 @@ bool lflow_add_flows_for_datapath(const struct sbrec_datapath_binding *,
 bool lflow_handle_flows_for_lport(const struct sbrec_port_binding *,
                                   struct lflow_ctx_in *,
                                   struct lflow_ctx_out *);
+
+void lflow_process_ctrl_lflows(struct hmap *ctrl_lflows,
+                               const struct sbrec_datapath_binding *,
+                               struct lflow_ctx_in *,
+                               struct lflow_ctx_out *);
 #endif /* controller/lflow.h */
