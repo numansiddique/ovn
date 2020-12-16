@@ -61,7 +61,7 @@ struct condition_aux {
     struct ovsdb_idl_index *sbrec_port_binding_by_name;
     const struct sbrec_chassis *chassis;
     const struct sset *active_tunnels;
-    const struct sbrec_logical_flow *lflow;
+    const struct uuid *lflow_uuid;
     /* Resource reference to store the port name referenced
      * in is_chassis_resident() to the logical flow. */
     struct lflow_resource_ref *lfrr;
@@ -148,7 +148,7 @@ is_chassis_resident_cb(const void *c_aux_, const char *port_name)
     char buf[16];
     get_unique_lport_key(dp_id, pb->tunnel_key, buf, sizeof(buf));
     lflow_resource_add(c_aux->lfrr, REF_TYPE_PORTBINDING, buf,
-                       &c_aux->lflow->header_.uuid);
+                       c_aux->lflow_uuid);
 
     if (strcmp(pb->type, "chassisredirect")) {
         /* for non-chassisredirect ports */
@@ -774,7 +774,7 @@ consider_logical_flow__(const struct sbrec_logical_flow *lflow,
         .sbrec_port_binding_by_name = l_ctx_in->sbrec_port_binding_by_name,
         .chassis = l_ctx_in->chassis,
         .active_tunnels = l_ctx_in->active_tunnels,
-        .lflow = lflow,
+        .lflow_uuid = &lflow->header_.uuid,
         .lfrr = l_ctx_out->lfrr,
     };
 
