@@ -36,6 +36,7 @@
 #include "if-status.h"
 #include "ip-mcast.h"
 #include "openvswitch/hmap.h"
+#include "ldata.h"
 #include "lflow.h"
 #include "lflow-cache.h"
 #include "lib/vswitch-idl.h"
@@ -47,9 +48,12 @@
 #include "openvswitch/vlog.h"
 #include "ovn/actions.h"
 #include "ovn/features.h"
+#include "lflow-generate.h"
 #include "lib/chassis-index.h"
 #include "lib/extend-table.h"
 #include "lib/ip-mcast-index.h"
+#include "lib/lb.h"
+#include "lib/lflow.h"
 #include "lib/mcast-group-index.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
@@ -123,15 +127,6 @@ struct pending_pkt {
 
 /* Registered ofctrl seqno type for nb_cfg propagation. */
 static size_t ofctrl_seq_type_nb_cfg;
-
-struct local_datapath *
-get_local_datapath(const struct hmap *local_datapaths, uint32_t tunnel_key)
-{
-    struct hmap_node *node = hmap_first_with_hash(local_datapaths, tunnel_key);
-    return (node
-            ? CONTAINER_OF(node, struct local_datapath, hmap_node)
-            : NULL);
-}
 
 uint32_t
 get_tunnel_type(const char *name)
@@ -1020,6 +1015,9 @@ struct ed_type_runtime_data {
     struct sset egress_ifaces;
     struct smap local_iface_ids;
 
+    /* Load balancer data - hmap of 'struct local_load_balancer'. */
+    struct hmap local_load_balancers;
+
     /* Tracked data. See below for more details and comments. */
     bool tracked;
     bool local_lports_changed;
@@ -1033,14 +1031,14 @@ struct ed_type_runtime_data {
  *
  *  ------------------------------------------------------------------------
  * |                      | This is a hmap of                               |
- * |                      | 'struct tracked_binding_datapath' defined in    |
+ * |                      | 'struct tracked_datapath' defined in            |
  * |                      | binding.h. Runtime data handlers for OVS        |
  * |                      | Interface and Port Binding changes store the    |
  * | @tracked_dp_bindings | changed datapaths (datapaths added/removed from |
  * |                      | local_datapaths) and changed port bindings      |
- * |                      | (added/updated/deleted in 'lbinding_data').    |
+ * |                      | (added/updated/deleted in 'lbinding_data').     |
  * |                      | So any changes to the runtime data -            |
- * |                      | local_datapaths and lbinding_data is captured  |
+ * |                      | local_datapaths and lbinding_data is captured   |
  * |                      | here.                                           |
  *  ------------------------------------------------------------------------
  * |                      | This is a bool which represents if the runtime  |
@@ -1067,7 +1065,7 @@ struct ed_type_runtime_data {
  *
  *  ---------------------------------------------------------------------
  * | local_datapaths  | The changes to these runtime data is captured in |
- * | lbinding_data   | the @tracked_dp_bindings indirectly and hence it |
+ * | lbinding_data   | the @tracked_dp_bindings indirectly and hence it  |
  * | local_lport_ids  | is not tracked explicitly.                       |
  *  ---------------------------------------------------------------------
  * | local_iface_ids  | This is used internally within the runtime data  |
@@ -1092,7 +1090,7 @@ en_runtime_data_clear_tracked_data(void *data_)
 {
     struct ed_type_runtime_data *data = data_;
 
-    binding_tracked_dp_destroy(&data->tracked_dp_bindings);
+    tracked_datapaths_destroy(&data->tracked_dp_bindings);
     hmap_init(&data->tracked_dp_bindings);
     data->local_lports_changed = false;
     data->tracked = false;
@@ -1111,6 +1109,7 @@ en_runtime_data_init(struct engine_node *node OVS_UNUSED,
     sset_init(&data->egress_ifaces);
     smap_init(&data->local_iface_ids);
     local_binding_data_init(&data->lbinding_data);
+    hmap_init(&data->local_load_balancers);
 
     /* Init the tracked data. */
     hmap_init(&data->tracked_dp_bindings);
@@ -1128,15 +1127,9 @@ en_runtime_data_cleanup(void *data)
     sset_destroy(&rt_data->active_tunnels);
     sset_destroy(&rt_data->egress_ifaces);
     smap_destroy(&rt_data->local_iface_ids);
-    struct local_datapath *cur_node, *next_node;
-    HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node,
-                        &rt_data->local_datapaths) {
-        free(cur_node->peer_ports);
-        hmap_remove(&rt_data->local_datapaths, &cur_node->hmap_node);
-        free(cur_node);
-    }
-    hmap_destroy(&rt_data->local_datapaths);
+    local_datapaths_destroy(&rt_data->local_datapaths);
     local_binding_data_destroy(&rt_data->lbinding_data);
+    local_load_balancers_destroy(&rt_data->local_load_balancers);
 }
 
 static void
@@ -1240,19 +1233,16 @@ en_runtime_data_run(struct engine_node *node, void *data)
         /* don't cleanup since there is no data yet */
         first_run = false;
     } else {
-        struct local_datapath *cur_node, *next_node;
-        HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node, local_datapaths) {
-            free(cur_node->peer_ports);
-            hmap_remove(local_datapaths, &cur_node->hmap_node);
-            free(cur_node);
-        }
-        hmap_clear(local_datapaths);
+        local_datapaths_destroy(local_datapaths);
         local_binding_data_destroy(&rt_data->lbinding_data);
+        local_load_balancers_destroy(&rt_data->local_load_balancers);
         sset_destroy(local_lports);
         sset_destroy(local_lport_ids);
         sset_destroy(active_tunnels);
         sset_destroy(&rt_data->egress_ifaces);
         smap_destroy(&rt_data->local_iface_ids);
+        hmap_init(local_datapaths);
+        hmap_init(&rt_data->local_load_balancers);
         sset_init(local_lports);
         sset_init(local_lport_ids);
         sset_init(active_tunnels);
@@ -1703,12 +1693,12 @@ port_groups_runtime_data_handler(struct engine_node *node, void *data)
                                                  pg_sb->name);
         ovs_assert(pg_lports);
 
-        struct tracked_binding_datapath *tdp;
+        struct tracked_datapath *tdp;
         bool need_update = false;
         HMAP_FOR_EACH (tdp, node, &rt_data->tracked_dp_bindings) {
             struct shash_node *shash_node;
             SHASH_FOR_EACH (shash_node, &tdp->lports) {
-                struct tracked_binding_lport *lport = shash_node->data;
+                struct tracked_lport *lport = shash_node->data;
                 if (sset_contains(pg_lports, lport->pb->logical_port)) {
                     /* At least one local port-binding change is related to the
                      * port_group, so the port_group_cs_local needs update. */
@@ -1862,9 +1852,9 @@ ct_zones_runtime_data_handler(struct engine_node *node, void *data OVS_UNUSED)
     }
 
     struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
-    struct tracked_binding_datapath *tdp;
+    struct tracked_datapath *tdp;
     HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
-        if (tdp->is_new) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
             /* A new datapath has been added. Fall back to full recompute. */
             return false;
         }
@@ -1935,6 +1925,426 @@ struct ed_type_lflow_output {
      * full recompute. */
     struct lflow_output_persistent_data pd;
 };
+
+struct ed_type_lflow_needs_generation {
+    /* Tracked data. */
+    bool tracked;
+    struct hmap tracked_datapaths;
+    struct hmap tracked_lbs;
+};
+
+static void *
+en_lflow_needs_generation_init(struct engine_node *node OVS_UNUSED,
+                               struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_lflow_needs_generation *data = xzalloc(sizeof *data);
+    hmap_init(&data->tracked_datapaths);
+    hmap_init(&data->tracked_lbs);
+    return data;
+}
+
+static void
+en_lflow_needs_generation_cleanup(void *data OVS_UNUSED)
+{
+
+}
+
+static void
+en_lflow_needs_generation_clear_tracked_data(void *data)
+{
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = false;
+    tracked_datapaths_destroy(&lflow_need_gen->tracked_datapaths);
+    hmap_init(&lflow_need_gen->tracked_datapaths);
+
+    tracked_lbs_destroy(&lflow_need_gen->tracked_lbs);
+    hmap_init(&lflow_need_gen->tracked_lbs);
+}
+
+static void
+en_lflow_needs_generation_run(struct engine_node *node OVS_UNUSED,
+                              void *data)
+{
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = false;
+
+    struct sbrec_load_balancer_table *lb_table =
+        (struct sbrec_load_balancer_table *)EN_OVSDB_GET(
+            engine_get_input("SB_load_balancer", node));
+
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    const struct sbrec_load_balancer *sb_lb;
+    SBREC_LOAD_BALANCER_TABLE_FOR_EACH (sb_lb, lb_table) {
+        local_load_balancer_add(&rt_data->local_load_balancers,
+                                &rt_data->local_datapaths, sb_lb);
+    }
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+static bool
+lflow_needs_generation_runtime_data_handler(struct engine_node *node,
+                                            void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    /* There is no tracked data. Fall back to full recompute of
+     * lflow_needs_generation. */
+    if (!rt_data->tracked) {
+        return false;
+    }
+
+    struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
+    if (hmap_is_empty(tracked_dp_bindings)) {
+        return true;
+    }
+
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = true;
+    struct tracked_datapath *tdp;
+
+    HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                   tdp->dp->tunnel_key);
+            ovs_assert(ld);
+            tracked_datapath_add(ld->datapath, TRACKED_RESOURCE_NEW,
+                                 &lflow_need_gen->tracked_datapaths);
+            for (size_t i = 0; i < ld->datapath->n_load_balancers; i++) {
+                const struct sbrec_load_balancer *sb_lb =
+                    ld->datapath->load_balancers[i];
+                struct local_load_balancer *local_lb =
+                    local_load_balancer_get(&rt_data->local_load_balancers,
+                                            &sb_lb->header_.uuid);
+                if (!local_lb) {
+                    local_lb = local_load_balancer_add(
+                        &rt_data->local_load_balancers,
+                        &rt_data->local_datapaths, sb_lb);
+                }
+                tracked_lb_add(local_lb, TRACKED_RESOURCE_NEW,
+                               &lflow_need_gen->tracked_lbs);
+            }
+        } else if (tdp->tracked_type == TRACKED_RESOURCE_UPDATED) {
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                   tdp->dp->tunnel_key);
+            if (!ld) {
+                continue;
+            }
+
+            struct shash_node *shash_node;
+            SHASH_FOR_EACH (shash_node, &tdp->lports) {
+                struct tracked_lport *lport = shash_node->data;
+                if (lport->tracked_type == TRACKED_RESOURCE_REMOVED) {
+                    tracked_datapath_lport_add(
+                        lport->pb, TRACKED_RESOURCE_REMOVED,
+                        &lflow_need_gen->tracked_datapaths);
+                } else {
+                    if (lflow_lport_needs_generation(ld, lport->pb)) {
+                        tracked_datapath_lport_add(
+                            lport->pb, TRACKED_RESOURCE_NEW,
+                            &lflow_need_gen->tracked_datapaths);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!hmap_is_empty(&lflow_need_gen->tracked_datapaths)) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+static bool
+lflow_needs_generation_datapath_binding_handler(struct engine_node *node,
+                                                void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+    struct sbrec_datapath_binding_table *dp_table =
+        (struct sbrec_datapath_binding_table *)EN_OVSDB_GET(
+            engine_get_input("SB_datapath_binding", node));
+
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = true;
+
+    const struct sbrec_datapath_binding *dp;
+    SBREC_DATAPATH_BINDING_TABLE_FOR_EACH_TRACKED (dp, dp_table) {
+        if (sbrec_datapath_binding_is_new(dp) ||
+                sbrec_datapath_binding_is_deleted(dp)) {
+            continue;
+        }
+
+        struct local_datapath *ldp = get_local_datapath(
+            &rt_data->local_datapaths, dp->tunnel_key);
+        if (ldp && lflow_datapath_needs_generation(ldp)) {
+            tracked_datapath_add(ldp->datapath, TRACKED_RESOURCE_NEW,
+                                 &lflow_need_gen->tracked_datapaths);
+        }
+    }
+
+    if (!hmap_is_empty(&lflow_need_gen->tracked_datapaths)) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+static bool
+lflow_needs_generation_port_binding_handler(struct engine_node *node,
+                                            void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+    struct sbrec_port_binding_table *pb_table =
+        (struct sbrec_port_binding_table *)EN_OVSDB_GET(
+            engine_get_input("SB_port_binding", node));
+
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = true;
+
+    const struct sbrec_port_binding *pb;
+    SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, pb_table) {
+        struct local_datapath *ldp;
+        ldp = get_local_datapath(&rt_data->local_datapaths,
+                                 pb->datapath->tunnel_key);
+        if (!ldp) {
+            continue;
+        }
+
+        if (sbrec_port_binding_is_deleted(pb)) {
+            tracked_datapath_lport_add(pb, TRACKED_RESOURCE_REMOVED,
+                                       &lflow_need_gen->tracked_datapaths);
+        } else {
+            if (lflow_lport_needs_generation(ldp, pb)) {
+                tracked_datapath_lport_add(
+                    pb, sbrec_port_binding_is_new(pb) ? TRACKED_RESOURCE_NEW :
+                    TRACKED_RESOURCE_UPDATED,
+                    &lflow_need_gen->tracked_datapaths);
+            }
+        }
+    }
+
+    if (!hmap_is_empty(&lflow_need_gen->tracked_datapaths)) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+static bool
+lflow_needs_generation_load_balancer_handler(struct engine_node *node  OVS_UNUSED,
+                                             void *data OVS_UNUSED)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+    struct sbrec_load_balancer_table *lb_table =
+        (struct sbrec_load_balancer_table *)EN_OVSDB_GET(
+            engine_get_input("SB_load_balancer", node));
+
+    struct ed_type_lflow_needs_generation *lflow_need_gen = data;
+    lflow_need_gen->tracked = true;
+
+    const struct sbrec_load_balancer *sb_lb;
+    SBREC_LOAD_BALANCER_TABLE_FOR_EACH_TRACKED (sb_lb, lb_table) {
+        struct local_load_balancer *local_lb;
+        if (sbrec_load_balancer_is_deleted(sb_lb)) {
+            local_lb = local_load_balancer_get(&rt_data->local_load_balancers,
+                                               &sb_lb->header_.uuid);
+            if (local_lb) {
+                tracked_lb_add(local_lb, TRACKED_RESOURCE_REMOVED,
+                               &lflow_need_gen->tracked_lbs);
+            }
+        } else {
+            local_lb = local_load_balancer_get(&rt_data->local_load_balancers,
+                                               &sb_lb->header_.uuid);
+            if (!local_lb) {
+                local_lb = local_load_balancer_add(
+                    &rt_data->local_load_balancers,
+                    &rt_data->local_datapaths, sb_lb);
+                if (local_lb) {
+                    tracked_lb_add(local_lb, TRACKED_RESOURCE_NEW,
+                                   &lflow_need_gen->tracked_lbs);
+                }
+            } else {
+                if (lflow_load_balancer_needs_gen(local_lb)) {
+                    tracked_lb_add(local_lb, TRACKED_RESOURCE_UPDATED,
+                                   &lflow_need_gen->tracked_lbs);
+                }
+            }
+        }
+    }
+
+    if (!hmap_is_empty(&lflow_need_gen->tracked_lbs)) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+struct ed_type_lflow_generate {
+    struct hmap generic_lswitch_lflows;
+    struct hmap generic_lrouter_lflows;
+
+    /* Tracked data. */
+    bool tracked;
+    struct hmap tracked_datapaths;
+    struct hmap tracked_lbs;
+};
+
+static void *
+en_lflow_generate_init(struct engine_node *node OVS_UNUSED,
+                       struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_lflow_generate *data = xzalloc(sizeof *data);
+
+    hmap_init(&data->generic_lswitch_lflows);
+    hmap_init(&data->generic_lrouter_lflows);
+
+    build_lswitch_generic_lflows(&data->generic_lswitch_lflows);
+    build_lrouter_generic_lflows(&data->generic_lrouter_lflows);
+
+    hmap_init(&data->tracked_datapaths);
+    hmap_init(&data->tracked_lbs);
+    return data;
+}
+
+static void
+en_lflow_generate_cleanup(void *data)
+{
+    struct ed_type_lflow_generate *lflow_generate_data = data;
+
+    ovn_ctrl_lflows_destroy(&lflow_generate_data->generic_lswitch_lflows);
+    ovn_ctrl_lflows_destroy(&lflow_generate_data->generic_lrouter_lflows);
+}
+
+static void
+en_lflow_generate_clear_tracked_data(void *data)
+{
+    struct ed_type_lflow_generate *lflow_gen = data;
+    lflow_gen->tracked = false;
+
+    tracked_datapaths_destroy(&lflow_gen->tracked_datapaths);
+    hmap_init(&lflow_gen->tracked_datapaths);
+
+    tracked_lbs_destroy(&lflow_gen->tracked_lbs);
+    hmap_init(&lflow_gen->tracked_lbs);
+}
+
+static void
+en_lflow_generate_run(struct engine_node *node OVS_UNUSED,
+                      void *data OVS_UNUSED)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    struct ed_type_lflow_generate *lflow_gen = data;
+    lflow_gen->tracked = false;
+
+    lflow_delete_generated_lflows(&rt_data->local_datapaths,
+                                  &rt_data->local_load_balancers);
+    lflow_generate_run(&rt_data->local_datapaths,
+                       &rt_data->local_load_balancers);
+
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+static bool
+lflow_generate_lflow_needs_generation_handler(struct engine_node *node,
+                                             void *data)
+{
+    struct ed_type_lflow_needs_generation *need_lflow_gen =
+        engine_get_input_data("lflow_needs_generation", node);
+
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    /* There is no tracked data. Fall back to full recompute of
+     * flow_output. */
+    if (!need_lflow_gen->tracked) {
+        return false;
+    }
+
+    if (hmap_is_empty(&need_lflow_gen->tracked_datapaths) &&
+        hmap_is_empty(&need_lflow_gen->tracked_lbs)) {
+        return true;
+    }
+
+    struct ed_type_lflow_generate *lflow_gen = data;
+    lflow_gen->tracked = true;
+
+    struct tracked_datapath *tdp;
+    HMAP_FOR_EACH (tdp, node, &need_lflow_gen->tracked_datapaths) {
+        struct local_datapath *ld =
+            get_local_datapath(&rt_data->local_datapaths, tdp->dp->tunnel_key);
+        ovs_assert(ld);
+
+        switch (tdp->tracked_type) {
+        case TRACKED_RESOURCE_NEW:
+            lflow_generate_datapath_flows(ld, true);
+            tracked_datapath_add(ld->datapath, TRACKED_RESOURCE_NEW,
+                                 &lflow_gen->tracked_datapaths);
+            break;
+
+        case TRACKED_RESOURCE_UPDATED: {
+            struct shash_node *shash_node;
+            SHASH_FOR_EACH (shash_node, &tdp->lports) {
+                struct tracked_lport *t_lport = shash_node->data;
+                if (t_lport->tracked_type == TRACKED_RESOURCE_REMOVED) {
+                    lflow_delete_generated_lport_lflows(t_lport->pb, ld);
+                    tracked_datapath_lport_add(
+                        t_lport->pb, TRACKED_RESOURCE_REMOVED,
+                        &lflow_gen->tracked_datapaths);
+                } else {
+                    lflow_generate_lport_flows(t_lport->pb, ld);
+                    tracked_datapath_lport_add(t_lport->pb,
+                                               TRACKED_RESOURCE_NEW,
+                                               &lflow_gen->tracked_datapaths);
+                    }
+            }
+            break;
+        }
+        case TRACKED_RESOURCE_REMOVED:
+            OVS_NOT_REACHED();
+        }
+    }
+
+    struct tracked_lb *tlb;
+    HMAP_FOR_EACH (tlb, node, &need_lflow_gen->tracked_lbs) {
+        switch (tlb->tracked_type) {
+        case TRACKED_RESOURCE_NEW:
+            lflow_generate_load_balancer_lflows(tlb->local_lb);
+            tracked_lb_add(tlb->local_lb, TRACKED_RESOURCE_NEW,
+                           &lflow_gen->tracked_lbs);
+            break;
+
+        case TRACKED_RESOURCE_UPDATED:
+            lflow_clear_generated_lb_lflows(tlb->local_lb);
+            lflow_generate_load_balancer_lflows(tlb->local_lb);
+            tracked_lb_add(tlb->local_lb, TRACKED_RESOURCE_UPDATED,
+                           &lflow_gen->tracked_lbs);
+            break;
+
+        case TRACKED_RESOURCE_REMOVED:
+            lflow_clear_generated_lb_lflows(tlb->local_lb);
+            tracked_lb_add(tlb->local_lb, TRACKED_RESOURCE_REMOVED,
+                           &lflow_gen->tracked_lbs);
+            break;
+        }
+    }
+
+    if (!hmap_is_empty(&lflow_gen->tracked_datapaths) ||
+            !hmap_is_empty(&lflow_gen->tracked_lbs)) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
 
 static void
 init_lflow_ctx(struct engine_node *node,
@@ -2079,6 +2489,8 @@ en_lflow_output_run(struct engine_node *node, void *data)
 {
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
+    struct ed_type_lflow_generate *lflow_gen_data =
+        engine_get_input_data("lflow_generate", node);
 
     struct ovsrec_open_vswitch_table *ovs_table =
         (struct ovsrec_open_vswitch_table *)EN_OVSDB_GET(
@@ -2128,6 +2540,7 @@ en_lflow_output_run(struct engine_node *node, void *data)
     struct lflow_ctx_in l_ctx_in;
     struct lflow_ctx_out l_ctx_out;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
+
     lflow_run(&l_ctx_in, &l_ctx_out);
 
     if (l_ctx_out.conj_id_overflow) {
@@ -2143,6 +2556,47 @@ en_lflow_output_run(struct engine_node *node, void *data)
         lflow_run(&l_ctx_in, &l_ctx_out);
         if (l_ctx_out.conj_id_overflow) {
             VLOG_WARN("Conjunction id overflow.");
+        }
+    }
+
+    /* Disable cachin and lfrr for processing controller lflows. */
+    l_ctx_out.lfrr = NULL;
+    l_ctx_out.lflow_cache = NULL;
+
+    struct local_datapath *ld;
+    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
+        lflow_process_ctrl_lflows(ld->active_lflows, ld->datapath,
+                                  &l_ctx_in, &l_ctx_out);
+
+        if (ld->is_switch) {
+            lflow_process_ctrl_lflows(&lflow_gen_data->generic_lswitch_lflows,
+                                      ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+        } else {
+            lflow_process_ctrl_lflows(&lflow_gen_data->generic_lrouter_lflows,
+                                      ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+        }
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &ld->lports) {
+            struct local_lport *lport = shash_node->data;
+            lflow_process_ctrl_lflows(lport->active_lflows,
+                                      lport->pb->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+        }
+
+        for (size_t i = 0; i < ld->datapath->n_load_balancers; i++) {
+            const struct sbrec_load_balancer *slb =
+                ld->datapath->load_balancers[i];
+            struct local_load_balancer *local_lb =
+                local_load_balancer_get(&rt_data->local_load_balancers,
+                                        &slb->header_.uuid);
+            ovs_assert(local_lb);
+            struct hmap *lflows = ld->is_switch ? local_lb->active_lswitch_lflows :
+                                   local_lb->active_lrouter_lflows;
+            lflow_process_ctrl_lflows(lflows, ld->datapath, &l_ctx_in,
+                                      &l_ctx_out);
         }
     }
 
@@ -2361,9 +2815,9 @@ lflow_output_runtime_data_handler(struct engine_node *node,
     struct ed_type_lflow_output *fo = data;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
 
-    struct tracked_binding_datapath *tdp;
+    struct tracked_datapath *tdp;
     HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
-        if (tdp->is_new) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
             if (!lflow_add_flows_for_datapath(tdp->dp, &l_ctx_in,
                                               &l_ctx_out)) {
                 return false;
@@ -2371,7 +2825,7 @@ lflow_output_runtime_data_handler(struct engine_node *node,
         } else {
             struct shash_node *shash_node;
             SHASH_FOR_EACH (shash_node, &tdp->lports) {
-                struct tracked_binding_lport *lport = shash_node->data;
+                struct tracked_lport *lport = shash_node->data;
                 if (!lflow_handle_flows_for_lport(lport->pb, &l_ctx_in,
                                                   &l_ctx_out)) {
                     return false;
@@ -2416,6 +2870,135 @@ lflow_output_sb_fdb_handler(struct engine_node *node, void *data)
 
     engine_set_node_state(node, EN_UPDATED);
     return handled;
+}
+
+static bool
+lflow_output_lflow_generate_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_lflow_generate *lflow_gen_data =
+        engine_get_input_data("lflow_generate", node);
+
+    if (!lflow_gen_data->tracked) {
+        return false;
+    }
+
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+    struct ed_type_lflow_output *fo = data;
+
+    struct lflow_ctx_in l_ctx_in;
+    struct lflow_ctx_out l_ctx_out;
+    init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
+
+    /* Disable cachin and lfrr for processing controller lflows. */
+    l_ctx_out.lfrr = NULL;
+    l_ctx_out.lflow_cache = NULL;
+
+    struct tracked_datapath *tdp;
+    HMAP_FOR_EACH (tdp, node, &lflow_gen_data->tracked_datapaths) {
+        struct local_datapath *ldp =
+            get_local_datapath(&rt_data->local_datapaths, tdp->dp->tunnel_key);
+        ovs_assert(ldp);
+
+        /* Right now this cannot happen.  When a local datapath is removed,
+         * it should result in full recompute. */
+        ovs_assert(tdp->tracked_type != TRACKED_RESOURCE_REMOVED);
+
+        if (!hmap_is_empty(ldp->cleared_lflows)) {
+            lflow_remove_ctrl_lflows(ldp->cleared_lflows, &fo->flow_table);
+            ovn_ctrl_lflows_clear(ldp->cleared_lflows);
+        }
+
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
+            lflow_process_ctrl_lflows(ldp->active_lflows, ldp->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+
+            if (ldp->is_switch) {
+                lflow_process_ctrl_lflows(
+                    &lflow_gen_data->generic_lswitch_lflows,
+                    ldp->datapath, &l_ctx_in, &l_ctx_out);
+            } else {
+                lflow_process_ctrl_lflows(
+                    &lflow_gen_data->generic_lrouter_lflows,
+                    ldp->datapath, &l_ctx_in, &l_ctx_out);
+            }
+
+            struct shash_node *shash_node;
+            SHASH_FOR_EACH (shash_node, &ldp->lports) {
+                struct local_lport *dp_lport = shash_node->data;
+                if (!hmap_is_empty(dp_lport->cleared_lflows)) {
+                    lflow_remove_ctrl_lflows(dp_lport->cleared_lflows,
+                                             &fo->flow_table);
+                    ovn_ctrl_lflows_clear(dp_lport->cleared_lflows);
+                }
+                lflow_process_ctrl_lflows(dp_lport->active_lflows,
+                                          dp_lport->pb->datapath,
+                                          &l_ctx_in, &l_ctx_out);
+            }
+        } else {
+            struct shash_node *shash_node;
+            SHASH_FOR_EACH (shash_node, &tdp->lports) {
+                struct tracked_lport *t_lport = shash_node->data;
+                struct local_lport *dp_lport =
+                    local_datapath_get_lport(ldp, t_lport->pb->logical_port);
+                ovs_assert(dp_lport);
+                if (!hmap_is_empty(dp_lport->cleared_lflows)) {
+                    lflow_remove_ctrl_lflows(dp_lport->cleared_lflows,
+                                             &fo->flow_table);
+                    ovn_ctrl_lflows_clear(dp_lport->cleared_lflows);
+                }
+
+                if (t_lport->tracked_type == TRACKED_RESOURCE_REMOVED) {
+                    local_datapath_remove_lport(ldp,
+                                                dp_lport->pb->logical_port);
+                } else {
+                    lflow_process_ctrl_lflows(dp_lport->active_lflows,
+                                              dp_lport->pb->datapath,
+                                              &l_ctx_in, &l_ctx_out);
+                }
+            }
+        }
+    }
+
+    struct tracked_lb *tlb;
+    HMAP_FOR_EACH (tlb, node, &lflow_gen_data->tracked_lbs) {
+        if (!hmap_is_empty(tlb->local_lb->cleared_lswitch_lflows)) {
+            lflow_remove_ctrl_lflows(
+                tlb->local_lb->cleared_lswitch_lflows, &fo->flow_table);
+            ovn_ctrl_lflows_clear(tlb->local_lb->cleared_lswitch_lflows);
+        }
+
+        if (!hmap_is_empty(tlb->local_lb->cleared_lrouter_lflows)) {
+            lflow_remove_ctrl_lflows(
+                tlb->local_lb->cleared_lrouter_lflows, &fo->flow_table);
+            ovn_ctrl_lflows_clear(tlb->local_lb->cleared_lrouter_lflows);
+        }
+
+        if (tlb->tracked_type == TRACKED_RESOURCE_REMOVED) {
+            local_load_balancer_remove(&rt_data->local_load_balancers,
+                                       tlb->local_lb);
+        } else {
+            const struct sbrec_load_balancer *slb = tlb->local_lb->ovn_lb->slb;
+
+            for (size_t i = 0; i < slb->n_datapaths; i++) {
+                struct local_datapath *ldp =
+                    get_local_datapath(&rt_data->local_datapaths,
+                                       slb->datapaths[i]->tunnel_key);
+                if (!ldp) {
+                    continue;
+                }
+
+                struct hmap *lflows =
+                    ldp->is_switch ? tlb->local_lb->active_lswitch_lflows :
+                    tlb->local_lb->active_lrouter_lflows;
+                lflow_process_ctrl_lflows(lflows, ldp->datapath, &l_ctx_in,
+                                          &l_ctx_out);
+            }
+        }
+    }
+
+    engine_set_node_state(node, EN_UPDATED);
+    return true;
 }
 
 struct ed_type_pflow_output {
@@ -2838,6 +3421,9 @@ main(int argc, char *argv[])
     ENGINE_NODE(flow_output, "flow_output");
     ENGINE_NODE(addr_sets, "addr_sets");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(port_groups, "port_groups");
+    ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lflow_needs_generation,
+                                      "lflow_needs_generation");
+    ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lflow_generate, "lflow_generate");
 
 #define SB_NODE(NAME, NAME_STR) ENGINE_NODE_SB(NAME, NAME_STR);
     SB_NODES
@@ -2883,6 +3469,8 @@ main(int argc, char *argv[])
                      lflow_output_addr_sets_handler);
     engine_add_input(&en_lflow_output, &en_port_groups,
                      lflow_output_port_groups_handler);
+    engine_add_input(&en_lflow_output, &en_lflow_generate,
+                     lflow_output_lflow_generate_handler);
     engine_add_input(&en_lflow_output, &en_runtime_data,
                      lflow_output_runtime_data_handler);
 
@@ -2926,6 +3514,20 @@ main(int argc, char *argv[])
                      ct_zones_datapath_binding_handler);
     engine_add_input(&en_ct_zones, &en_runtime_data,
                      ct_zones_runtime_data_handler);
+
+    engine_add_input(&en_lflow_needs_generation, &en_runtime_data,
+                     lflow_needs_generation_runtime_data_handler);
+    engine_add_input(&en_lflow_needs_generation, &en_sb_datapath_binding,
+                     lflow_needs_generation_datapath_binding_handler);
+    engine_add_input(&en_lflow_needs_generation, &en_sb_port_binding,
+                     lflow_needs_generation_port_binding_handler);
+    engine_add_input(&en_lflow_needs_generation, &en_sb_load_balancer,
+                     lflow_needs_generation_load_balancer_handler);
+
+    engine_add_input(&en_lflow_generate, &en_lflow_needs_generation,
+                     lflow_generate_lflow_needs_generation_handler);
+    engine_add_input(&en_lflow_generate, &en_runtime_data,
+                     engine_noop_handler);
 
     engine_add_input(&en_runtime_data, &en_ofctrl_is_connected, NULL);
 

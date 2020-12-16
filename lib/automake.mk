@@ -29,7 +29,11 @@ lib_libovn_la_SOURCES = \
 	lib/inc-proc-eng.c \
 	lib/inc-proc-eng.h \
 	lib/lb.c \
-	lib/lb.h
+	lib/lb.h \
+	lib/lflow.c \
+	lib/lflow.h \
+	lib/ldata.c \
+	lib/ldata.h
 nodist_lib_libovn_la_SOURCES = \
 	lib/ovn-dirs.c \
 	lib/ovn-nb-idl.c \

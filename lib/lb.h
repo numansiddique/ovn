@@ -55,6 +55,7 @@ struct ovn_lb_vip {
     struct ovn_lb_backend *backends;
     size_t n_backends;
     bool empty_backend_rej;
+    char *backend_ips;
 };
 
 struct ovn_lb_backend {
@@ -99,6 +100,7 @@ struct ovn_controller_lb {
                                               * as source for hairpinned
                                               * traffic.
                                               */
+    char *selection_fields;
 };
 
 struct ovn_controller_lb *ovn_controller_lb_create(

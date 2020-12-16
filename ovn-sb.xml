@@ -2630,6 +2630,12 @@ tcp.flags = RST;
       </p>
     </column>
 
+    <column name="options">
+      <p>
+        Options.
+      </p>
+    </column>
+
     <group title="OVN_Northbound Relationship">
       <p>
         Each row in <ref table="Datapath_Binding"/> is associated with some
@@ -2870,6 +2876,12 @@ tcp.flags = RST;
           A VM interface would ordinarily have a single Ethernet address.  A
           gateway port might initially only have <code>unknown</code>, and then
           add MAC addresses to the set as it learns new source addresses.
+        </p>
+      </column>
+
+      <column name="port_security">
+        <p>
+          Port security addresses.
         </p>
       </column>
 
@@ -4298,6 +4310,10 @@ tcp.flags = RST;
 
     <column name="datapaths">
       Datapaths to which this load balancer applies to.
+    </column>
+
+    <column name="selection_fields">
+      Selection fields.
     </column>
 
     <group title="Load_Balancer options">

@@ -80,6 +80,8 @@ bool extract_sbrec_binding_first_mac(const struct sbrec_port_binding *binding,
 
 bool extract_lrp_networks__(char *mac, char **networks, size_t n_networks,
                             struct lport_addresses *laddrs);
+void lport_addr_add_ip6ddr(struct lport_addresses *laddrs,
+                           struct in6_addr addr, unsigned int plen);
 
 bool lport_addresses_is_empty(struct lport_addresses *);
 void destroy_lport_addresses(struct lport_addresses *);
@@ -278,5 +280,35 @@ BUILD_ASSERT_DECL(SCTP_INIT_CHUNK_LEN == sizeof(struct sctp_init_chunk));
 void ddlog_warn(const char *msg);
 void ddlog_err(const char *msg);
 #endif
+
+struct sbrec_port_binding;
+struct ovsdb_idl_index;
+
+const struct sbrec_port_binding *lport_lookup_by_name(
+    struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const char *name);
+
+const struct sbrec_port_binding *lport_get_peer(
+    const struct sbrec_port_binding *pb,
+    struct ovsdb_idl_index *sbrec_port_binding_by_name);
+
+/* Corresponds to each Port_Binding.type. */
+enum en_lport_type {
+    LP_UNKNOWN,
+    LP_VIF,
+    LP_CONTAINER,
+    LP_PATCH,
+    LP_L3GATEWAY,
+    LP_LOCALNET,
+    LP_LOCALPORT,
+    LP_L2GATEWAY,
+    LP_VTEP,
+    LP_CHASSISREDIRECT,
+    LP_VIRTUAL,
+    LP_EXTERNAL,
+    LP_REMOTE
+};
+
+enum en_lport_type get_lport_type(const struct sbrec_port_binding *);
 
 #endif

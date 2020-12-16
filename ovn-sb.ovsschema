@@ -1,7 +1,7 @@
 {
     "name": "OVN_Southbound",
-    "version": "20.18.0",
-    "cksum": "1816525029 26536",
+    "version": "21.1.0",
+    "cksum": "3048733342 27198",
     "tables": {
         "SB_Global": {
             "columns": {
@@ -171,6 +171,9 @@
                                                    "refType": "weak"},
                                             "min": 0,
                                             "max": "unlimited"}},
+                "options": {
+                    "type": {"key": "string", "value": "string",
+                             "min": 0, "max": "unlimited"}},
                 "external_ids": {
                     "type": {"key": "string", "value": "string",
                              "min": 0, "max": "unlimited"}}},
@@ -222,6 +225,9 @@
                 "mac": {"type": {"key": "string",
                                  "min": 0,
                                  "max": "unlimited"}},
+                "port_security": {"type": {"key": "string",
+                                           "min": 0,
+                                           "max": "unlimited"}},
                 "nat_addresses": {"type": {"key": "string",
                                            "min": 0,
                                            "max": "unlimited"}},
@@ -487,6 +493,12 @@
                               "value": "string",
                               "min": 0,
                               "max": "unlimited"}},
+                "selection_fields": {
+                    "type": {"key": {"type": "string",
+                             "enum": ["set",
+                                ["eth_src", "eth_dst", "ip_src", "ip_dst",
+                                 "tp_src", "tp_dst"]]},
+                             "min": 0, "max": "unlimited"}},
                 "external_ids": {
                     "type": {"key": "string", "value": "string",
                              "min": 0, "max": "unlimited"}}},

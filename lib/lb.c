@@ -48,6 +48,7 @@ bool ovn_lb_vip_init(struct ovn_lb_vip *lb_vip, const char *lb_key,
     /* Format for backend ips: "IP1:port1,IP2:port2,...". */
     size_t n_backends = 0;
     size_t n_allocated_backends = 0;
+    lb_vip->backend_ips = xstrdup(lb_value);
     char *tokstr = xstrdup(lb_value);
     char *save_ptr = NULL;
     for (char *token = strtok_r(tokstr, ",", &save_ptr);
@@ -95,6 +96,7 @@ void ovn_lb_vip_destroy(struct ovn_lb_vip *vip)
         free(vip->backends[i].ip_str);
     }
     free(vip->backends);
+    free(vip->backend_ips);
 }
 
 static
@@ -276,6 +278,8 @@ ovn_controller_lb_create(const struct sbrec_load_balancer *sbrec_lb)
     SMAP_FOR_EACH (node, &sbrec_lb->vips) {
         struct ovn_lb_vip *lb_vip = &lb->vips[n_vips];
 
+        lb_vip->empty_backend_rej = smap_get_bool(&sbrec_lb->options,
+                                                  "reject", false);
         if (!ovn_lb_vip_init(lb_vip, node->key, node->value)) {
             continue;
         }
@@ -292,6 +296,28 @@ ovn_controller_lb_create(const struct sbrec_load_balancer *sbrec_lb)
                                            false);
     ovn_lb_get_hairpin_snat_ip(&sbrec_lb->header_.uuid, &sbrec_lb->options,
                                &lb->hairpin_snat_ips);
+
+    if (lb->slb->n_selection_fields) {
+        char *proto = NULL;
+        if (sbrec_lb->protocol && sbrec_lb->protocol[0]) {
+            proto = sbrec_lb->protocol;
+        }
+
+        struct ds sel_fields = DS_EMPTY_INITIALIZER;
+        for (size_t i = 0; i < lb->slb->n_selection_fields; i++) {
+            char *field = lb->slb->selection_fields[i];
+            if (!strcmp(field, "tp_src") && proto) {
+                ds_put_format(&sel_fields, "%s_src,", proto);
+            } else if (!strcmp(field, "tp_dst") && proto) {
+                ds_put_format(&sel_fields, "%s_dst,", proto);
+            } else {
+                ds_put_format(&sel_fields, "%s,", field);
+            }
+        }
+        ds_chomp(&sel_fields, ',');
+        lb->selection_fields = ds_steal_cstr(&sel_fields);
+    }
+
     return lb;
 }
 
@@ -303,5 +329,6 @@ ovn_controller_lb_destroy(struct ovn_controller_lb *lb)
     }
     free(lb->vips);
     destroy_lport_addresses(&lb->hairpin_snat_ips);
+    free(lb->selection_fields);
     free(lb);
 }
