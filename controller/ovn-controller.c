@@ -30,6 +30,7 @@
 #include "compiler.h"
 #include "daemon.h"
 #include "dirs.h"
+#include "dp-flow-mgr.h"
 #include "openvswitch/dynamic-string.h"
 #include "encaps.h"
 #include "fatal-signal.h"
@@ -1922,8 +1923,6 @@ struct lflow_output_persistent_data {
 };
 
 struct ed_type_lflow_output {
-    /* Logical flow table */
-    struct ovn_desired_flow_table flow_table;
     /* group ids for load balancing */
     struct ovn_extend_table group_table;
     /* meter ids for QoS */
@@ -2041,7 +2040,6 @@ init_lflow_ctx(struct engine_node *node,
     l_ctx_in->active_tunnels = &rt_data->active_tunnels;
     l_ctx_in->local_lport_ids = &rt_data->local_lport_ids;
 
-    l_ctx_out->flow_table = &fo->flow_table;
     l_ctx_out->group_table = &fo->group_table;
     l_ctx_out->meter_table = &fo->meter_table;
     l_ctx_out->lfrr = &fo->lflow_resource_ref;
@@ -2055,7 +2053,6 @@ en_lflow_output_init(struct engine_node *node OVS_UNUSED,
                      struct engine_arg *arg OVS_UNUSED)
 {
     struct ed_type_lflow_output *data = xzalloc(sizeof *data);
-    ovn_desired_flow_table_init(&data->flow_table);
     ovn_extend_table_init(&data->group_table);
     ovn_extend_table_init(&data->meter_table);
     data->pd.conj_id_ofs = 1;
@@ -2067,7 +2064,6 @@ static void
 en_lflow_output_cleanup(void *data)
 {
     struct ed_type_lflow_output *flow_output_data = data;
-    ovn_desired_flow_table_destroy(&flow_output_data->flow_table);
     ovn_extend_table_destroy(&flow_output_data->group_table);
     ovn_extend_table_destroy(&flow_output_data->meter_table);
     lflow_resource_destroy(&flow_output_data->lflow_resource_ref);
@@ -2102,7 +2098,6 @@ en_lflow_output_run(struct engine_node *node, void *data)
     ovs_assert(br_int && chassis);
 
     struct ed_type_lflow_output *fo = data;
-    struct ovn_desired_flow_table *lflow_table = &fo->flow_table;
     struct ovn_extend_table *group_table = &fo->group_table;
     struct ovn_extend_table *meter_table = &fo->meter_table;
     struct lflow_resource_ref *lfrr = &fo->lflow_resource_ref;
@@ -2111,7 +2106,6 @@ en_lflow_output_run(struct engine_node *node, void *data)
     if (first_run) {
         first_run = false;
     } else {
-        ovn_desired_flow_table_clear(lflow_table);
         ovn_extend_table_clear(group_table, false /* desired */);
         ovn_extend_table_clear(meter_table, false /* desired */);
         lflow_resource_clear(lfrr);
@@ -2128,18 +2122,19 @@ en_lflow_output_run(struct engine_node *node, void *data)
     struct lflow_ctx_in l_ctx_in;
     struct lflow_ctx_out l_ctx_out;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
+    dp_flow_switch_logical_oflow_tables();
     lflow_run(&l_ctx_in, &l_ctx_out);
 
     if (l_ctx_out.conj_id_overflow) {
         /* Conjunction ids overflow. There can be many holes in between.
          * Destroy lflow cache and call lflow_run() again. */
-        ovn_desired_flow_table_clear(lflow_table);
         ovn_extend_table_clear(group_table, false /* desired */);
         ovn_extend_table_clear(meter_table, false /* desired */);
         lflow_resource_clear(lfrr);
         fo->pd.conj_id_ofs = 1;
         lflow_cache_flush(fo->pd.lflow_cache);
         l_ctx_out.conj_id_overflow = false;
+        dp_flow_switch_logical_oflow_tables();
         lflow_run(&l_ctx_in, &l_ctx_out);
         if (l_ctx_out.conj_id_overflow) {
             VLOG_WARN("Conjunction id overflow.");
@@ -2175,7 +2170,8 @@ lflow_output_sb_logical_flow_handler(struct engine_node *node, void *data)
 }
 
 static bool
-lflow_output_sb_mac_binding_handler(struct engine_node *node, void *data)
+lflow_output_sb_mac_binding_handler(struct engine_node *node,
+                                    void *data OVS_UNUSED)
 {
     struct ovsdb_idl_index *sbrec_port_binding_by_name =
         engine_ovsdb_node_get_index(
@@ -2190,10 +2186,8 @@ lflow_output_sb_mac_binding_handler(struct engine_node *node, void *data)
         engine_get_input_data("runtime_data", node);
     const struct hmap *local_datapaths = &rt_data->local_datapaths;
 
-    struct ed_type_lflow_output *lfo = data;
-
     lflow_handle_changed_neighbors(sbrec_port_binding_by_name,
-            mac_binding_table, local_datapaths, &lfo->flow_table);
+            mac_binding_table, local_datapaths);
 
     engine_set_node_state(node, EN_UPDATED);
     return true;
@@ -2395,7 +2389,7 @@ lflow_output_sb_load_balancer_handler(struct engine_node *node, void *data)
     struct lflow_ctx_out l_ctx_out;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
 
-    bool handled = lflow_handle_changed_lbs(&l_ctx_in, &l_ctx_out);
+    bool handled = lflow_handle_changed_lbs(&l_ctx_in);
 
     engine_set_node_state(node, EN_UPDATED);
     return handled;
@@ -2412,16 +2406,11 @@ lflow_output_sb_fdb_handler(struct engine_node *node, void *data)
     struct lflow_ctx_out l_ctx_out;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
 
-    bool handled = lflow_handle_changed_fdbs(&l_ctx_in, &l_ctx_out);
+    bool handled = lflow_handle_changed_fdbs(&l_ctx_in);
 
     engine_set_node_state(node, EN_UPDATED);
     return handled;
 }
-
-struct ed_type_pflow_output {
-    /* Desired physical flows. */
-    struct ovn_desired_flow_table flow_table;
-};
 
 static void init_physical_ctx(struct engine_node *node,
                               struct ed_type_runtime_data *rt_data,
@@ -2491,50 +2480,37 @@ static void init_physical_ctx(struct engine_node *node,
 
 static void *
 en_pflow_output_init(struct engine_node *node OVS_UNUSED,
-                             struct engine_arg *arg OVS_UNUSED)
+                     struct engine_arg *arg OVS_UNUSED)
 {
-    struct ed_type_pflow_output *data = xzalloc(sizeof *data);
-    ovn_desired_flow_table_init(&data->flow_table);
-    return data;
+    return NULL;
 }
 
 static void
 en_pflow_output_cleanup(void *data OVS_UNUSED)
 {
-    struct ed_type_pflow_output *pfo = data;
-    ovn_desired_flow_table_destroy(&pfo->flow_table);
 }
 
 static void
-en_pflow_output_run(struct engine_node *node, void *data)
+en_pflow_output_run(struct engine_node *node, void *data OVS_UNUSED)
 {
-    struct ed_type_pflow_output *pfo = data;
-    struct ovn_desired_flow_table *pflow_table = &pfo->flow_table;
-    static bool first_run = true;
-    if (first_run) {
-        first_run = false;
-    } else {
-        ovn_desired_flow_table_clear(pflow_table);
-    }
-
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
 
+    dp_flow_switch_physical_oflow_tables();
+
     struct physical_ctx p_ctx;
     init_physical_ctx(node, rt_data, &p_ctx);
-    physical_run(&p_ctx, pflow_table);
+    physical_run(&p_ctx);
 
     engine_set_node_state(node, EN_UPDATED);
 }
 
 static bool
 pflow_output_sb_port_binding_handler(struct engine_node *node,
-                                     void *data)
+                                     void *data OVS_UNUSED)
 {
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
-
-    struct ed_type_pflow_output *pfo = data;
 
     struct physical_ctx p_ctx;
     init_physical_ctx(node, rt_data, &p_ctx);
@@ -2543,24 +2519,23 @@ pflow_output_sb_port_binding_handler(struct engine_node *node,
      * only. flow_output runtime data handler takes care of processing
      * logical flows for any port binding changes.
      */
-    physical_handle_port_binding_changes(&p_ctx, &pfo->flow_table);
+    physical_handle_port_binding_changes(&p_ctx);
 
     engine_set_node_state(node, EN_UPDATED);
     return true;
 }
 
 static bool
-pflow_output_sb_multicast_group_handler(struct engine_node *node, void *data)
+pflow_output_sb_multicast_group_handler(struct engine_node *node,
+                                        void *data OVS_UNUSED)
 {
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
 
-    struct ed_type_pflow_output *pfo = data;
-
     struct physical_ctx p_ctx;
     init_physical_ctx(node, rt_data, &p_ctx);
 
-    physical_handle_mc_group_changes(&p_ctx, &pfo->flow_table);
+    physical_handle_mc_group_changes(&p_ctx);
 
     engine_set_node_state(node, EN_UPDATED);
     return true;
@@ -2573,13 +2548,11 @@ pflow_output_ovs_iface_handler(struct engine_node *node OVS_UNUSED,
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
 
-    struct ed_type_pflow_output *pfo = data;
-
     struct physical_ctx p_ctx;
     init_physical_ctx(node, rt_data, &p_ctx);
 
     engine_set_node_state(node, EN_UPDATED);
-    return physical_handle_ovs_iface_changes(&p_ctx, &pfo->flow_table);
+    return physical_handle_ovs_iface_changes(&p_ctx);
 }
 
 static void *
@@ -2723,6 +2696,7 @@ main(int argc, char *argv[])
     patch_init();
     pinctrl_init();
     lflow_init();
+    dp_flow_tables_init();
 
     /* Connect to OVS OVSDB instance. */
     struct ovsdb_idl_loop ovs_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
@@ -2980,8 +2954,6 @@ main(int argc, char *argv[])
 
     struct ed_type_lflow_output *lflow_output_data =
         engine_get_internal_data(&en_lflow_output);
-    struct ed_type_lflow_output *pflow_output_data =
-        engine_get_internal_data(&en_pflow_output);
     struct ed_type_ct_zones *ct_zones_data =
         engine_get_internal_data(&en_ct_zones);
     struct ed_type_runtime_data *runtime_data =
@@ -3274,18 +3246,11 @@ main(int argc, char *argv[])
                         runtime_data ? &runtime_data->lbinding_data : NULL;
                     if_status_mgr_update(if_mgr, binding_data);
 
-                    lflow_output_data = engine_get_data(&en_lflow_output);
-                    pflow_output_data = engine_get_data(&en_pflow_output);
-                    if (lflow_output_data && pflow_output_data &&
-                        ct_zones_data) {
-                        ofctrl_put(&lflow_output_data->flow_table,
-                                   &pflow_output_data->flow_table,
-                                   &ct_zones_data->pending,
-                                   sbrec_meter_table_get(ovnsb_idl_loop.idl),
-                                   ofctrl_seqno_get_req_cfg(),
-                                   engine_node_changed(&en_lflow_output),
-                                   engine_node_changed(&en_pflow_output));
-                    }
+                    ofctrl_put(ct_zones_data ? &ct_zones_data->pending : NULL,
+                               sbrec_meter_table_get(ovnsb_idl_loop.idl),
+                               ofctrl_seqno_get_req_cfg(),
+                               engine_node_changed(&en_lflow_output),
+                               engine_node_changed(&en_pflow_output));
                     ofctrl_seqno_run(ofctrl_get_cur_cfg());
                     if_status_mgr_run(if_mgr, binding_data, !ovnsb_idl_txn,
                                       !ovs_idl_txn);
@@ -3451,6 +3416,7 @@ loop_done:
     free(ovn_version);
     unixctl_server_destroy(unixctl);
     lflow_destroy();
+    dp_flow_tables_destroy();
     ofctrl_destroy();
     pinctrl_destroy();
     patch_destroy();

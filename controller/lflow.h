@@ -148,7 +148,6 @@ struct lflow_ctx_in {
 };
 
 struct lflow_ctx_out {
-    struct ovn_desired_flow_table *flow_table;
     struct ovn_extend_table *group_table;
     struct ovn_extend_table *meter_table;
     struct lflow_resource_ref *lfrr;
@@ -168,10 +167,9 @@ bool lflow_handle_changed_ref(enum ref_type, const char *ref_name,
 void lflow_handle_changed_neighbors(
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
     const struct sbrec_mac_binding_table *,
-    const struct hmap *local_datapaths,
-    struct ovn_desired_flow_table *);
-bool lflow_handle_changed_lbs(struct lflow_ctx_in *, struct lflow_ctx_out *);
-bool lflow_handle_changed_fdbs(struct lflow_ctx_in *, struct lflow_ctx_out *);
+    const struct hmap *local_datapaths);
+bool lflow_handle_changed_lbs(struct lflow_ctx_in *);
+bool lflow_handle_changed_fdbs(struct lflow_ctx_in *);
 void lflow_destroy(void);
 
 bool lflow_add_flows_for_datapath(const struct sbrec_datapath_binding *,

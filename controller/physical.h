@@ -28,6 +28,7 @@
 #include "openvswitch/meta-flow.h"
 
 struct hmap;
+struct hmapx;
 struct ovsdb_idl_index;
 struct ovsrec_bridge;
 struct simap;
@@ -59,15 +60,13 @@ struct physical_ctx {
 };
 
 void physical_register_ovs_idl(struct ovsdb_idl *);
-void physical_run(struct physical_ctx *,
-                  struct ovn_desired_flow_table *);
-void physical_clear_unassoc_flows_with_db(struct ovn_desired_flow_table *);
-void physical_handle_port_binding_changes(struct physical_ctx *,
-                                          struct ovn_desired_flow_table *);
-void physical_handle_mc_group_changes(struct physical_ctx *,
-                                      struct ovn_desired_flow_table *);
-bool physical_handle_ovs_iface_changes(struct physical_ctx *,
-                                       struct ovn_desired_flow_table *);
+void physical_run(struct physical_ctx *);
+void physical_clear_unassoc_flows_with_db(void);
+void physical_clear_dp_flows(struct physical_ctx *p_ctx,
+                             struct hmapx *ct_updated_datapaths);
+void physical_handle_port_binding_changes(struct physical_ctx *);
+void physical_handle_mc_group_changes(struct physical_ctx *);
+bool physical_handle_ovs_iface_changes(struct physical_ctx *);
 bool get_tunnel_ofport(const char *chassis_name, char *encap_ip,
                        ofp_port_t *ofport);
 #endif /* controller/physical.h */
