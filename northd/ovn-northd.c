@@ -642,6 +642,12 @@ struct ovn_datapath {
     /* Multicast data. */
     struct mcast_info mcast_info;
 
+    /* Applies to only logical router datapath.
+     * True if logical router is a gateway router. i.e options:chassis is set.
+     * If this is true, then 'l3dgw_port' and 'l3redirect_port' will be
+     * ignored. */
+    bool is_gw_router;
+
     /* OVN northd only needs to know about the logical router gateway port for
      * NAT on a distributed router.  This "distributed gateway port" is
      * populated only when there is a gateway chassis specified for one of
@@ -938,6 +944,12 @@ lrouter_is_enabled(const struct nbrec_logical_router *lrouter)
     return !lrouter->enabled || *lrouter->enabled;
 }
 
+static bool
+lrouter_undnat_without_src_check(const struct nbrec_logical_router *nbr)
+{
+    return smap_get_bool(&nbr->options, "undnat_without_src_check", true);
+}
+
 static void
 init_ipam_info_for_datapath(struct ovn_datapath *od)
 {
@@ -1223,6 +1235,9 @@ join_datapaths(struct northd_context *ctx, struct hmap *datapaths,
         }
         init_mcast_info_for_datapath(od);
         init_nat_entries(od);
+        if (smap_get(&od->nbr->options, "chassis")) {
+            od->is_gw_router = true;
+        }
         ovs_list_push_back(lr_list, &od->lr_list);
     }
 }
@@ -8780,16 +8795,23 @@ add_router_lb_flow(struct hmap *lflows, struct ovn_datapath *od,
         ds_destroy(&unsnat_match);
     }
 
-    if (!od->l3dgw_port || !od->l3redirect_port || !lb_vip->n_backends) {
+    if ((!od->is_gw_router && (!od->l3dgw_port || !od->l3redirect_port)) ||
+          !lb_vip->n_backends) {
+        return;
+    }
+
+    if (od->is_gw_router && lrouter_undnat_without_src_check(od->nbr)) {
         return;
     }
 
     /* Add logical flows to UNDNAT the load balanced reverse traffic in
      * the router egress pipleine stage - S_ROUTER_OUT_UNDNAT if the logical
-     * router has a gateway router port associated.
+     * router has a gateway router port associated or if it's a gateway router
+     * with the options 'undnat_without_src_check' is set to false.
      */
     struct ds undnat_match = DS_EMPTY_INITIALIZER;
     ds_put_format(&undnat_match, "%s && (", ip_match);
+    uint16_t undnat_pri = 120;
 
     for (size_t i = 0; i < lb_vip->n_backends; i++) {
         struct ovn_lb_backend *backend = &lb_vip->backends[i];
@@ -8799,8 +8821,10 @@ add_router_lb_flow(struct hmap *lflows, struct ovn_datapath *od,
         if (backend->port) {
             ds_put_format(&undnat_match, " && %s.src == %d) || ",
                           proto, backend->port);
+            undnat_pri = 130;
         } else {
             ds_put_cstr(&undnat_match, ") || ");
+            undnat_pri = 120;
         }
     }
 
@@ -8808,21 +8832,17 @@ add_router_lb_flow(struct hmap *lflows, struct ovn_datapath *od,
     ds_chomp(&undnat_match, '|');
     ds_chomp(&undnat_match, '|');
     ds_chomp(&undnat_match, ' ');
-    ds_put_format(&undnat_match, ") && outport == %s && "
-                 "is_chassis_resident(%s)", od->l3dgw_port->json_key,
-                 od->l3redirect_port->json_key);
-    if (snat_type == FORCE_SNAT || snat_type == SKIP_SNAT) {
-        char *action = xasprintf("flags.%s_snat_for_lb = 1; ct_dnat;",
-                                 snat_type == SKIP_SNAT ? "skip" : "force");
-        ovn_lflow_add_with_hint(lflows, od, S_ROUTER_OUT_UNDNAT, 120,
-                                ds_cstr(&undnat_match), action,
-                                &lb->header_);
-        free(action);
+    if (od->is_gw_router) {
+        ds_put_char(&undnat_match, ')');
     } else {
-        ovn_lflow_add_with_hint(lflows, od, S_ROUTER_OUT_UNDNAT, 120,
-                                ds_cstr(&undnat_match), "ct_dnat;",
-                                &lb->header_);
+        ds_put_format(&undnat_match, ") && outport == %s && "
+                      "is_chassis_resident(%s)", od->l3dgw_port->json_key,
+                      od->l3redirect_port->json_key);
     }
+
+    ovn_lflow_add_with_hint(lflows, od, S_ROUTER_OUT_UNDNAT, undnat_pri,
+                            ds_cstr(&undnat_match), "ct_dnat;",
+                            &lb->header_);
 
     ds_destroy(&undnat_match);
 }
@@ -11425,20 +11445,32 @@ build_lrouter_out_undnat_flow(struct hmap *lflows, struct ovn_datapath *od,
     * Note that this only applies for NAT on a distributed router.
     * Undo DNAT on a gateway router is done in the ingress DNAT
     * pipeline stage. */
-    if (!od->l3dgw_port ||
-        (strcmp(nat->type, "dnat") && strcmp(nat->type, "dnat_and_snat"))) {
+    if (strcmp(nat->type, "dnat") && strcmp(nat->type, "dnat_and_snat")) {
+        return;
+    }
+
+    if (!od->is_gw_router && !od->l3dgw_port) {
+        return;
+    }
+
+    if (od->is_gw_router && lrouter_undnat_without_src_check(od->nbr)) {
         return;
     }
 
     ds_clear(match);
-    ds_put_format(match, "ip && ip%s.src == %s && outport == %s",
-                  is_v6 ? "6" : "4", nat->logical_ip,
-                  od->l3dgw_port->json_key);
-    if (!distributed && od->l3redirect_port) {
-        /* Flows for NAT rules that are centralized are only
-        * programmed on the gateway chassis. */
-        ds_put_format(match, " && is_chassis_resident(%s)",
-                      od->l3redirect_port->json_key);
+    if (od->is_gw_router) {
+        ds_put_format(match, "ip && ip%s.src == %s",
+                      is_v6 ? "6" : "4", nat->logical_ip);
+    } else {
+        ds_put_format(match, "ip && ip%s.src == %s && outport == %s",
+                    is_v6 ? "6" : "4", nat->logical_ip,
+                    od->l3dgw_port->json_key);
+        if (!distributed && od->l3redirect_port) {
+            /* Flows for NAT rules that are centralized are only
+            * programmed on the gateway chassis. */
+            ds_put_format(match, " && is_chassis_resident(%s)",
+                        od->l3redirect_port->json_key);
+        }
     }
     ds_clear(actions);
     if (distributed) {
@@ -11872,17 +11904,19 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
             }
         }
 
-        /* For gateway router, re-circulate every packet through
-         * the DNAT zone.  This helps with the following.
-         *
-         * Any packet that needs to be unDNATed in the reverse
-         * direction gets unDNATed. Ideally this could be done in
-         * the egress pipeline. But since the gateway router
-         * does not have any feature that depends on the source
-         * ip address being external IP address for IP routing,
-         * we can do it here, saving a future re-circulation. */
-        ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 50,
-                      "ip", "flags.loopback = 1; ct_dnat;");
+        if (lrouter_undnat_without_src_check(od->nbr)) {
+            /* For gateway router, re-circulate every packet through
+            * the DNAT zone.  This helps with the following.
+            *
+            * Any packet that needs to be unDNATed in the reverse
+            * direction gets unDNATed. Ideally this could be done in
+            * the egress pipeline. But since the gateway router
+            * does not have any feature that depends on the source
+            * ip address being external IP address for IP routing,
+            * we can do it here, saving a future re-circulation. */
+            ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 50,
+                          "ip", "flags.loopback = 1; ct_dnat;");
+        }
     }
 
     /* Load balancing and packet defrag are only valid on

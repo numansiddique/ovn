@@ -5575,7 +5575,8 @@ for (rp in &RouterPort(.router = &Router{._uuid = lr_uuid, .options = lr_options
 for (r in &Router(._uuid = lr_uuid,
                   .l3dgw_port = l3dgw_port,
                   .redirect_port_name = redirect_port_name,
-                  .is_gateway = is_gateway)
+                  .is_gateway = is_gateway,
+                  .undnat_without_src_check = undnat_without_src_check)
      if l3dgw_port.is_some() or is_gateway)
 {
     for (LogicalRouterNAT(.lr = lr_uuid, .nat = nat)) {
@@ -5762,16 +5763,19 @@ for (r in &Router(._uuid = lr_uuid,
              * Note that this only applies for NAT on a distributed router.
              * Undo DNAT on a gateway router is done in the ingress DNAT
              * pipeline stage. */
-            if ((nat.nat.__type == "dnat" or nat.nat.__type == "dnat_and_snat")) {
-                Some{var gwport} = l3dgw_port in
-                var __match =
-                    "ip && ${ipX}.src == ${nat.nat.logical_ip}"
-                    " && outport == ${json_string_escape(gwport.name)}" ++
-                    if (mac == None) {
-                        /* Flows for NAT rules that are centralized are only
-                         * programmed on the "redirect-chassis". */
-                        " && is_chassis_resident(${redirect_port_name})"
-                    } else { "" } in
+            if ((nat.nat.__type == "dnat" or nat.nat.__type == "dnat_and_snat")
+                and (l3dgw_port.is_some() or not undnat_without_src_check)) {
+                var __match = "ip && ${ipX}.src == ${nat.nat.logical_ip}" ++
+                    match (l3dgw_port) {
+                        Some {gwport} ->
+                            " && outport == ${json_string_escape(gwport.name)}" ++
+                            if (mac == None) {
+                                /* Flows for NAT rules that are centralized are only
+                                * programmed on the "redirect-chassis". */
+                                " && is_chassis_resident(${redirect_port_name})"
+                            } else { "" },
+                        _ -> ""
+                    } in
                 var actions =
                     match (mac) {
                         Some{mac_addr} -> "eth.src = ${mac_addr}; ",
@@ -5966,21 +5970,23 @@ for (r in &Router(._uuid = lr_uuid,
                                     .ips = lb_force_snat_ips,
                                     .context = "lb");
 
-        /* For gateway router, re-circulate every packet through
-        * the DNAT zone.  This helps with the following.
-        *
-        * Any packet that needs to be unDNATed in the reverse
-        * direction gets unDNATed. Ideally this could be done in
-        * the egress pipeline. But since the gateway router
-        * does not have any feature that depends on the source
-        * ip address being external IP address for IP routing,
-        * we can do it here, saving a future re-circulation. */
-        Flow(.logical_datapath = lr_uuid,
-             .stage            = s_ROUTER_IN_DNAT(),
-             .priority         = 50,
-             .__match          = "ip",
-             .actions          = "flags.loopback = 1; ct_dnat;",
-             .external_ids     = map_empty())
+        if (undnat_without_src_check) {
+            /* For gateway router, re-circulate every packet through
+            * the DNAT zone.  This helps with the following.
+            *
+            * Any packet that needs to be unDNATed in the reverse
+            * direction gets unDNATed. Ideally this could be done in
+            * the egress pipeline. But since the gateway router
+            * does not have any feature that depends on the source
+            * ip address being external IP address for IP routing,
+            * we can do it here, saving a future re-circulation. */
+            Flow(.logical_datapath = lr_uuid,
+                .stage            = s_ROUTER_IN_DNAT(),
+                .priority         = 50,
+                .__match          = "ip",
+                .actions          = "flags.loopback = 1; ct_dnat;",
+                .external_ids     = map_empty())
+        }
     }
 }
 
@@ -6000,6 +6006,7 @@ for (RouterLBVIP(
                             .l3dgw_port = l3dgw_port,
                             .redirect_port_name = redirect_port_name,
                             .is_gateway = is_gateway,
+                            .undnat_without_src_check = undnat_without_src_check,
                             .nats = nats},
         .lb = lb,
         .vip = vip,
@@ -6126,44 +6133,44 @@ for (RouterLBVIP(
                      .external_ids     = stage_hint(lb._uuid))
             };
 
-            Some{var gwport} = l3dgw_port in
-            /* Add logical flows to UNDNAT the load balanced reverse traffic in
-             * the router egress pipleine stage - S_ROUTER_OUT_UNDNAT if the logical
-             * router has a gateway router port associated.
-             */
-            var conds = {
-                var conds = vec_empty();
-                for (ip_str in string_split(backends, ",")) {
-                    match (ip_address_and_port_from_lb_key(ip_str)) {
-                        None -> () /* FIXME: put a break here */,
-                        Some{(ip_address_, port_)} -> conds.push(
-                            "(${ipX}.src == ${ip_address_}" ++
-                            if (port_ != 0) {
-                                " && ${proto}.src == ${port_})"
-                            } else {
-                                ")"
-                            })
-                    }
-                };
-                conds
-            } in
-            not conds.is_empty() in
-            var undnat_match =
-                "${ip_address.ipX()} && (" ++ conds.join(" || ") ++
-                ") && outport == ${json_string_escape(gwport.name)} && "
-                "is_chassis_resident(${redirect_port_name})" in
-            var action =
-                match (snat_for_lb) {
-                    SkipSNAT -> "flags.skip_snat_for_lb = 1; ct_dnat;",
-                    ForceSNAT -> "flags.force_snat_for_lb = 1; ct_dnat;",
-                    _ -> "ct_dnat;"
+            if (l3dgw_port.is_some() or not undnat_without_src_check) {
+                /* Add logical flows to UNDNAT the load balanced reverse traffic in
+                * the router egress pipleine stage - S_ROUTER_OUT_UNDNAT if the logical
+                * router has a gateway router port associated or if undnat_without_src_check
+                * is not set for gateway router.
+                */
+                var undnat_pri = if (port != 0) { 130 } else { 120 } in
+                var conds = {
+                    var conds = vec_empty();
+                    for (ip_str in string_split(backends, ",")) {
+                        match (ip_address_and_port_from_lb_key(ip_str)) {
+                            None -> () /* FIXME: put a break here */,
+                            Some{(ip_address_, port_)} -> conds.push(
+                                "(${ipX}.src == ${ip_address_}" ++
+                                if (port_ != 0) {
+                                    " && ${proto}.src == ${port_})"
+                                } else {
+                                    ")"
+                                })
+                        }
+                    };
+                    conds
                 } in
-            Flow(.logical_datapath = lr_uuid,
-                 .stage            = s_ROUTER_OUT_UNDNAT(),
-                 .priority         = 120,
-                 .__match          = undnat_match,
-                 .actions          = action,
-                 .external_ids     = stage_hint(lb._uuid))
+                not conds.is_empty() in
+                var undnat_match =
+                    "${ip_address.ipX()} && (" ++ conds.join(" || ") ++
+                    match (l3dgw_port) {
+                        Some {gwport} -> ") && outport == ${json_string_escape(gwport.name)} && "
+                                         "is_chassis_resident(${redirect_port_name})",
+                        _ -> ")"
+                    } in
+                Flow(.logical_datapath = lr_uuid,
+                    .stage            = s_ROUTER_OUT_UNDNAT(),
+                    .priority         = undnat_pri,
+                    .__match          = undnat_match,
+                    .actions          = "ct_dnat;",
+                    .external_ids     = stage_hint(lb._uuid))
+                }
         }
     }
 }

@@ -436,6 +436,8 @@ LogicalRouterLBs(lr, vec_empty()) :-
  *      related to NAT and load balancing.
  * `learn_from_arp_request` - whether ARP requests to addresses on the router
  *      should always be learned
+ * `undnat_without_src_check` - whether a single unDNAT flow can be added for the
+*       gateway router without the source match in 'lr_in_dnat' stage.
  */
 
 function chassis_redirect_name(port_name: string): string = "cr-${port_name}"
@@ -460,6 +462,7 @@ typedef Router = Router {
     lbs:                Vec<Intern<nb::Load_Balancer>>,
     mcast_cfg:          Intern<McastRouterCfg>,
     learn_from_arp_request: bool,
+    undnat_without_src_check: bool,
     force_lb_snat: bool,
 }
 
@@ -487,6 +490,7 @@ Router[Router{
         .lbs        = lbs,
         .mcast_cfg  = mcast_cfg,
         .learn_from_arp_request = learn_from_arp_request,
+        .undnat_without_src_check = undnat_without_src_check,
         .force_lb_snat = force_lb_snat}.intern()] :-
     lr in nb::Logical_Router(),
     lr.is_enabled(),
@@ -496,6 +500,7 @@ Router[Router{
     LogicalRouterSnatIPs(lr._uuid, snat_ips),
     mcast_cfg in &McastRouterCfg(.datapath = lr._uuid),
     var learn_from_arp_request = lr.options.get_bool_def("always_learn_from_arp_request", true),
+    var undnat_without_src_check = lr.options.get_bool_def("undnat_without_src_check", true),
     var force_lb_snat = lb_force_snat_router_ip(lr.options).
 
 /* RouterLB: many-to-many relation between logical routers and nb::LB */

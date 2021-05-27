@@ -2079,6 +2079,28 @@
         and other sources. This way, OVN and the other sources can make use of
         the same conntrack zone.
       </column>
+
+      <column name="options" key="undnat_without_src_check"
+          type='{"type": "boolean"}'>
+        <p>
+          This option applies only to the Gateway Routers.  If set to true
+          (which is the default value), <code>ovn-northd</code> will add
+          a single logical flow to unDNAT the reply traffic irrespective
+          of original direction traffic DNATted due to
+          <code>dnat_and_snat</code> entry or a load balancer.  This results
+          in extra conntrack lookup if the original direction traffic was
+          DNATted.  To avoid this, CMS can set this option to
+          <code>false</code>, in which case <code>ovn-northd</code> will add a
+          source match check before unDNATting.
+        </p>
+
+        <p>
+          Setting this to <code>false</code> will result in as many logical
+          flows as the backends of a load balancer associated with a Gateway
+          Router.  CMS should consider setting this option to true if there
+          are any scale concerns.
+        </p>
+      </column>
     </group>
 
     <group title="Common Columns">
