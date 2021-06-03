@@ -36,6 +36,7 @@
 #include "if-status.h"
 #include "ip-mcast.h"
 #include "openvswitch/hmap.h"
+#include "ldata.h"
 #include "lflow.h"
 #include "lflow-cache.h"
 #include "lib/vswitch-idl.h"
@@ -122,36 +123,6 @@ struct pending_pkt {
 
 /* Registered ofctrl seqno type for nb_cfg propagation. */
 static size_t ofctrl_seq_type_nb_cfg;
-
-struct local_datapath *
-get_local_datapath(const struct hmap *local_datapaths, uint32_t tunnel_key)
-{
-    struct hmap_node *node = hmap_first_with_hash(local_datapaths, tunnel_key);
-    return (node
-            ? CONTAINER_OF(node, struct local_datapath, hmap_node)
-            : NULL);
-}
-
-struct local_datapath *
-local_datapath_alloc(const struct sbrec_datapath_binding *dp)
-{
-    struct local_datapath *ld = xzalloc(sizeof *ld);
-    ld->datapath = dp;
-    ld->is_switch = datapath_is_switch(dp);
-    hmap_init(&ld->ctrl_lflows);
-    ovn_desired_flow_table_init(&ld->flow_table);
-
-    return ld;
-}
-
-static void
-local_datapath_destroy(struct local_datapath *ld)
-{
-    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows);
-    ovn_desired_flow_table_destroy(&ld->flow_table);
-    free(ld->peer_ports);
-    free(ld);
-}
 
 uint32_t
 get_tunnel_type(const char *name)
@@ -1003,14 +974,14 @@ struct ed_type_runtime_data {
  *
  *  ------------------------------------------------------------------------
  * |                      | This is a hmap of                               |
- * |                      | 'struct tracked_binding_datapath' defined in    |
+ * |                      | 'struct tracked_datapath' defined in            |
  * |                      | binding.h. Runtime data handlers for OVS        |
  * |                      | Interface and Port Binding changes store the    |
  * | @tracked_dp_bindings | changed datapaths (datapaths added/removed from |
  * |                      | local_datapaths) and changed port bindings      |
- * |                      | (added/updated/deleted in 'lbinding_data').    |
+ * |                      | (added/updated/deleted in 'lbinding_data').     |
  * |                      | So any changes to the runtime data -            |
- * |                      | local_datapaths and lbinding_data is captured  |
+ * |                      | local_datapaths and lbinding_data is captured   |
  * |                      | here.                                           |
  *  ------------------------------------------------------------------------
  * |                      | This is a bool which represents if the runtime  |
@@ -1037,7 +1008,7 @@ struct ed_type_runtime_data {
  *
  *  ---------------------------------------------------------------------
  * | local_datapaths  | The changes to these runtime data is captured in |
- * | lbinding_data   | the @tracked_dp_bindings indirectly and hence it |
+ * | lbinding_data   | the @tracked_dp_bindings indirectly and hence it  |
  * | local_lport_ids  | is not tracked explicitly.                       |
  *  ---------------------------------------------------------------------
  * | local_iface_ids  | This is used internally within the runtime data  |
@@ -1062,7 +1033,7 @@ en_runtime_data_clear_tracked_data(void *data_)
 {
     struct ed_type_runtime_data *data = data_;
 
-    binding_tracked_dp_destroy(&data->tracked_dp_bindings);
+    tracked_datapaths_destroy(&data->tracked_dp_bindings);
     hmap_init(&data->tracked_dp_bindings);
     data->local_lports_changed = false;
     data->tracked = false;
@@ -1098,13 +1069,7 @@ en_runtime_data_cleanup(void *data)
     sset_destroy(&rt_data->active_tunnels);
     sset_destroy(&rt_data->egress_ifaces);
     smap_destroy(&rt_data->local_iface_ids);
-    struct local_datapath *cur_node, *next_node;
-    HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node,
-                        &rt_data->local_datapaths) {
-        hmap_remove(&rt_data->local_datapaths, &cur_node->hmap_node);
-        local_datapath_destroy(cur_node);
-    }
-    hmap_destroy(&rt_data->local_datapaths);
+    local_datapaths_destroy(&rt_data->local_datapaths);
     local_binding_data_destroy(&rt_data->lbinding_data);
 }
 
@@ -1209,20 +1174,14 @@ en_runtime_data_run(struct engine_node *node, void *data)
         /* don't cleanup since there is no data yet */
         first_run = false;
     } else {
-        struct local_datapath *cur_node, *next_node;
-        HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node, local_datapaths) {
-            free(cur_node->peer_ports);
-            hmap_remove(local_datapaths, &cur_node->hmap_node);
-            ovn_ctrl_lflows_destroy(&cur_node->ctrl_lflows);
-            free(cur_node);
-        }
-        hmap_clear(local_datapaths);
+        local_datapaths_destroy(local_datapaths);
         local_binding_data_destroy(&rt_data->lbinding_data);
         sset_destroy(local_lports);
         sset_destroy(local_lport_ids);
         sset_destroy(active_tunnels);
         sset_destroy(&rt_data->egress_ifaces);
         smap_destroy(&rt_data->local_iface_ids);
+        hmap_init(local_datapaths);
         sset_init(local_lports);
         sset_init(local_lport_ids);
         sset_init(active_tunnels);
@@ -1669,12 +1628,12 @@ port_groups_runtime_data_handler(struct engine_node *node, void *data)
                                                  pg_sb->name);
         ovs_assert(pg_lports);
 
-        struct tracked_binding_datapath *tdp;
+        struct tracked_datapath *tdp;
         bool need_update = false;
         HMAP_FOR_EACH (tdp, node, &rt_data->tracked_dp_bindings) {
             struct shash_node *shash_node;
             SHASH_FOR_EACH (shash_node, &tdp->lports) {
-                struct tracked_binding_lport *lport = shash_node->data;
+                struct tracked_lport *lport = shash_node->data;
                 if (sset_contains(pg_lports, lport->pb->logical_port)) {
                     /* At least one local port-binding change is related to the
                      * port_group, so the port_group_cs_local needs update. */
@@ -1827,9 +1786,9 @@ ct_zones_runtime_data_handler(struct engine_node *node, void *data OVS_UNUSED)
     }
 
     struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
-    struct tracked_binding_datapath *tdp;
+    struct tracked_datapath *tdp;
     HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
-        if (tdp->is_new) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
             /* A new datapath has been added. Fall back to full recompute. */
             return false;
         }
@@ -1960,7 +1919,6 @@ en_lflow_generate_run(struct engine_node *node OVS_UNUSED,
     struct local_datapath *ld;
     HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
         ovn_ctrl_lflows_clear(&ld->ctrl_lflows);
-        ovn_desired_flow_table_clear(&ld->flow_table);
     }
 
     HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
@@ -2394,9 +2352,9 @@ lflow_output_runtime_data_handler(struct engine_node *node,
     struct ed_type_lflow_output *fo = data;
     init_lflow_ctx(node, rt_data, fo, &l_ctx_in, &l_ctx_out);
 
-    struct tracked_binding_datapath *tdp;
+    struct tracked_datapath *tdp;
     HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
-        if (tdp->is_new) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
             if (!lflow_add_flows_for_datapath(tdp->dp, &l_ctx_in,
                                               &l_ctx_out)) {
                 return false;
@@ -2404,7 +2362,7 @@ lflow_output_runtime_data_handler(struct engine_node *node,
         } else {
             struct shash_node *shash_node;
             SHASH_FOR_EACH (shash_node, &tdp->lports) {
-                struct tracked_binding_lport *lport = shash_node->data;
+                struct tracked_lport *lport = shash_node->data;
                 if (!lflow_handle_flows_for_lport(lport->pb, &l_ctx_in,
                                                   &l_ctx_out)) {
                     return false;

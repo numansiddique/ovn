@@ -270,4 +270,15 @@ void ddlog_warn(const char *msg);
 void ddlog_err(const char *msg);
 #endif
 
+struct sbrec_port_binding;
+struct ovsdb_idl_index;
+
+const struct sbrec_port_binding *lport_lookup_by_name(
+    struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const char *name);
+
+const struct sbrec_port_binding *lport_get_peer(
+    const struct sbrec_port_binding *pb,
+    struct ovsdb_idl_index *sbrec_port_binding_by_name);
+
 #endif

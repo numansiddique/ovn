@@ -785,3 +785,35 @@ ddlog_err(const char *msg)
     VLOG_ERR("%s", msg);
 }
 #endif
+
+const struct sbrec_port_binding *
+lport_lookup_by_name(struct ovsdb_idl_index *sbrec_port_binding_by_name,
+                     const char *name)
+{
+    struct sbrec_port_binding *pb = sbrec_port_binding_index_init_row(
+        sbrec_port_binding_by_name);
+    sbrec_port_binding_index_set_logical_port(pb, name);
+
+    const struct sbrec_port_binding *retval = sbrec_port_binding_index_find(
+        sbrec_port_binding_by_name, pb);
+
+    sbrec_port_binding_index_destroy_row(pb);
+
+    return retval;
+}
+
+const struct sbrec_port_binding *
+lport_get_peer(const struct sbrec_port_binding *pb,
+               struct ovsdb_idl_index *sbrec_port_binding_by_name)
+{
+    const char *peer_name = smap_get(&pb->options, "peer");
+
+    if (!peer_name) {
+        return NULL;
+    }
+
+    const struct sbrec_port_binding *peer;
+    peer = lport_lookup_by_name(sbrec_port_binding_by_name,
+                                peer_name);
+    return (peer && peer->datapath) ? peer : NULL;
+}
