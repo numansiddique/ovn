@@ -14,13 +14,8 @@
  */
 
 #include <config.h>
-#include "binding.h"
-#include "ha-chassis.h"
-#include "if-status.h"
-#include "lflow.h"
-#include "lport.h"
-#include "patch.h"
 
+/* OVS includes. */
 #include "lib/bitmap.h"
 #include "openvswitch/poll-loop.h"
 #include "lib/sset.h"
@@ -29,9 +24,19 @@
 #include "lib/vswitch-idl.h"
 #include "openvswitch/hmap.h"
 #include "openvswitch/vlog.h"
-#include "lib/chassis-index.h"
 #include "lib/ovn-sb-idl.h"
+
+/* OVN includes. */
+#include "binding.h"
+#include "ha-chassis.h"
+#include "if-status.h"
+#include "ldata.h"
+#include "lflow.h"
+#include "lib/chassis-index.h"
+#include "lport.h"
 #include "ovn-controller.h"
+#include "patch.h"
+
 
 VLOG_DEFINE_THIS_MODULE(binding);
 

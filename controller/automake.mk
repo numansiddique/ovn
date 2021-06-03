@@ -33,7 +33,9 @@ controller_ovn_controller_SOURCES = \
 	controller/physical.c \
 	controller/physical.h \
 	controller/mac-learn.c \
-	controller/mac-learn.h
+	controller/mac-learn.h \
+	controller/ldata.c \
+	controller/ldata.h
 
 controller_ovn_controller_LDADD = lib/libovn.la $(OVS_LIBDIR)/libopenvswitch.la
 man_MANS += controller/ovn-controller.8

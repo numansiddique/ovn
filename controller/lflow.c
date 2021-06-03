@@ -14,28 +14,33 @@
  */
 
 #include <config.h>
-#include "lflow.h"
+
+/* OVS includes. */
 #include "coverage.h"
-#include "ha-chassis.h"
-#include "lflow-cache.h"
-#include "lport.h"
-#include "ofctrl.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/ofp-actions.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/vlog.h"
-#include "ovn-controller.h"
-#include "ovn/actions.h"
-#include "ovn/expr.h"
+#include "lib/ovn-sb-idl.h"
+#include "lib/packets.h"
+#include "lib/simap.h"
+#include "lib/sset.h"
+
+/* OVN includes. */
+#include "include/ovn/actions.h"
+#include "include/ovn/expr.h"
+#include "ha-chassis.h"
+#include "ldata.h"
+#include "lflow.h"
+#include "lflow-cache.h"
 #include "lib/lb.h"
 #include "lib/lflow.h"
 #include "lib/ovn-l7.h"
-#include "lib/ovn-sb-idl.h"
 #include "lib/extend-table.h"
-#include "packets.h"
+#include "lport.h"
+#include "ofctrl.h"
+#include "ovn-controller.h"
 #include "physical.h"
-#include "simap.h"
-#include "sset.h"
 
 VLOG_DEFINE_THIS_MODULE(lflow);
 

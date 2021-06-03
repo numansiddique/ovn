@@ -36,6 +36,7 @@
 #include "if-status.h"
 #include "ip-mcast.h"
 #include "openvswitch/hmap.h"
+#include "ldata.h"
 #include "lflow.h"
 #include "lflow-cache.h"
 #include "lib/vswitch-idl.h"
@@ -122,36 +123,6 @@ struct pending_pkt {
 
 /* Registered ofctrl seqno type for nb_cfg propagation. */
 static size_t ofctrl_seq_type_nb_cfg;
-
-struct local_datapath *
-get_local_datapath(const struct hmap *local_datapaths, uint32_t tunnel_key)
-{
-    struct hmap_node *node = hmap_first_with_hash(local_datapaths, tunnel_key);
-    return (node
-            ? CONTAINER_OF(node, struct local_datapath, hmap_node)
-            : NULL);
-}
-
-struct local_datapath *
-local_datapath_alloc(const struct sbrec_datapath_binding *dp)
-{
-    struct local_datapath *ld = xzalloc(sizeof *ld);
-    ld->datapath = dp;
-    ld->is_switch = datapath_is_switch(dp);
-    hmap_init(&ld->ctrl_lflows);
-    ovn_desired_flow_table_init(&ld->flow_table);
-
-    return ld;
-}
-
-static void
-local_datapath_destroy(struct local_datapath *ld)
-{
-    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows);
-    ovn_desired_flow_table_destroy(&ld->flow_table);
-    free(ld->peer_ports);
-    free(ld);
-}
 
 uint32_t
 get_tunnel_type(const char *name)

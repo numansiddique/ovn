@@ -41,6 +41,7 @@
 #include "lib/random.h"
 #include "lib/crc32c.h"
 
+#include "ldata.h"
 #include "lib/dhcp.h"
 #include "ovn-controller.h"
 #include "ovn/actions.h"
