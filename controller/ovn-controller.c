@@ -47,6 +47,7 @@
 #include "openvswitch/vconn.h"
 #include "openvswitch/vlog.h"
 #include "ovn/actions.h"
+#include "lflow-generate.h"
 #include "lib/chassis-index.h"
 #include "lib/extend-table.h"
 #include "lib/ip-mcast-index.h"
@@ -1916,14 +1917,13 @@ en_lflow_generate_run(struct engine_node *node OVS_UNUSED,
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
 
-    struct local_datapath *ld;
-    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
-        ovn_ctrl_lflows_clear(&ld->ctrl_lflows);
-    }
+    struct sbrec_port_binding_table *pb_table =
+        (struct sbrec_port_binding_table *)EN_OVSDB_GET(
+            engine_get_input("SB_port_binding", node));
 
-    HMAP_FOR_EACH (ld, hmap_node, &rt_data->local_datapaths) {
-        ovn_ctrl_lflows_build_dp_lflows(&ld->ctrl_lflows, ld->datapath);
-    }
+    lflow_generate_delete_lflows(&rt_data->local_datapaths);
+    lflow_generate_run(&rt_data->local_datapaths, pb_table);
+
     engine_set_node_state(node, EN_UPDATED);
 }
 
@@ -2156,6 +2156,13 @@ en_lflow_output_run(struct engine_node *node, void *data)
         } else {
             lflow_process_ctrl_lflows(&lflow_gen_data->generic_lrouter_lflows,
                                       ld->datapath,
+                                      &l_ctx_in, &l_ctx_out);
+        }
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &ld->lports) {
+            struct local_lport *lport = shash_node->data;
+            lflow_process_ctrl_lflows(&lport->ctrl_lflows, lport->pb->datapath,
                                       &l_ctx_in, &l_ctx_out);
         }
     }
@@ -2930,10 +2937,14 @@ main(int argc, char *argv[])
                      NULL);
     engine_add_input(&en_lflow_needs_generation, &en_sb_datapath_binding,
                      NULL);
+    engine_add_input(&en_lflow_needs_generation, &en_sb_port_binding,
+                     NULL);
 
     engine_add_input(&en_lflow_generate, &en_lflow_needs_generation,
                      NULL);
     engine_add_input(&en_lflow_generate, &en_runtime_data,
+                     engine_noop_handler);
+    engine_add_input(&en_lflow_generate, &en_sb_port_binding,
                      engine_noop_handler);
 
     engine_add_input(&en_runtime_data, &en_ofctrl_is_connected, NULL);

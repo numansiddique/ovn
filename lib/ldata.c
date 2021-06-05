@@ -237,6 +237,16 @@ local_datapath_add_lport(struct local_datapath *ld,
         for (size_t i = 0; i < pb->n_mac; i++) {
             dp_lport->addresses[i] = xstrdup(pb->mac[i]);
         }
+
+        dp_lport->port_security =
+            pb->n_port_security ?
+            xmalloc(pb->n_port_security * sizeof *dp_lport->port_security) :
+            NULL;
+
+        dp_lport->n_port_security = pb->n_port_security;
+        for (size_t i = 0; i < pb->n_port_security; i++) {
+            dp_lport->port_security[i] = xstrdup(pb->port_security[i]);
+        }
     }
 
     return dp_lport;
@@ -270,7 +280,6 @@ void
 local_lport_destroy(struct local_lport *dp_lport)
 {
     ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows);
-
     for (size_t i = 0; i < dp_lport->n_addresses; i++) {
         free(dp_lport->addresses[i]);
     }

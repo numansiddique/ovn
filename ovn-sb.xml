@@ -2879,6 +2879,12 @@ tcp.flags = RST;
         </p>
       </column>
 
+      <column name="port_security">
+        <p>
+          Port security addresses.
+        </p>
+      </column>
+
       <column name="type">
         <p>
           A type for this logical port.  Logical ports can be used to model other

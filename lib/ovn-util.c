@@ -324,6 +324,14 @@ extract_lrp_networks__(char *mac, char **networks, size_t n_networks,
     return true;
 }
 
+/* Appends the IPv6 address - 'addr' to already allocated 'laddrs'. */
+void
+lport_addr_add_ip6ddr(struct lport_addresses *laddrs, struct in6_addr addr,
+                      unsigned int plen)
+{
+    add_ipv6_netaddr(laddrs, addr, plen);
+}
+
 bool
 extract_sbrec_binding_first_mac(const struct sbrec_port_binding *binding,
                                 struct eth_addr *ea)
@@ -816,4 +824,43 @@ lport_get_peer(const struct sbrec_port_binding *pb,
     peer = lport_lookup_by_name(sbrec_port_binding_by_name,
                                 peer_name);
     return (peer && peer->datapath) ? peer : NULL;
+}
+
+static bool
+is_lport_vif(const struct sbrec_port_binding *pb)
+{
+    return !pb->type[0];
+}
+
+enum en_lport_type
+get_lport_type(const struct sbrec_port_binding *pb)
+{
+    if (is_lport_vif(pb)) {
+        if (pb->parent_port && pb->parent_port[0]) {
+            return LP_CONTAINER;
+        }
+        return LP_VIF;
+    } else if (!strcmp(pb->type, "patch")) {
+        return LP_PATCH;
+    } else if (!strcmp(pb->type, "chassisredirect")) {
+        return LP_CHASSISREDIRECT;
+    } else if (!strcmp(pb->type, "l3gateway")) {
+        return LP_L3GATEWAY;
+    } else if (!strcmp(pb->type, "localnet")) {
+        return LP_LOCALNET;
+    } else if (!strcmp(pb->type, "localport")) {
+        return LP_LOCALPORT;
+    } else if (!strcmp(pb->type, "l2gateway")) {
+        return LP_L2GATEWAY;
+    } else if (!strcmp(pb->type, "virtual")) {
+        return LP_VIRTUAL;
+    } else if (!strcmp(pb->type, "external")) {
+        return LP_EXTERNAL;
+    } else if (!strcmp(pb->type, "remote")) {
+        return LP_REMOTE;
+    } else if (!strcmp(pb->type, "vtep")) {
+        return LP_VTEP;
+    }
+
+    return LP_UNKNOWN;
 }

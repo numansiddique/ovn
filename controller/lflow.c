@@ -157,12 +157,14 @@ is_chassis_resident_cb(const void *c_aux_, const char *port_name)
         return false;
     }
 
-    /* Store the port_name to lflow reference. */
-    int64_t dp_id = pb->datapath->tunnel_key;
-    char buf[16];
-    get_unique_lport_key(dp_id, pb->tunnel_key, buf, sizeof(buf));
-    lflow_resource_add(c_aux->lfrr, REF_TYPE_PORTBINDING, buf,
-                       c_aux->lflow_uuid);
+    if (c_aux->lfrr) {
+        /* Store the port_name to lflow reference. */
+        int64_t dp_id = pb->datapath->tunnel_key;
+        char buf[16];
+        get_unique_lport_key(dp_id, pb->tunnel_key, buf, sizeof(buf));
+        lflow_resource_add(c_aux->lfrr, REF_TYPE_PORTBINDING, buf,
+                           c_aux->lflow_uuid);
+    }
 
     if (strcmp(pb->type, "chassisredirect")) {
         /* for non-chassisredirect ports */

@@ -33,6 +33,7 @@
 #include "lflow.h"
 #include "lib/chassis-index.h"
 #include "lib/ldata.h"
+#include "lib/ovn-util.h"
 #include "lport.h"
 #include "ovn-controller.h"
 #include "patch.h"
@@ -505,23 +506,6 @@ remove_local_lport_ids(const struct sbrec_port_binding *pb,
     }
 }
 
-/* Corresponds to each Port_Binding.type. */
-enum en_lport_type {
-    LP_UNKNOWN,
-    LP_VIF,
-    LP_CONTAINER,
-    LP_PATCH,
-    LP_L3GATEWAY,
-    LP_LOCALNET,
-    LP_LOCALPORT,
-    LP_L2GATEWAY,
-    LP_VTEP,
-    LP_CHASSISREDIRECT,
-    LP_VIRTUAL,
-    LP_EXTERNAL,
-    LP_REMOTE
-};
-
 /* Local bindings. binding.c module binds the logical port (represented by
  * Port_Binding rows) and sets the 'chassis' column when it sees the
  * OVS interface row (of type "" or "internal") with the
@@ -797,45 +781,6 @@ binding_dump_local_bindings(struct local_binding_data *lbinding_data,
     }
 
     free(nodes);
-}
-
-static bool
-is_lport_vif(const struct sbrec_port_binding *pb)
-{
-    return !pb->type[0];
-}
-
-static enum en_lport_type
-get_lport_type(const struct sbrec_port_binding *pb)
-{
-    if (is_lport_vif(pb)) {
-        if (pb->parent_port && pb->parent_port[0]) {
-            return LP_CONTAINER;
-        }
-        return LP_VIF;
-    } else if (!strcmp(pb->type, "patch")) {
-        return LP_PATCH;
-    } else if (!strcmp(pb->type, "chassisredirect")) {
-        return LP_CHASSISREDIRECT;
-    } else if (!strcmp(pb->type, "l3gateway")) {
-        return LP_L3GATEWAY;
-    } else if (!strcmp(pb->type, "localnet")) {
-        return LP_LOCALNET;
-    } else if (!strcmp(pb->type, "localport")) {
-        return LP_LOCALPORT;
-    } else if (!strcmp(pb->type, "l2gateway")) {
-        return LP_L2GATEWAY;
-    } else if (!strcmp(pb->type, "virtual")) {
-        return LP_VIRTUAL;
-    } else if (!strcmp(pb->type, "external")) {
-        return LP_EXTERNAL;
-    } else if (!strcmp(pb->type, "remote")) {
-        return LP_REMOTE;
-    } else if (!strcmp(pb->type, "vtep")) {
-        return LP_VTEP;
-    }
-
-    return LP_UNKNOWN;
 }
 
 static char *
