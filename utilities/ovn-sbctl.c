@@ -304,6 +304,9 @@ pre_get_info(struct ctl_context *ctx)
 
     ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_logical_port);
     ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_tunnel_key);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_mac);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_port_security);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_options);
     ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_chassis);
     ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_datapath);
     ovsdb_idl_add_column(ctx->idl, &sbrec_port_binding_col_up);
@@ -1098,27 +1101,87 @@ ctrl_lflow_list(struct hmap *lflows, struct hmap *gen_flows, bool print_uuid,
         if (!prev
             || ovn_stage_get_pipeline(curr->stage) !=
                 ovn_stage_get_pipeline(prev->stage)) {
-            printf("Datapath: ");
+            ds_put_cstr(&ctx->output, "Datapath: ");
             print_datapath_name(dp, &ctx->output);
-            printf(" ("UUID_FMT")  Pipeline: %s\n",
+            ds_put_format(&ctx->output, " ("UUID_FMT")  Pipeline: %s\n",
                    UUID_ARGS(&dp->header_.uuid),
                    ovn_stage_get_pipeline(curr->stage) == P_IN ?
                    "ingress" : "egress");
         }
 
         /* Print the flow. */
-        printf("  ");
+        ds_put_cstr(&ctx->output, "  ");
         print_uuid_part(&curr->uuid_, print_uuid, &ctx->output);
-        printf("table=%-2"PRId8"(%-19s), priority=%-5"PRId16
-               ", match=(%s), action=(%s)\n",
-               ovn_stage_get_table(curr->stage),
-               ovn_stage_to_str(curr->stage),
-               curr->priority, curr->match,
-               curr->actions);
+        ds_put_format(&ctx->output, "table=%-2"PRId8"(%-19s), priority=%-5"PRId16
+                      ", match=(%s), action=(%s)\n",
+                      ovn_stage_get_table(curr->stage),
+                      ovn_stage_to_str(curr->stage),
+                      curr->priority, curr->match,
+                      curr->actions);
         prev = curr;
     }
 
     free(ctrl_lflows);
+}
+
+struct sbctl_datapath {
+    struct hmap_node node;
+    const struct sbrec_datapath_binding *dp;
+    struct hmap lflows;
+    struct shash lports;
+};
+
+static uint32_t
+dp_hash(const struct sbrec_datapath_binding *dp)
+{
+    return hash_uint64(dp->tunnel_key);
+}
+
+static struct sbctl_datapath *
+get_sbctl_datapath(struct hmap *datapaths,
+                   const struct sbrec_datapath_binding *dp)
+{
+    struct sbctl_datapath *sdp;
+    HMAP_FOR_EACH_WITH_HASH (sdp, node, dp_hash(dp), datapaths) {
+        if (sdp->dp == dp) {
+            return sdp;
+        }
+    }
+
+    return NULL;
+}
+
+static void
+build_sbctl_datapaths(struct hmap *datapaths,
+                      const struct sbrec_datapath_binding *dp,
+                      struct ctl_context *ctx)
+{
+    if (!dp) {
+        SBREC_DATAPATH_BINDING_FOR_EACH (dp, ctx->idl) {
+            struct sbctl_datapath *sdp = xzalloc(sizeof *sdp);
+            sdp->dp = dp;
+            hmap_init(&sdp->lflows);
+            shash_init(&sdp->lports);
+            hmap_insert(datapaths, &sdp->node, dp_hash(dp));
+        }
+    } else {
+        struct sbctl_datapath *sdp = xzalloc(sizeof *sdp);
+        sdp->dp = dp;
+        hmap_init(&sdp->lflows);
+        shash_init(&sdp->lports);
+        hmap_insert(datapaths, &sdp->node, dp_hash(dp));
+    }
+
+    const struct sbrec_port_binding *pb;
+    SBREC_PORT_BINDING_FOR_EACH (pb, ctx->idl) {
+        struct sbctl_datapath *sdp =
+            get_sbctl_datapath(datapaths, pb->datapath);
+        if (!sdp) {
+            continue;
+        }
+
+        shash_add(&sdp->lports, pb->logical_port, pb);
+    }
 }
 
 static void
@@ -1150,24 +1213,27 @@ cmd_ctrl_lflow_list(struct ctl_context *ctx)
         }
     }
 
-    if (dp) {
-        struct hmap dp_flows = HMAP_INITIALIZER(&dp_flows);
-        ovn_ctrl_lflows_build_dp_lflows(&dp_flows, dp);
-        ctrl_lflow_list(&dp_flows, datapath_is_switch(dp) ?
-                        &gen_lswitch_flows : &gen_lrouter_flows,
-                        print_uuid, dp, ctx);
-        ovn_ctrl_lflows_destroy(&dp_flows);
-    } else {
-        SBREC_DATAPATH_BINDING_FOR_EACH (dp, ctx->idl) {
-            struct hmap dp_flows = HMAP_INITIALIZER(&dp_flows);
-            ovn_ctrl_lflows_build_dp_lflows(&dp_flows, dp);
-            ctrl_lflow_list(&dp_flows, datapath_is_switch(dp) ?
-                            &gen_lswitch_flows : &gen_lrouter_flows,
-                            print_uuid, dp, ctx);
-            ovn_ctrl_lflows_destroy(&dp_flows);
+    struct hmap datapaths = HMAP_INITIALIZER(&datapaths);
+    build_sbctl_datapaths(&datapaths, dp, ctx);
+
+    struct sbctl_datapath *sdp;
+    HMAP_FOR_EACH_POP (sdp, node, &datapaths) {
+        ovn_ctrl_lflows_build_dp_lflows(&sdp->lflows, sdp->dp);
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &sdp->lports) {
+            ovn_ctrl_build_lport_lflows(&sdp->lflows, shash_node->data);
         }
+
+        ctrl_lflow_list(&sdp->lflows, datapath_is_switch(sdp->dp) ?
+                        &gen_lswitch_flows : &gen_lrouter_flows,
+                        print_uuid, sdp->dp, ctx);
+        ovn_ctrl_lflows_destroy(&sdp->lflows);
+        shash_destroy(&sdp->lports);
+        free(sdp);
     }
 
+    hmap_destroy(&datapaths);
     ovn_ctrl_lflows_destroy(&gen_lswitch_flows);
     ovn_ctrl_lflows_destroy(&gen_lrouter_flows);
 }

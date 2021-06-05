@@ -24,6 +24,8 @@
 #include "ldata.h"
 #include "lib/ovn-util.h"
 #include "lib/lflow.h"
+#include "lib/ovn-sb-idl.h"
+#include "lib/ovn-util.h"
 #include "ofctrl.h"
 
 struct local_datapath *
@@ -80,6 +82,26 @@ local_datapath_add_lport(struct local_datapath *ld,
         dp_lport->pb = pb;
         hmap_init(&dp_lport->ctrl_lflows);
         shash_add(&ld->lports, lport_name, dp_lport);
+        smap_clone(&dp_lport->options, &pb->options);
+
+        dp_lport->addresses =
+            pb->n_mac ? xmalloc(pb->n_mac * sizeof *dp_lport->addresses) :
+            NULL;
+
+        dp_lport->n_addresses = pb->n_mac;
+        for (size_t i = 0; i < pb->n_mac; i++) {
+            dp_lport->addresses[i] = xstrdup(pb->mac[i]);
+        }
+
+        dp_lport->port_security =
+            pb->n_port_security ?
+            xmalloc(pb->n_port_security * sizeof *dp_lport->port_security) :
+            NULL;
+
+        dp_lport->n_port_security = pb->n_port_security;
+        for (size_t i = 0; i < pb->n_port_security; i++) {
+            dp_lport->port_security[i] = xstrdup(pb->port_security[i]);
+        }
     }
 
     return dp_lport;
@@ -99,6 +121,31 @@ local_datapath_remove_lport(struct local_datapath *ld, const char *lport_name)
                                                          lport_name);
     if (dp_lport) {
         ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows);
+
+        for (size_t i = 0; i < dp_lport->n_addresses; i++) {
+            free(dp_lport->addresses[i]);
+        }
+        free(dp_lport->addresses);
+
+        for (size_t i = 0; i < dp_lport->n_port_security; i++) {
+            free(dp_lport->port_security[i]);
+        }
+        free(dp_lport->port_security);
+        smap_destroy(&dp_lport->options);
         free(dp_lport);
     }
+}
+
+struct local_lport *
+local_datapath_unlink_lport(struct local_datapath *ld,
+                                                const char *lport_name)
+{
+    return shash_find_and_delete(&ld->lports, lport_name);
+}
+
+void
+local_lport_destroy(struct local_lport *dp_lport)
+{
+    ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows);
+    free(dp_lport);
 }

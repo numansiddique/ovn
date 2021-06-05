@@ -270,4 +270,23 @@ void ddlog_warn(const char *msg);
 void ddlog_err(const char *msg);
 #endif
 
+/* Corresponds to each Port_Binding.type. */
+enum en_lport_type {
+    LP_UNKNOWN,
+    LP_VIF,
+    LP_CONTAINER,
+    LP_PATCH,
+    LP_L3GATEWAY,
+    LP_LOCALNET,
+    LP_LOCALPORT,
+    LP_L2GATEWAY,
+    LP_VTEP,
+    LP_CHASSISREDIRECT,
+    LP_VIRTUAL,
+    LP_EXTERNAL,
+    LP_REMOTE
+};
+
+enum en_lport_type get_lport_type(const struct sbrec_port_binding *);
+
 #endif

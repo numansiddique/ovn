@@ -185,4 +185,7 @@ void lflow_process_ctrl_lflows(struct hmap *ctrl_lflows,
                                const struct sbrec_datapath_binding *,
                                struct lflow_ctx_in *,
                                struct lflow_ctx_out *);
+void lflow_remove_ctrl_lflows(struct hmap *ctrl_lflows,
+                              struct ovn_desired_flow_table *);
+
 #endif /* controller/lflow.h */

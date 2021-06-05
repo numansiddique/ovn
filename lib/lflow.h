@@ -22,6 +22,7 @@
 #include "openvswitch/uuid.h"
 
 struct sbrec_datapath_binding;
+struct sbrec_port_binding;
 struct hmap;
 struct ofpbuf;
 
@@ -321,5 +322,8 @@ void ovn_ctrl_lflows_build_dp_lflows(
 void ovn_ctrl_lflows_clear(struct hmap *lflows);
 void ovn_ctrl_lflows_destroy(struct hmap *lflows);
 void ovn_ctrl_reinit_lflows_matches(struct hmap *lflows);
+
+void ovn_ctrl_build_lport_lflows(
+    struct hmap *lflows, const struct sbrec_port_binding *);
 
 #endif /* OVN_LIB_LFLOW_H */

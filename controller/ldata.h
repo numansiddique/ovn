@@ -18,6 +18,7 @@
 
 /* OVS includes. */
 #include "include/openvswitch/shash.h"
+#include "lib/smap.h"
 
 /* OVN includes. */
 #include "ofctrl.h"
@@ -27,6 +28,13 @@ struct sbrec_port_binding;
 
 struct local_lport {
     const struct sbrec_port_binding *pb;
+
+    char **addresses;
+    size_t n_addresses;
+    char **port_security;
+    size_t n_port_security;
+    struct smap options;
+
     struct hmap ctrl_lflows;
 };
 
@@ -80,5 +88,10 @@ struct local_lport *local_datapath_add_lport(
 
 void local_datapath_remove_lport(struct local_datapath *ld,
                                  const char *lport_name);
+
+struct local_lport *local_datapath_unlink_lport(struct local_datapath *ld,
+                                                const char *lport_name);
+
+void local_lport_destroy(struct local_lport *local_lport);
 
 #endif /* controller/ldata.h */

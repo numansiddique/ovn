@@ -1919,3 +1919,17 @@ lflow_process_ctrl_lflows(struct hmap *ctrl_lflows,
     nd_ra_opts_destroy(&nd_ra_opts);
     controller_event_opts_destroy(&controller_event_opts);
 }
+
+void
+lflow_remove_ctrl_lflows(struct hmap *ctrl_lflows,
+                         struct ovn_desired_flow_table *flow_table)
+{
+    struct hmap flood_remove_nodes = HMAP_INITIALIZER(&flood_remove_nodes);
+
+    struct ovn_ctrl_lflow *ctrl_lflow;
+    HMAP_FOR_EACH (ctrl_lflow, hmap_node, ctrl_lflows) {
+        ofctrl_flood_remove_add_node(&flood_remove_nodes, &ctrl_lflow->uuid_);
+    }
+
+    ofctrl_flood_remove_flows(flow_table, &flood_remove_nodes);
+}
