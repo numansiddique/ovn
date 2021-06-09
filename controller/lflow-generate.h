@@ -19,13 +19,22 @@
 
 struct hmap;
 struct sbrec_port_binding_table;
+struct sbrec_datapath_binding_table;
+struct sbrec_port_binding;
 
-void lflow_generate_run(struct hmap *local_datapaths,
-                        const struct sbrec_port_binding_table *);
+void lflow_generate_run(struct hmap *local_datapaths);
+void lflow_generate_datapath_flows(struct local_datapath *ldp,
+                                   bool build_lport_flows);
+void lflow_generate_lport_flows(const struct sbrec_port_binding *pb,
+                                struct local_datapath *ldp);
 
-bool lflow_generate_handle_port_binding_changes(
-    struct hmap *local_datapaths, const struct sbrec_port_binding_table *);
+void lflow_delete_generated_lport_lflows(const struct sbrec_port_binding *,
+                                         struct local_datapath *);
 
-void lflow_generate_delete_lflows(struct hmap *local_datapaths);
+void lflow_delete_generated_lflows(struct hmap *local_datapaths);
+
+bool lflow_datapath_needs_generation(struct local_datapath *ldp);
+bool lflow_lport_needs_generation(struct local_datapath *ldp,
+                                  const struct sbrec_port_binding *);
 
 #endif /* controller/lflow-generate.h */

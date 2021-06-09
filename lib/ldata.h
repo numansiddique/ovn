@@ -27,13 +27,17 @@ struct ovsdb_idl_index;
 struct local_lport {
     const struct sbrec_port_binding *pb;
 
+    /* cached data. */
     char **addresses;
     size_t n_addresses;
     char **port_security;
     size_t n_port_security;
     struct smap options;
+    bool claimed;
 
-    struct hmap ctrl_lflows;
+    struct hmap ctrl_lflows[2];
+    struct hmap *active_lflows;
+    struct hmap *cleared_lflows;
 };
 
 /* A logical datapath that has some relevance to this hypervisor.  A logical
@@ -67,7 +71,9 @@ struct local_datapath {
 
     /* Data related to lflow generation. */
     struct smap dp_options;
-    struct hmap ctrl_lflows;
+    struct hmap ctrl_lflows[2];
+    struct hmap *active_lflows;
+    struct hmap *cleared_lflows;
 
     /* shash of 'struct local_lport'. */
     struct shash lports;
@@ -88,6 +94,7 @@ void local_datapath_add(struct hmap *local_datapaths,
 
 void local_datapaths_destroy(struct hmap *local_datapaths);
 void local_datapath_destroy(struct local_datapath *ld);
+void local_datapath_switch_lflow_map(struct local_datapath *);
 
 struct local_lport *local_datapath_get_lport(struct local_datapath *ld,
                                              const char *lport_name);
@@ -117,7 +124,12 @@ void local_datapath_remove_peer_port(const struct sbrec_port_binding *pb,
 struct local_lport *local_datapath_unlink_lport(struct local_datapath *ld,
                                                 const char *lport_name);
 
-void local_lport_destroy(struct local_lport *local_lport);
+void local_lport_destroy(struct local_lport *);
+
+void local_lport_update_cache(struct local_lport *);
+void local_lport_clear_cache(struct local_lport *);
+bool local_lport_is_cache_old(struct local_lport *);
+void local_lport_switch_lflow_map(struct local_lport *);
 
 /* Represents a tracked logical port. */
 enum en_tracked_resource_type {

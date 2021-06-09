@@ -30,67 +30,112 @@
 
 VLOG_DEFINE_THIS_MODULE(lflow_gen);
 
-static void generate_lflows_for_lport(const struct sbrec_port_binding *,
-                                      struct hmap *local_datapaths);
+static void generate_lflows_for_lport__(struct local_lport *dp_lport);
 
 void
-lflow_generate_run(struct hmap *local_datapaths,
-                   const struct sbrec_port_binding_table *pb_table)
+lflow_generate_run(struct hmap *local_datapaths)
 {
     struct local_datapath *ldp;
     HMAP_FOR_EACH (ldp, hmap_node, local_datapaths) {
-        ovn_ctrl_lflows_build_dp_lflows(&ldp->ctrl_lflows, ldp->datapath);
-    }
+        ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp->datapath);
 
-    const struct sbrec_port_binding *pb;
-    SBREC_PORT_BINDING_TABLE_FOR_EACH (pb, pb_table) {
-        generate_lflows_for_lport(pb, local_datapaths);
-    }
-}
-
-bool
-lflow_generate_handle_port_binding_changes(
-    struct hmap *local_datapaths,
-    const struct sbrec_port_binding_table *pb_table)
-{
-    return false;
-
-    const struct sbrec_port_binding *pb;
-    SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, pb_table) {
-        generate_lflows_for_lport(pb, local_datapaths);
-    }
-
-    return true;
-}
-
-void
-lflow_generate_delete_lflows(struct hmap *local_datapaths)
-{
-    struct local_datapath *ldp;
-    HMAP_FOR_EACH (ldp, hmap_node, local_datapaths) {
-        ovn_ctrl_lflows_clear(&ldp->ctrl_lflows);
-
-        struct local_lport *lport;
-        struct shash_node *node, *next;
-        SHASH_FOR_EACH_SAFE (node, next, &ldp->lports) {
-            lport = node->data;
-            shash_delete(&ldp->lports, node);
-            local_lport_destroy(lport);
+        struct shash_node *node;
+        SHASH_FOR_EACH (node, &ldp->lports) {
+            generate_lflows_for_lport__(node->data);
         }
     }
 }
 
-static void
-generate_lflows_for_lport(const struct sbrec_port_binding *pb,
-                          struct hmap *local_datapaths)
+void
+lflow_generate_datapath_flows(struct local_datapath *ldp,
+                              bool build_lport_flows)
 {
-    struct local_datapath *ldp =
-        get_local_datapath(local_datapaths, pb->datapath->tunnel_key);
-    if (!ldp) {
-        return;
+    local_datapath_switch_lflow_map(ldp);
+    ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp->datapath);
+
+    if (build_lport_flows) {
+        struct shash_node *node;
+        SHASH_FOR_EACH (node, &ldp->lports) {
+            generate_lflows_for_lport__(node->data);
+        }
+    }
+}
+
+void
+lflow_generate_lport_flows(const struct sbrec_port_binding *pb,
+                           struct local_datapath *ldp)
+{
+    struct local_lport *lport =
+        local_datapath_get_lport(ldp, pb->logical_port);
+    if (lport) {
+        generate_lflows_for_lport__(lport);
+    } else {
+        lport = local_datapath_add_lport(ldp, pb->logical_port, pb);
+        ovn_ctrl_build_lport_lflows(lport->active_lflows, pb);
+    }
+}
+
+void
+lflow_delete_generated_lport_lflows(const struct sbrec_port_binding *pb,
+                                    struct local_datapath *ldp)
+{
+    struct local_lport *lport =
+        local_datapath_get_lport(ldp, pb->logical_port);
+    if (lport) {
+        local_lport_switch_lflow_map(lport);
+    }
+}
+
+void
+lflow_delete_generated_lflows(struct hmap *local_datapaths)
+{
+    struct local_datapath *ldp;
+    HMAP_FOR_EACH (ldp, hmap_node, local_datapaths) {
+        ovn_ctrl_lflows_clear(&ldp->ctrl_lflows[0]);
+        ovn_ctrl_lflows_clear(&ldp->ctrl_lflows[1]);
+
+        struct local_lport *lport;
+        struct shash_node *node;
+        SHASH_FOR_EACH (node, &ldp->lports) {
+            lport = node->data;
+            ovn_ctrl_lflows_clear(&lport->ctrl_lflows[0]);
+            ovn_ctrl_lflows_clear(&lport->ctrl_lflows[1]);
+        }
+    }
+}
+
+
+/* Returns true if the local datapath 'ldp' needs logical flow
+ * generation.  False otherwise.
+ */
+bool
+lflow_datapath_needs_generation(struct local_datapath *ldp)
+{
+    ovs_assert(ldp->datapath);
+
+    /* Right now we check if the datapath options have changed
+     * from the locally stored value. */
+    return !smap_equal(&ldp->dp_options, &ldp->datapath->options);
+}
+
+bool
+lflow_lport_needs_generation(struct local_datapath *ldp,
+                             const struct sbrec_port_binding *pb)
+{
+    struct local_lport *dp_lport = local_datapath_get_lport(
+        ldp, pb->logical_port);
+
+    if (!dp_lport) {
+        return true;
     }
 
-    struct local_lport *dp_lport =
-        local_datapath_add_lport(ldp, pb->logical_port, pb);
-    ovn_ctrl_build_lport_lflows(&dp_lport->ctrl_lflows, pb);
+    return local_lport_is_cache_old(dp_lport);
+}
+
+static void
+generate_lflows_for_lport__(struct local_lport *dp_lport)
+{
+    local_lport_switch_lflow_map(dp_lport);
+    local_lport_update_cache(dp_lport);
+    ovn_ctrl_build_lport_lflows(dp_lport->active_lflows, dp_lport->pb);
 }

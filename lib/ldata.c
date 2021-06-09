@@ -39,6 +39,8 @@ static void local_datapath_add__(
                            void *aux),
     void *aux);
 
+void local_lport_init_cache(struct local_lport *lport);
+
 static struct tracked_datapath *tracked_datapath_create(
     const struct sbrec_datapath_binding *dp,
     enum en_tracked_resource_type tracked_type,
@@ -59,7 +61,10 @@ local_datapath_alloc(const struct sbrec_datapath_binding *dp)
     struct local_datapath *ld = xzalloc(sizeof *ld);
     ld->datapath = dp;
     ld->is_switch = datapath_is_switch(dp);
-    hmap_init(&ld->ctrl_lflows);
+    hmap_init(&ld->ctrl_lflows[0]);
+    hmap_init(&ld->ctrl_lflows[1]);
+    ld->active_lflows = &ld->ctrl_lflows[0];
+    ld->cleared_lflows = &ld->ctrl_lflows[1];
     shash_init(&ld->lports);
     smap_clone(&ld->dp_options, &dp->options);
     return ld;
@@ -79,7 +84,8 @@ local_datapaths_destroy(struct hmap *local_datapaths)
 void
 local_datapath_destroy(struct local_datapath *ld)
 {
-    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows);
+    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows[0]);
+    ovn_ctrl_lflows_destroy(&ld->ctrl_lflows[1]);
 
     struct shash_node *node, *next;
     SHASH_FOR_EACH_SAFE (node, next, &ld->lports) {
@@ -110,6 +116,17 @@ local_datapath_add(struct hmap *local_datapaths,
                          sbrec_port_binding_by_datapath,
                          sbrec_port_binding_by_name, 0,
                          datapath_added_cb, aux);
+}
+
+void
+local_datapath_switch_lflow_map(struct local_datapath *ldp)
+{
+    struct hmap *temp = ldp->active_lflows;
+    ldp->active_lflows = ldp->cleared_lflows;
+    ldp->cleared_lflows = temp;
+
+    /* Make sure that the active_lflows is empty. */
+    ovs_assert(hmap_is_empty(ldp->active_lflows));
 }
 
 void
@@ -225,28 +242,16 @@ local_datapath_add_lport(struct local_datapath *ld,
     if (!dp_lport) {
         dp_lport = xzalloc(sizeof *dp_lport);
         dp_lport->pb = pb;
-        hmap_init(&dp_lport->ctrl_lflows);
+
+        hmap_init(&dp_lport->ctrl_lflows[0]);
+        hmap_init(&dp_lport->ctrl_lflows[1]);
+        dp_lport->active_lflows = &dp_lport->ctrl_lflows[0];
+        dp_lport->cleared_lflows = &dp_lport->ctrl_lflows[1];
+
         shash_add(&ld->lports, lport_name, dp_lport);
-        smap_clone(&dp_lport->options, &pb->options);
-
-        dp_lport->addresses =
-            pb->n_mac ? xmalloc(pb->n_mac * sizeof *dp_lport->addresses) :
-            NULL;
-
-        dp_lport->n_addresses = pb->n_mac;
-        for (size_t i = 0; i < pb->n_mac; i++) {
-            dp_lport->addresses[i] = xstrdup(pb->mac[i]);
-        }
-
-        dp_lport->port_security =
-            pb->n_port_security ?
-            xmalloc(pb->n_port_security * sizeof *dp_lport->port_security) :
-            NULL;
-
-        dp_lport->n_port_security = pb->n_port_security;
-        for (size_t i = 0; i < pb->n_port_security; i++) {
-            dp_lport->port_security[i] = xstrdup(pb->port_security[i]);
-        }
+        local_lport_init_cache(dp_lport);
+    } else {
+        local_lport_update_cache(dp_lport);
     }
 
     return dp_lport;
@@ -269,6 +274,77 @@ local_datapath_remove_lport(struct local_datapath *ld, const char *lport_name)
     }
 }
 
+void
+local_lport_update_cache(struct local_lport *lport)
+{
+    if (local_lport_is_cache_old(lport)) {
+        local_lport_clear_cache(lport);
+        local_lport_init_cache(lport);
+    }
+}
+
+
+void
+local_lport_clear_cache(struct local_lport *lport)
+{
+    for (size_t i = 0; i < lport->n_addresses; i++) {
+        free(lport->addresses[i]);
+    }
+    free(lport->addresses);
+
+    for (size_t i = 0; i < lport->n_port_security; i++) {
+        free(lport->port_security[i]);
+    }
+    free(lport->port_security);
+
+    smap_destroy(&lport->options);
+}
+
+bool
+local_lport_is_cache_old(struct local_lport *lport)
+{
+    const struct sbrec_port_binding *pb = lport->pb;
+
+    if (lport->n_addresses != pb->n_mac) {
+        return true;
+    }
+
+    if (lport->n_port_security != pb->n_port_security) {
+        return true;
+    }
+
+    if (!smap_equal(&lport->options, &pb->options)) {
+        return true;
+    }
+
+    for (size_t i = 0; i < lport->n_addresses; i++) {
+        if (strcmp(lport->addresses[i], pb->mac[i])) {
+            return true;
+        }
+    }
+
+    for (size_t i = 0; i < lport->n_port_security; i++) {
+        if (strcmp(lport->port_security[i], pb->port_security[i])) {
+            return true;
+        }
+    }
+
+    bool claimed_ = !!pb->chassis;
+
+    return (lport->claimed != claimed_);
+}
+
+void
+local_lport_switch_lflow_map(struct local_lport *lport)
+{
+    struct hmap *temp = lport->active_lflows;
+    lport->active_lflows = lport->cleared_lflows;
+    lport->cleared_lflows = temp;
+
+    /* Make sure that the active_lflows is empty. */
+    ovs_assert(hmap_is_empty(lport->active_lflows));
+}
+
 struct local_lport *
 local_datapath_unlink_lport(struct local_datapath *ld,
                                                 const char *lport_name)
@@ -279,17 +355,9 @@ local_datapath_unlink_lport(struct local_datapath *ld,
 void
 local_lport_destroy(struct local_lport *dp_lport)
 {
-    ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows);
-    for (size_t i = 0; i < dp_lport->n_addresses; i++) {
-        free(dp_lport->addresses[i]);
-    }
-    free(dp_lport->addresses);
-
-    for (size_t i = 0; i < dp_lport->n_port_security; i++) {
-        free(dp_lport->port_security[i]);
-    }
-    free(dp_lport->port_security);
-    smap_destroy(&dp_lport->options);
+    ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows[0]);
+    ovn_ctrl_lflows_destroy(&dp_lport->ctrl_lflows[1]);
+    local_lport_clear_cache(dp_lport);
     free(dp_lport);
 }
 
@@ -364,6 +432,34 @@ tracked_datapaths_destroy(struct hmap *tracked_datapaths)
 }
 
 /* static functions. */
+void
+local_lport_init_cache(struct local_lport *lport)
+{
+    const struct sbrec_port_binding *pb = lport->pb;
+    smap_clone(&lport->options, &pb->options);
+
+    lport->addresses =
+        pb->n_mac ? xmalloc(pb->n_mac * sizeof *lport->addresses) :
+        NULL;
+
+    lport->n_addresses = pb->n_mac;
+    for (size_t i = 0; i < pb->n_mac; i++) {
+        lport->addresses[i] = xstrdup(pb->mac[i]);
+    }
+
+    lport->port_security =
+        pb->n_port_security ?
+        xmalloc(pb->n_port_security * sizeof *lport->port_security) :
+        NULL;
+
+    lport->n_port_security = pb->n_port_security;
+    for (size_t i = 0; i < pb->n_port_security; i++) {
+        lport->port_security[i] = xstrdup(pb->port_security[i]);
+    }
+
+    lport->claimed = !!pb->chassis;
+}
+
 static void
 local_datapath_add__(struct hmap *local_datapaths,
                      const struct sbrec_datapath_binding *dp,
