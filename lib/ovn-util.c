@@ -375,6 +375,10 @@ destroy_lport_addresses(struct lport_addresses *laddrs)
 {
     free(laddrs->ipv4_addrs);
     free(laddrs->ipv6_addrs);
+    laddrs->ipv4_addrs = NULL;
+    laddrs->ipv6_addrs = NULL;
+    laddrs->n_ipv4_addrs = 0;
+    laddrs->n_ipv6_addrs = 0;
 }
 
 /* Go through 'addresses' and add found IPv4 addresses to 'ipv4_addrs' and

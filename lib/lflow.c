@@ -19,6 +19,7 @@
 #include "ovn/expr.h"
 
 #include "lflow.h"
+#include "lib/ldata.h"
 #include "lib/ovn-nb-idl.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-l7.h"
@@ -75,53 +76,10 @@ static void build_lswitch_dp_lflows(struct hmap *lflows,
 static void build_lrouter_dp_lflows(struct hmap *lflows,
                                     const struct sbrec_datapath_binding *dp);
 
-struct ovn_ctrl_lsp {
-    const struct sbrec_port_binding *pb;
-    enum en_lport_type lport_type;
-
-    char *json_key;          /* 'pb->logical_port', quoted for use in JSON. */
-
-    struct lport_addresses *addrs;  /* Logical switch port addresses. */
-    unsigned int n_addrs;
-
-    struct lport_addresses *ps_addrs;   /* Port security addresses. */
-    unsigned int n_ps_addrs;
-
-    bool has_unknown;
-    bool check_lport_is_up;
-};
-
-struct ovn_ctrl_lrp {
-    const struct sbrec_port_binding *pb;
-    enum en_lport_type lport_type;
-
-    char *json_key;          /* 'pb->logical_port', quoted for use in JSON. */
-
-    struct lport_addresses networks;  /* Logical router port networks. */
-    bool is_l3dgw_port; /* true if it is distributed gateway port. */
-    char *chassis_redirect_json_key; /* Initialized only if 'is_l3dgw_port. */
-    const char *peer;
-
-    bool dp_has_l3dgw_port; /* True if the router datapath has a gw port. */
-    bool peer_dp_has_localnet_ports; /* True if the peer datapath has
-                                      * localnet ports. */
-    bool has_bfd;
-};
-
-static struct ovn_ctrl_lsp *ovn_ctrl_lsp_alloc(
-    const struct sbrec_port_binding *, enum en_lport_type);
-static void ovn_ctrl_lsp_destroy(struct ovn_ctrl_lsp *);
-
 static void build_lswitch_port_lflows(struct hmap *lflows,
-                                      struct ovn_ctrl_lsp *,
-                                      enum en_lport_type);
+                                      struct local_lport *);
 static void build_lrouter_port_lflows(struct hmap *lflows,
-                                      struct ovn_ctrl_lrp *,
-                                      enum en_lport_type);
-
-static struct ovn_ctrl_lrp *ovn_ctrl_lrp_alloc(
-    const struct sbrec_port_binding *, enum en_lport_type);
-static void ovn_ctrl_lrp_destroy(struct ovn_ctrl_lrp *);
+                                      struct local_lport *);
 
 void
 ovn_ctrl_lflows_clear(struct hmap *lflows)
@@ -179,23 +137,23 @@ ovn_ctrl_lflows_build_dp_lflows(struct hmap *lflows,
 }
 
 void
-ovn_ctrl_build_lport_lflows(struct hmap *lflows,
-                            const struct sbrec_port_binding *pb)
+ovn_ctrl_build_lport_lflows(struct hmap *lflows, struct local_lport *op)
 {
-    enum en_lport_type lport_type = get_lport_type(pb);
+    /* Initialize the data required for lflow generation. */
+    local_lport_init_lflow_gen_data(op);
+    if (op->peer) {
+        local_lport_init_lflow_gen_data(op->peer);
+    }
 
-    if (datapath_is_switch(pb->datapath)) {
-        struct ovn_ctrl_lsp *op = ovn_ctrl_lsp_alloc(pb, lport_type);
-        if (op) {
-            build_lswitch_port_lflows(lflows, op, lport_type);
-            ovn_ctrl_lsp_destroy(op);
-        }
+    if (op->ldp->is_switch) {
+            build_lswitch_port_lflows(lflows, op);
     } else {
-        struct ovn_ctrl_lrp *op = ovn_ctrl_lrp_alloc(pb, lport_type);
-        if (op) {
-            build_lrouter_port_lflows(lflows, op, lport_type);
-            ovn_ctrl_lrp_destroy(op);
-        }
+        build_lrouter_port_lflows(lflows, op);
+    }
+
+    local_lport_destroy_lflow_gen_data(op);
+    if (op->peer) {
+        local_lport_destroy_lflow_gen_data(op->peer);
     }
 }
 
@@ -1199,120 +1157,6 @@ build_misc_local_traffic_drop_flows_for_lrouter(
                        mcast_relay ? "next;" : "drop;");
 }
 
-static struct ovn_ctrl_lsp *
-ovn_ctrl_lsp_alloc(const struct sbrec_port_binding *pb,
-                   enum en_lport_type lport_type)
-{
-    struct ovn_ctrl_lsp *op = xzalloc(sizeof *op);
-    op->pb = pb;
-    op->lport_type = lport_type;
-
-    struct ds json_key = DS_EMPTY_INITIALIZER;
-    json_string_escape(pb->logical_port, &json_key);
-    op->json_key = ds_steal_cstr(&json_key);
-
-    op->addrs = xmalloc(sizeof *op->addrs * pb->n_mac);
-    op->ps_addrs = xmalloc(sizeof *op->ps_addrs * pb->n_mac);
-    for (size_t i = 0; i < pb->n_mac; i++) {
-        if (!strcmp(pb->mac[i], "unknown")) {
-            op->has_unknown = true;
-            continue;
-        }
-        if (!strcmp(pb->mac[i], "router")) {
-            continue;
-        }
-
-        if (!extract_lsp_addresses(pb->mac[i], &op->addrs[op->n_addrs])) {
-            continue;
-        }
-
-        op->n_addrs++;
-    }
-
-    for (size_t i = 0; i < pb->n_port_security; i++) {
-        if (!extract_lsp_addresses(pb->port_security[i],
-                                   &op->ps_addrs[op->n_ps_addrs])) {
-            continue;
-        }
-        op->n_ps_addrs++;
-    }
-
-    op->check_lport_is_up = !smap_get_bool(&pb->datapath->options,
-                                           "ignore_lport_down", false);
-    return op;
-}
-
-static void
-ovn_ctrl_lsp_destroy(struct ovn_ctrl_lsp *op)
-{
-    if (op->n_addrs) {
-        destroy_lport_addresses(op->addrs);
-    }
-
-    if (op->n_ps_addrs) {
-        destroy_lport_addresses(op->ps_addrs);
-    }
-
-    free(op->addrs);
-    free(op->ps_addrs);
-    free(op->json_key);
-    free(op);
-}
-
-static struct ovn_ctrl_lrp *
-ovn_ctrl_lrp_alloc(const struct sbrec_port_binding *pb,
-                   enum en_lport_type lport_type)
-{
-    if (!pb->n_mac) {
-        return NULL;
-    }
-
-    struct ovn_ctrl_lrp *op = xzalloc(sizeof *op);
-    op->pb = pb;
-    op->lport_type = lport_type;
-
-    if (!extract_lsp_addresses(pb->mac[0], &op->networks)) {
-        free(op);
-        return NULL;
-    }
-
-    /* Always add the IPv6 link local address. */
-    struct in6_addr lla;
-    in6_generate_lla(op->networks.ea, &lla);
-    lport_addr_add_ip6ddr(&op->networks, lla, 64);
-
-    struct ds json_key = DS_EMPTY_INITIALIZER;
-    json_string_escape(pb->logical_port, &json_key);
-    op->json_key = ds_steal_cstr(&json_key);
-
-    op->is_l3dgw_port = smap_get_bool(&pb->options, "is-l3dgw-port", false);
-    if (op->is_l3dgw_port) {
-        char *chassis_redirect_name =
-            ovn_chassis_redirect_name(pb->logical_port);
-        json_string_escape(chassis_redirect_name, &json_key);
-        op->chassis_redirect_json_key = ds_steal_cstr(&json_key);
-        free(chassis_redirect_name);
-    }
-
-    op->dp_has_l3dgw_port = smap_get_bool(&pb->datapath->options,
-                                          "has-l3dgw-port", false);
-
-    op->peer = smap_get(&pb->options, "peer");
-    op->peer_dp_has_localnet_ports =
-        smap_get_bool(&pb->options,
-                      "peer-dp-has-localnet-ports", false);
-    return op;
-}
-
-static void
-ovn_ctrl_lrp_destroy(struct ovn_ctrl_lrp *op)
-{
-    destroy_lport_addresses(&op->networks);
-    free(op->json_key);
-    free(op->chassis_redirect_json_key);
-    free(op);
-}
-
 static bool
 lsp_is_enabled(const struct sbrec_port_binding *pb)
 {
@@ -1326,56 +1170,49 @@ lsp_is_up(const struct sbrec_port_binding *pb)
 }
 
 static void build_lswitch_input_port_sec_op(struct hmap *lflows,
-                                            struct ovn_ctrl_lsp *,
-                                            enum en_lport_type,
+                                            struct local_lport *,
                                             uint8_t *lflow_uuid_idx);
 static void build_lswitch_output_port_sec_op(struct hmap *lflows,
-                                             struct ovn_ctrl_lsp *,
-                                             enum en_lport_type,
+                                             struct local_lport *,
                                              uint8_t *lflow_uuid_idx);
 static void build_lswitch_learn_fdb_op(struct hmap *lflows,
-                                       struct ovn_ctrl_lsp *,
-                                       enum en_lport_type,
+                                       struct local_lport *,
                                        uint8_t *lflow_uuid_idx,
                                        struct ds *match,
                                        struct ds *actions);
 static void build_lswitch_arp_nd_responder_skip_local(struct hmap *lflows,
-                                                      struct ovn_ctrl_lsp *,
-                                                      enum en_lport_type,
+                                                      struct local_lport *,
                                                       uint8_t *lflow_uuid_idx,
                                                       struct ds *match);
 static void build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
-                                                     struct ovn_ctrl_lsp *,
-                                                     enum en_lport_type,
+                                                     struct local_lport *,
                                                      uint8_t *lflow_uuid_idx,
                                                      struct ds *match,
                                                      struct ds *actions);
 static void build_lswitch_ip_unicast_lookup(struct hmap *lflows,
-                                            struct ovn_ctrl_lsp *,
-                                            enum en_lport_type,
+                                            struct local_lport *,
                                             uint8_t *lflow_uuid_idx,
                                             struct ds *match,
                                             struct ds *actions);
 
 static void
-build_lswitch_port_lflows(struct hmap *lflows, struct ovn_ctrl_lsp *op,
-                          enum en_lport_type lport_type)
+build_lswitch_port_lflows(struct hmap *lflows, struct local_lport *op)
 {
     uint8_t lflow_uuid_idx = 1;
     struct ds match = DS_EMPTY_INITIALIZER;
     struct ds actions = DS_EMPTY_INITIALIZER;
 
-    build_lswitch_input_port_sec_op(lflows, op, lport_type, &lflow_uuid_idx);
-    build_lswitch_output_port_sec_op(lflows, op, lport_type, &lflow_uuid_idx);
+    build_lswitch_input_port_sec_op(lflows, op, &lflow_uuid_idx);
+    build_lswitch_output_port_sec_op(lflows, op, &lflow_uuid_idx);
 
-    build_lswitch_learn_fdb_op(lflows, op, lport_type, &lflow_uuid_idx,
+    build_lswitch_learn_fdb_op(lflows, op, &lflow_uuid_idx,
                                &match, &actions);
-    build_lswitch_arp_nd_responder_skip_local(lflows, op, lport_type,
+    build_lswitch_arp_nd_responder_skip_local(lflows, op,
                                               &lflow_uuid_idx, &match);
-    build_lswitch_arp_nd_responder_known_ips(lflows, op, lport_type,
+    build_lswitch_arp_nd_responder_known_ips(lflows, op,
                                              &lflow_uuid_idx, &match,
                                              &actions);
-    build_lswitch_ip_unicast_lookup(lflows, op, lport_type, &lflow_uuid_idx,
+    build_lswitch_ip_unicast_lookup(lflows, op, &lflow_uuid_idx,
                                     &match, &actions);
 
     ds_destroy(&match);
@@ -1503,7 +1340,7 @@ build_port_security_ipv6_nd_flow(
  *     - Priority 80 flow to drop all IPv4 and IPv6 traffic
  */
 static void
-build_port_security_ip(enum ovn_pipeline pipeline, struct ovn_ctrl_lsp *op,
+build_port_security_ip(enum ovn_pipeline pipeline, struct local_lport *op,
                        struct hmap *lflows, uint8_t *lflow_uuid_idx)
 {
     char *port_direction;
@@ -1516,8 +1353,8 @@ build_port_security_ip(enum ovn_pipeline pipeline, struct ovn_ctrl_lsp *op,
         stage = S_SWITCH_OUT_PORT_SEC_IP;
     }
 
-    for (size_t i = 0; i < op->n_ps_addrs; i++) {
-        struct lport_addresses *ps = &op->ps_addrs[i];
+    for (size_t i = 0; i < op->lsp.n_ps_addrs; i++) {
+        struct lport_addresses *ps = &op->lsp.ps_addrs[i];
 
         if (!(ps->n_ipv4_addrs || ps->n_ipv6_addrs)) {
             continue;
@@ -1643,13 +1480,13 @@ build_port_security_ip(enum ovn_pipeline pipeline, struct ovn_ctrl_lsp *op,
  *   - Priority 80 flow to drop ARP and IPv6 ND packets.
  */
 static void
-build_port_security_nd(struct ovn_ctrl_lsp *op, struct hmap *lflows,
+build_port_security_nd(struct local_lport *op, struct hmap *lflows,
                        uint8_t *lflow_uuid_idx)
 {
     struct ds match = DS_EMPTY_INITIALIZER;
 
-    for (size_t i = 0; i < op->n_ps_addrs; i++) {
-        struct lport_addresses *ps = &op->ps_addrs[i];
+    for (size_t i = 0; i < op->lsp.n_ps_addrs; i++) {
+        struct lport_addresses *ps = &op->lsp.ps_addrs[i];
 
         bool no_ip = !(ps->n_ipv4_addrs || ps->n_ipv6_addrs);
 
@@ -1711,11 +1548,10 @@ build_port_security_nd(struct ovn_ctrl_lsp *op, struct hmap *lflows,
  *  Ingress table 2: Ingress port security - ND (priority 90 and 80)
  */
 static void
-build_lswitch_input_port_sec_op(
-    struct hmap *lflows, struct ovn_ctrl_lsp *op,
-    enum en_lport_type lport_type, uint8_t *lflow_uuid_idx)
+build_lswitch_input_port_sec_op(struct hmap *lflows, struct local_lport *op,
+                                uint8_t *lflow_uuid_idx)
 {
-    if (lport_type == LP_EXTERNAL) {
+    if (op->type == LP_EXTERNAL) {
         return;
     }
 
@@ -1729,7 +1565,7 @@ build_lswitch_input_port_sec_op(
     struct ds actions = DS_EMPTY_INITIALIZER;
 
     ds_put_format(&match, "inport == %s", op->json_key);
-    build_port_security_l2("eth.src", op->ps_addrs, op->n_ps_addrs,
+    build_port_security_l2("eth.src", op->lsp.ps_addrs, op->lsp.n_ps_addrs,
                             &match);
 
     const char *queue_id = smap_get(&op->pb->options, "qdisc_queue_id");
@@ -1744,7 +1580,7 @@ build_lswitch_input_port_sec_op(
     ds_destroy(&match);
     ds_destroy(&actions);
 
-    if (op->n_ps_addrs) {
+    if (op->lsp.n_ps_addrs) {
         build_port_security_ip(P_IN, op, lflows, lflow_uuid_idx);
         build_port_security_nd(op, lflows, lflow_uuid_idx);
     }
@@ -1761,11 +1597,10 @@ build_lswitch_input_port_sec_op(
  * they don't even receive multicast or broadcast packets.
  */
 static void
-build_lswitch_output_port_sec_op(struct hmap *lflows, struct ovn_ctrl_lsp *op,
-                                 enum en_lport_type lport_type,
+build_lswitch_output_port_sec_op(struct hmap *lflows, struct local_lport *op,
                                  uint8_t *lflow_uuid_idx)
 {
-    if (lport_type == LP_EXTERNAL) {
+    if (op->type == LP_EXTERNAL) {
         return;
     }
 
@@ -1774,10 +1609,10 @@ build_lswitch_output_port_sec_op(struct hmap *lflows, struct ovn_ctrl_lsp *op,
     ds_put_format(&match, "outport == %s", op->json_key);
     if (lsp_is_enabled(op->pb)) {
         struct ds actions = DS_EMPTY_INITIALIZER;
-        build_port_security_l2("eth.dst", op->ps_addrs, op->n_ps_addrs,
+        build_port_security_l2("eth.dst", op->lsp.ps_addrs, op->lsp.n_ps_addrs,
                                 &match);
 
-        if (lport_type == LP_LOCALNET) {
+        if (op->type == LP_LOCALNET) {
             const char *queue_id = smap_get(&op->pb->options,
                                             "qdisc_queue_id");
             if (queue_id) {
@@ -1797,19 +1632,18 @@ build_lswitch_output_port_sec_op(struct hmap *lflows, struct ovn_ctrl_lsp *op,
 
     ds_destroy(&match);
 
-    if (op->n_ps_addrs) {
+    if (op->lsp.n_ps_addrs) {
         build_port_security_ip(P_OUT, op, lflows, lflow_uuid_idx);
     }
 }
 
 static void
-build_lswitch_learn_fdb_op(struct hmap *lflows, struct ovn_ctrl_lsp *op,
-                           enum en_lport_type lport_type,
+build_lswitch_learn_fdb_op(struct hmap *lflows, struct local_lport *op,
                            uint8_t *lflow_uuid_idx, struct ds *match,
                            struct ds *actions)
 {
-    if (!op->n_ps_addrs && lport_type == LP_VIF &&
-            op->has_unknown) {
+    if (!op->lsp.n_ps_addrs && op->type == LP_VIF &&
+            op->lsp.has_unknown) {
         ds_clear(match);
         ds_clear(actions);
         ds_put_format(match, "inport == %s", op->json_key);
@@ -1834,12 +1668,11 @@ build_lswitch_learn_fdb_op(struct hmap *lflows, struct ovn_ctrl_lsp *op,
 
 static void
 build_lswitch_arp_nd_responder_skip_local(struct hmap *lflows,
-                                          struct ovn_ctrl_lsp *op,
-                                          enum en_lport_type lport_type,
+                                          struct local_lport *op,
                                           uint8_t *lflow_uuid_idx,
                                           struct ds *match)
 {
-    if (lport_type == LP_LOCALNET || lport_type == LP_VTEP) {
+    if (op->type == LP_LOCALNET || op->type == LP_VTEP) {
         ds_clear(match);
         ds_put_format(match, "inport == %s", op->json_key);
         ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_ARP_ND_RSP, 100,
@@ -1852,13 +1685,12 @@ build_lswitch_arp_nd_responder_skip_local(struct hmap *lflows,
  * (priority 50). */
 static void
 build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
-                                         struct ovn_ctrl_lsp *op,
-                                         enum en_lport_type lport_type,
+                                         struct local_lport *op,
                                          uint8_t *lflow_uuid_idx,
                                          struct ds *match,
                                          struct ds *actions)
 {
-    if (lport_type == LP_VIRTUAL) {
+    if (op->type == LP_VIRTUAL) {
         /* Handle
             *  - GARPs for virtual ip which belongs to a logical port
             *    of type 'virtual' and bind that port.
@@ -1906,21 +1738,21 @@ build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
          *  - port type is router or
          *  - port type is localport
          */
-        if (op->check_lport_is_up &&
-            !lsp_is_up(op->pb) && lport_type != LP_PATCH &&
-            lport_type != LP_LOCALPORT) {
+        if (op->lsp.check_lport_is_up &&
+            !lsp_is_up(op->pb) && op->type != LP_PATCH &&
+            op->type != LP_LOCALPORT) {
             return;
         }
 
-        if (lport_type == LP_EXTERNAL || op->has_unknown) {
+        if (op->type == LP_EXTERNAL || op->lsp.has_unknown) {
             return;
         }
 
-        for (size_t i = 0; i < op->n_addrs; i++) {
-            for (size_t j = 0; j < op->addrs[i].n_ipv4_addrs; j++) {
+        for (size_t i = 0; i < op->lsp.n_addrs; i++) {
+            for (size_t j = 0; j < op->lsp.addrs[i].n_ipv4_addrs; j++) {
                 ds_clear(match);
                 ds_put_format(match, "arp.tpa == %s && arp.op == 1",
-                              op->addrs[i].ipv4_addrs[j].addr_s);
+                              op->lsp.addrs[i].ipv4_addrs[j].addr_s);
                 ds_clear(actions);
                 ds_put_format(actions,
                     "eth.dst = eth.src; "
@@ -1933,8 +1765,8 @@ build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
                     "outport = inport; "
                     "flags.loopback = 1; "
                     "output;",
-                    op->addrs[i].ea_s, op->addrs[i].ea_s,
-                    op->addrs[i].ipv4_addrs[j].addr_s);
+                    op->lsp.addrs[i].ea_s, op->lsp.addrs[i].ea_s,
+                    op->lsp.addrs[i].ipv4_addrs[j].addr_s);
                 ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_ARP_ND_RSP, 50,
                                         ds_cstr(match), ds_cstr(actions),
                                         &op->pb->header_.uuid, lflow_uuid_idx);
@@ -1960,14 +1792,14 @@ build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
             /* For ND solicitations, we need to listen for both the
                 * unicast IPv6 address and its all-nodes multicast address,
                 * but always respond with the unicast IPv6 address. */
-            for (size_t j = 0; j < op->addrs[i].n_ipv6_addrs; j++) {
+            for (size_t j = 0; j < op->lsp.addrs[i].n_ipv6_addrs; j++) {
                 ds_clear(match);
                 ds_put_format(
                     match,
                     "nd_ns && ip6.dst == {%s, %s} && nd.target == %s",
-                    op->addrs[i].ipv6_addrs[j].addr_s,
-                    op->addrs[i].ipv6_addrs[j].sn_addr_s,
-                    op->addrs[i].ipv6_addrs[j].addr_s);
+                    op->lsp.addrs[i].ipv6_addrs[j].addr_s,
+                    op->lsp.addrs[i].ipv6_addrs[j].sn_addr_s,
+                    op->lsp.addrs[i].ipv6_addrs[j].addr_s);
 
                 ds_clear(actions);
                 ds_put_format(actions,
@@ -1980,11 +1812,11 @@ build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
                         "flags.loopback = 1; "
                         "output; "
                         "};",
-                        lport_type == LP_PATCH ? "nd_na_router" : "nd_na",
-                        op->addrs[i].ea_s,
-                        op->addrs[i].ipv6_addrs[j].addr_s,
-                        op->addrs[i].ipv6_addrs[j].addr_s,
-                        op->addrs[i].ea_s);
+                        op->type == LP_PATCH ? "nd_na_router" : "nd_na",
+                        op->lsp.addrs[i].ea_s,
+                        op->lsp.addrs[i].ipv6_addrs[j].addr_s,
+                        op->lsp.addrs[i].ipv6_addrs[j].addr_s,
+                        op->lsp.addrs[i].ea_s);
                 ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_ARP_ND_RSP, 50,
                                         ds_cstr(match), ds_cstr(actions),
                                         &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2002,12 +1834,11 @@ build_lswitch_arp_nd_responder_known_ips(struct hmap *lflows,
 
 /* Ingress table 19: Destination lookup, unicast handling (priority 50), */
 static void
-build_lswitch_ip_unicast_lookup(struct hmap *lflows, struct ovn_ctrl_lsp *op,
-                                enum en_lport_type lport_type,
+build_lswitch_ip_unicast_lookup(struct hmap *lflows, struct local_lport *op,
                                 uint8_t *lflow_uuid_idx,
                                 struct ds *match, struct ds *actions)
 {
-    if (lport_type == LP_EXTERNAL) {
+    if (op->type == LP_EXTERNAL) {
         return;
     }
 
@@ -2022,9 +1853,9 @@ build_lswitch_ip_unicast_lookup(struct hmap *lflows, struct ovn_ctrl_lsp *op,
     }
 #endif
 
-    for (size_t i = 0; i < op->n_addrs; i++) {
+    for (size_t i = 0; i < op->lsp.n_addrs; i++) {
         ds_clear(match);
-        ds_put_format(match, "eth.dst == %s", op->addrs[i].ea_s);
+        ds_put_format(match, "eth.dst == %s", op->lsp.addrs[i].ea_s);
         ds_clear(actions);
         ds_put_format(actions, "outport = %s; output;", op->json_key);
         ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_L2_LKUP, 50,
@@ -2034,24 +1865,24 @@ build_lswitch_ip_unicast_lookup(struct hmap *lflows, struct ovn_ctrl_lsp *op,
 }
 
 static void build_adm_ctrl_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *, enum en_lport_type,
+    struct hmap *lflows, struct local_lport *,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 static void build_neigh_learning_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *, enum en_lport_type,
+    struct hmap *lflows, struct local_lport *,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 static void build_ip_routing_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 static void build_ND_RA_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 static void build_dhcpv6_reply_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match);
 static void build_ipv6_input_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
-static void build_lrouter_nd_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
+static void build_lrouter_nd_flow(struct hmap *lflows, struct local_lport *op,
                                   const struct uuid *flow_uuid,
                                   uint8_t *lflow_uuid_idx, const char *action,
                                   const char *ip_address,
@@ -2060,61 +1891,60 @@ static void build_lrouter_nd_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
                                   struct ds *extra_match, bool drop,
                                   uint16_t priority);
 static void build_lrouter_bfd_flows(struct hmap *lflows,
-                                    struct ovn_ctrl_lrp *op,
+                                    struct local_lport *op,
                                     uint8_t *lflow_uuid_idx);
 static void build_lrouter_arp_flow(
-    struct hmap *lflows, struct ovn_ctrl_lrp *,
+    struct hmap *lflows, struct local_lport *,
     const struct uuid *lflow_uuid, uint8_t *lflow_uuid_idx,
     const char *ip_address, const char *eth_addr,
     struct ds *extra_match, bool drop, uint16_t priority);
 static void build_lrouter_ipv4_ip_input(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 static void build_lrouter_force_snat_flows_op(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op,
-    enum en_lport_type lp_type, uint8_t *lflow_uuid_idx,
+    struct hmap *lflows, struct local_lport *op,
+    uint8_t *lflow_uuid_idx,
     struct ds *match, struct ds *actions);
 static void build_egress_delivery_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 
-static void op_put_v4_networks(struct ds *ds, const struct ovn_ctrl_lrp *op,
+static void op_put_v4_networks(struct ds *ds, const struct local_lport *op,
                                bool add_bcast);
 
-static void op_put_v6_networks(struct ds *ds, const struct ovn_ctrl_lrp *op);
+static void op_put_v6_networks(struct ds *ds, const struct local_lport *op);
 static void add_route(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions,
     const char *lrp_addr_s, const char *network_s, int plen,
     const char *gateway, bool is_src_route, bool is_discard_route);
 
 /* Router port lflows. */
 static void
-build_lrouter_port_lflows(struct hmap *lflows, struct ovn_ctrl_lrp *op,
-                          enum en_lport_type lport_type)
+build_lrouter_port_lflows(struct hmap *lflows, struct local_lport *op)
 {
     uint8_t lflow_uuid_idx = 1;
     struct ds match = DS_EMPTY_INITIALIZER;
     struct ds actions = DS_EMPTY_INITIALIZER;
 
-    build_adm_ctrl_flows_for_lrouter_port(lflows, op, lport_type,
+    build_adm_ctrl_flows_for_lrouter_port(lflows, op,
                                           &lflow_uuid_idx, &match, &actions);
-    build_neigh_learning_flows_for_lrouter_port(lflows, op, lport_type,
+    build_neigh_learning_flows_for_lrouter_port(lflows, op,
                                                 &lflow_uuid_idx, &match,
                                                 &actions);
-    build_ip_routing_flows_for_lrouter_port(lflows, op, lport_type,
+    build_ip_routing_flows_for_lrouter_port(lflows, op,
                                             &lflow_uuid_idx, &match, &actions);
-    build_ND_RA_flows_for_lrouter_port(lflows, op, lport_type,
+    build_ND_RA_flows_for_lrouter_port(lflows, op,
                                        &lflow_uuid_idx, &match, &actions);
-    build_dhcpv6_reply_flows_for_lrouter_port(lflows, op, lport_type,
+    build_dhcpv6_reply_flows_for_lrouter_port(lflows, op,
                                               &lflow_uuid_idx, &match);
-    build_ipv6_input_flows_for_lrouter_port(lflows, op, lport_type,
+    build_ipv6_input_flows_for_lrouter_port(lflows, op,
                                             &lflow_uuid_idx, &match, &actions);
-    build_lrouter_ipv4_ip_input(lflows, op, lport_type, &lflow_uuid_idx,
+    build_lrouter_ipv4_ip_input(lflows, op, &lflow_uuid_idx,
                                 &match, &actions);
-    build_lrouter_force_snat_flows_op(lflows, op, lport_type, &lflow_uuid_idx,
+    build_lrouter_force_snat_flows_op(lflows, op, &lflow_uuid_idx,
                                       &match, &actions);
-    build_egress_delivery_flows_for_lrouter_port(lflows, op, lport_type,
+    build_egress_delivery_flows_for_lrouter_port(lflows, op,
                                                  &lflow_uuid_idx,
                                                  &match, &actions);
 
@@ -2128,8 +1958,7 @@ build_lrouter_port_lflows(struct hmap *lflows, struct ovn_ctrl_lrp *op,
  */
 static void
 build_adm_ctrl_flows_for_lrouter_port(struct hmap *lflows,
-                                      struct ovn_ctrl_lrp *op,
-                                      enum en_lport_type lport_type,
+                                      struct local_lport *op,
                                       uint8_t *lflow_uuid_idx,
                                       struct ds *match, struct ds *actions)
 {
@@ -2142,7 +1971,7 @@ TODO:
     }
 #endif
 
-    if (lport_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         /* No ingress packets should be received on a chassisredirect port. */
         return;
     }
@@ -2153,7 +1982,7 @@ TODO:
      */
     ds_clear(actions);
     ds_put_format(actions, REG_INPORT_ETH_ADDR " = %s; next;",
-                  op->networks.ea_s);
+                  op->lrp.networks.ea_s);
 
     ds_clear(match);
     ds_put_format(match, "eth.mcast && inport == %s", op->json_key);
@@ -2163,12 +1992,12 @@ TODO:
 
     ds_clear(match);
     ds_put_format(match, "eth.dst == %s && inport == %s",
-                  op->networks.ea_s, op->json_key);
-    if (op->is_l3dgw_port) {
+                  op->lrp.networks.ea_s, op->json_key);
+    if (op->lrp.is_l3dgw_port) {
         /* Traffic with eth.dst = l3dgw_port->lrp_networks.ea_s
          * should only be received on the gateway chassis. */
         ds_put_format(match, " && is_chassis_resident(%s)",
-                      op->chassis_redirect_json_key);
+                      op->lrp.chassis_redirect_json_key);
     }
     ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_ADMISSION, 50, ds_cstr(match),
                             ds_cstr(actions), &op->pb->header_.uuid,
@@ -2179,18 +2008,18 @@ TODO:
  * for logical router ports. */
 static void
 build_neigh_learning_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op,
-    enum en_lport_type lport_type, uint8_t *lflow_uuid_idx,
+    struct hmap *lflows, struct local_lport *op,
+    uint8_t *lflow_uuid_idx,
     struct ds *match, struct ds *actions)
 {
-    if (lport_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
     bool learn_from_arp_request = is_learn_from_arp_request(op->pb->datapath);
 
     /* Check if we need to learn mac-binding from ARP requests. */
-    for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
         if (!learn_from_arp_request) {
             /* ARP request to this address should always get learned,
                 * so add a priority-110 flow to set
@@ -2200,12 +2029,12 @@ build_neigh_learning_flows_for_lrouter_port(
                           "inport == %s && arp.spa == %s/%u && "
                           "arp.tpa == %s && arp.op == 1",
                           op->json_key,
-                          op->networks.ipv4_addrs[i].network_s,
-                          op->networks.ipv4_addrs[i].plen,
-                          op->networks.ipv4_addrs[i].addr_s);
-            if (op->is_l3dgw_port) {
+                          op->lrp.networks.ipv4_addrs[i].network_s,
+                          op->lrp.networks.ipv4_addrs[i].plen,
+                          op->lrp.networks.ipv4_addrs[i].addr_s);
+            if (op->lrp.is_l3dgw_port) {
                 ds_put_format(match, " && is_chassis_resident(%s)",
-                              op->chassis_redirect_json_key);
+                              op->lrp.chassis_redirect_json_key);
             }
             const char *actions_s = REGBIT_LOOKUP_NEIGHBOR_RESULT
                                     " = lookup_arp(inport, arp.spa, arp.sha); "
@@ -2219,11 +2048,11 @@ build_neigh_learning_flows_for_lrouter_port(
         ds_put_format(match,
                       "inport == %s && arp.spa == %s/%u && arp.op == 1",
                       op->json_key,
-                      op->networks.ipv4_addrs[i].network_s,
-                      op->networks.ipv4_addrs[i].plen);
-        if (op->is_l3dgw_port) {
+                      op->lrp.networks.ipv4_addrs[i].network_s,
+                      op->lrp.networks.ipv4_addrs[i].plen);
+        if (op->lrp.is_l3dgw_port) {
             ds_put_format(match, " && is_chassis_resident(%s)",
-                          op->chassis_redirect_json_key);
+                          op->lrp.chassis_redirect_json_key);
         }
         ds_clear(actions);
         ds_put_format(actions, REGBIT_LOOKUP_NEIGHBOR_RESULT
@@ -2255,25 +2084,25 @@ build_neigh_learning_flows_for_lrouter_port(
  */
 static void
 build_ip_routing_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions)
 {
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
-    for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
         add_route(lflows, op, lflow_uuid_idx, match, actions,
-                  op->networks.ipv4_addrs[i].addr_s,
-                  op->networks.ipv4_addrs[i].network_s,
-                  op->networks.ipv4_addrs[i].plen, NULL, false, false);
+                  op->lrp.networks.ipv4_addrs[i].addr_s,
+                  op->lrp.networks.ipv4_addrs[i].network_s,
+                  op->lrp.networks.ipv4_addrs[i].plen, NULL, false, false);
     }
 
-    for (int i = 0; i < op->networks.n_ipv6_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
         add_route(lflows, op, lflow_uuid_idx, match, actions,
-                  op->networks.ipv6_addrs[i].addr_s,
-                  op->networks.ipv6_addrs[i].network_s,
-                  op->networks.ipv6_addrs[i].plen, NULL, false, false);
+                  op->lrp.networks.ipv6_addrs[i].addr_s,
+                  op->lrp.networks.ipv6_addrs[i].network_s,
+                  op->lrp.networks.ipv6_addrs[i].plen, NULL, false, false);
     }
 }
 
@@ -2281,14 +2110,14 @@ build_ip_routing_flows_for_lrouter_port(
  * Adv (RA) options and response. */
 static void
 build_ND_RA_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions)
 {
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
-    if (!op->networks.n_ipv6_addrs) {
+    if (!op->lrp.networks.n_ipv6_addrs) {
         return;
     }
 
@@ -2319,7 +2148,7 @@ build_ND_RA_flows_for_lrouter_port(
 
     ds_put_format(actions, REGBIT_ND_RA_OPTS_RESULT" = put_nd_ra_opts("
                   "addr_mode = \"%s\", slla = %s",
-                  address_mode, op->networks.ea_s);
+                  address_mode, op->lrp.networks.ea_s);
     if (mtu > 0) {
         ds_put_format(actions, ", mtu = %u", mtu);
     }
@@ -2331,14 +2160,14 @@ build_ND_RA_flows_for_lrouter_port(
 
     bool add_rs_response_flow = false;
 
-    for (size_t i = 0; i < op->networks.n_ipv6_addrs; i++) {
-        if (in6_is_lla(&op->networks.ipv6_addrs[i].network)) {
+    for (size_t i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
+        if (in6_is_lla(&op->lrp.networks.ipv6_addrs[i].network)) {
             continue;
         }
 
         ds_put_format(actions, ", prefix = %s/%u",
-                      op->networks.ipv6_addrs[i].network_s,
-                      op->networks.ipv6_addrs[i].plen);
+                      op->lrp.networks.ipv6_addrs[i].network_s,
+                      op->lrp.networks.ipv6_addrs[i].plen);
 
         add_rs_response_flow = true;
     }
@@ -2355,14 +2184,14 @@ build_ND_RA_flows_for_lrouter_port(
 
         char ip6_str[INET6_ADDRSTRLEN + 1];
         struct in6_addr lla;
-        in6_generate_lla(op->networks.ea, &lla);
+        in6_generate_lla(op->lrp.networks.ea, &lla);
         memset(ip6_str, 0, sizeof(ip6_str));
         ipv6_string_mapped(ip6_str, &lla);
         ds_put_format(actions, "eth.dst = eth.src; eth.src = %s; "
                       "ip6.dst = ip6.src; ip6.src = %s; "
                       "outport = inport; flags.loopback = 1; "
                       "output;",
-                      op->networks.ea_s, ip6_str);
+                      op->lrp.networks.ea_s, ip6_str);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_ND_RA_RESPONSE, 50,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2371,18 +2200,18 @@ build_ND_RA_flows_for_lrouter_port(
 
 static void
 build_dhcpv6_reply_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match)
 {
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
-    for (size_t i = 0; i < op->networks.n_ipv6_addrs; i++) {
+    for (size_t i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
         ds_clear(match);
         ds_put_format(match, "ip6.dst == %s && udp.src == 547 &&"
                       " udp.dst == 546",
-                      op->networks.ipv6_addrs[i].addr_s);
+                      op->lrp.networks.ipv6_addrs[i].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_IP_INPUT, 100,
                                 ds_cstr(match),
                                 "reg0 = 0; handle_dhcpv6_reply;",
@@ -2392,16 +2221,16 @@ build_dhcpv6_reply_flows_for_lrouter_port(
 
 static void
 build_ipv6_input_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions)
 {
     /* No ingress packets are accepted on a chassisredirect
      * port, so no need to program flows for that port. */
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
-    if (op->networks.n_ipv6_addrs) {
+    if (op->lrp.networks.n_ipv6_addrs) {
         /* ICMPv6 echo reply.  These flows reply to echo requests
             * received for the router's IP address. */
         ds_clear(match);
@@ -2422,32 +2251,32 @@ build_ipv6_input_flows_for_lrouter_port(
 
     /* ND reply.  These flows reply to ND solicitations for the
      * router's own IP address. */
-    for (size_t i = 0; i < op->networks.n_ipv6_addrs; i++) {
+    for (size_t i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
         ds_clear(match);
-        if (op->is_l3dgw_port && op->chassis_redirect_json_key) {
+        if (op->lrp.is_l3dgw_port && op->lrp.chassis_redirect_json_key) {
             /* Traffic with eth.src = l3dgw_port->lrp_networks.ea_s
                 * should only be sent from the gateway chassi, so that
                 * upstream MAC learning points to the gateway chassis.
                 * Also need to avoid generation of multiple ND replies
                 * from different chassis. */
             ds_put_format(match, "is_chassis_resident(%s)",
-                          op->chassis_redirect_json_key);
+                          op->lrp.chassis_redirect_json_key);
         }
 
         build_lrouter_nd_flow(lflows, op, &op->pb->header_.uuid,
                               lflow_uuid_idx, "nd_na_router",
-                              op->networks.ipv6_addrs[i].addr_s,
-                              op->networks.ipv6_addrs[i].sn_addr_s,
+                              op->lrp.networks.ipv6_addrs[i].addr_s,
+                              op->lrp.networks.ipv6_addrs[i].sn_addr_s,
                               REG_INPORT_ETH_ADDR, match, false, 90);
     }
 
     /* UDP/TCP/SCTP port unreachable */
-    if (lp_type != LP_L3GATEWAY && !op->dp_has_l3dgw_port) {
-        for (int i = 0; i < op->networks.n_ipv6_addrs; i++) {
+    if (op->type != LP_L3GATEWAY && !op->lrp.dp_has_l3dgw_port) {
+        for (int i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
             ds_clear(match);
             ds_put_format(match,
                           "ip6 && ip6.dst == %s && !ip.later_frag && tcp",
-                          op->networks.ipv6_addrs[i].addr_s);
+                          op->lrp.networks.ipv6_addrs[i].addr_s);
             const char *action = "tcp_reset {"
                                  "eth.dst <-> eth.src; "
                                  "ip6.dst <-> ip6.src; "
@@ -2459,7 +2288,7 @@ build_ipv6_input_flows_for_lrouter_port(
             ds_clear(match);
             ds_put_format(match,
                             "ip6 && ip6.dst == %s && !ip.later_frag && sctp",
-                            op->networks.ipv6_addrs[i].addr_s);
+                            op->lrp.networks.ipv6_addrs[i].addr_s);
             action = "sctp_abort {"
                         "eth.dst <-> eth.src; "
                         "ip6.dst <-> ip6.src; "
@@ -2471,7 +2300,7 @@ build_ipv6_input_flows_for_lrouter_port(
             ds_clear(match);
             ds_put_format(match,
                             "ip6 && ip6.dst == %s && !ip.later_frag && udp",
-                            op->networks.ipv6_addrs[i].addr_s);
+                            op->lrp.networks.ipv6_addrs[i].addr_s);
             action = "icmp6 {"
                         "eth.dst <-> eth.src; "
                         "ip6.dst <-> ip6.src; "
@@ -2486,7 +2315,7 @@ build_ipv6_input_flows_for_lrouter_port(
             ds_clear(match);
             ds_put_format(match,
                             "ip6 && ip6.dst == %s && !ip.later_frag",
-                            op->networks.ipv6_addrs[i].addr_s);
+                            op->lrp.networks.ipv6_addrs[i].addr_s);
             action = "icmp6 {"
                         "eth.dst <-> eth.src; "
                         "ip6.dst <-> ip6.src; "
@@ -2501,9 +2330,9 @@ build_ipv6_input_flows_for_lrouter_port(
     }
 
     /* ICMPv6 time exceeded */
-    for (int i = 0; i < op->networks.n_ipv6_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
         /* skip link-local address */
-        if (in6_is_lla(&op->networks.ipv6_addrs[i].network)) {
+        if (in6_is_lla(&op->lrp.networks.ipv6_addrs[i].network)) {
             continue;
         }
 
@@ -2515,8 +2344,8 @@ build_ipv6_input_flows_for_lrouter_port(
                       "ip6.src == %s/%d && "
                       "ip.ttl == {0, 1} && !ip.later_frag",
                       op->json_key,
-                      op->networks.ipv6_addrs[i].network_s,
-                      op->networks.ipv6_addrs[i].plen);
+                      op->lrp.networks.ipv6_addrs[i].network_s,
+                      op->lrp.networks.ipv6_addrs[i].plen);
         ds_put_format(actions,
                       "icmp6 {"
                       "eth.dst <-> eth.src; "
@@ -2526,7 +2355,7 @@ build_ipv6_input_flows_for_lrouter_port(
                       "icmp6.type = 3; /* Time exceeded */ "
                       "icmp6.code = 0; /* TTL exceeded in transit */ "
                       "next; };",
-                      op->networks.ipv6_addrs[i].addr_s);
+                      op->lrp.networks.ipv6_addrs[i].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_IP_INPUT, 40,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2541,7 +2370,7 @@ build_ipv6_input_flows_for_lrouter_port(
  * 'sn_ip_address'.
  */
 static void
-build_lrouter_nd_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
+build_lrouter_nd_flow(struct hmap *lflows, struct local_lport *op,
                       const struct uuid *flow_uuid, uint8_t *lflow_uuid_idx,
                       const char *action, const char *ip_address,
                       const char *sn_ip_address, const char *eth_addr,
@@ -2595,18 +2424,17 @@ build_lrouter_nd_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
 
 /* Logical router ingress table 3: IP Input for IPv4. */
 static void
-build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
-                            enum en_lport_type lp_type,
+build_lrouter_ipv4_ip_input(struct hmap *lflows, struct local_lport *op,
                             uint8_t *lflow_uuid_idx, struct ds *match,
                             struct ds *actions)
 {
     /* No ingress packets are accepted on a chassisredirect
      * port, so no need to program flows for that port. */
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
-    if (op->networks.n_ipv4_addrs) {
+    if (op->lrp.networks.n_ipv4_addrs) {
         /* L3 admission control: drop packets that originate from an
          * IPv4 address owned by the router or a broadcast address
          * known to the router (priority 100). */
@@ -2642,7 +2470,7 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
     build_lrouter_bfd_flows(lflows, op, lflow_uuid_idx);
 
     /* ICMP time exceeded */
-    for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
         ds_clear(match);
         ds_clear(actions);
 
@@ -2658,7 +2486,7 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
                       "ip4.src = %s; "
                       "ip.ttl = 255; "
                       "next; };",
-                      op->networks.ipv4_addrs[i].addr_s);
+                      op->lrp.networks.ipv4_addrs[i].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_IP_INPUT, 40,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2666,16 +2494,16 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
 
     /* ARP reply.  These flows reply to ARP requests for the router's own
      * IP address. */
-    for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
+    for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
         ds_clear(match);
         ds_put_format(match, "arp.spa == %s/%u",
-                      op->networks.ipv4_addrs[i].network_s,
-                      op->networks.ipv4_addrs[i].plen);
+                      op->lrp.networks.ipv4_addrs[i].network_s,
+                      op->lrp.networks.ipv4_addrs[i].plen);
 
-        if (op->dp_has_l3dgw_port && op->peer
-                && op->peer_dp_has_localnet_ports) {
+        if (op->lrp.dp_has_l3dgw_port && op->peer
+                && op->lrp.peer_dp_has_localnet_ports) {
             bool add_chassis_resident_check = false;
-            if (op->is_l3dgw_port) {
+            if (op->lrp.is_l3dgw_port) {
                 /* Traffic with eth.src = l3dgw_port->lrp_networks.ea_s
                  * should only be sent from the gateway chassis, so that
                  * upstream MAC learning points to the gateway chassis.
@@ -2698,23 +2526,23 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
 
             if (add_chassis_resident_check) {
                 ds_put_format(match, " && is_chassis_resident(%s)",
-                              op->chassis_redirect_json_key);
+                              op->lrp.chassis_redirect_json_key);
             }
         }
 
         build_lrouter_arp_flow(lflows, op, &op->pb->header_.uuid,
                                lflow_uuid_idx,
-                               op->networks.ipv4_addrs[i].addr_s,
+                               op->lrp.networks.ipv4_addrs[i].addr_s,
                                REG_INPORT_ETH_ADDR, match, false, 90);
     }
 
-    if (lp_type != LP_L3GATEWAY && !op->dp_has_l3dgw_port) {
+    if (op->type != LP_L3GATEWAY && !op->lrp.dp_has_l3dgw_port) {
         /* UDP/TCP/SCTP port unreachable. */
-        for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
+        for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
             ds_clear(match);
             ds_put_format(match,
                           "ip4 && ip4.dst == %s && !ip.later_frag && udp",
-                          op->networks.ipv4_addrs[i].addr_s);
+                          op->lrp.networks.ipv4_addrs[i].addr_s);
             const char *action = "icmp4 {"
                                     "eth.dst <-> eth.src; "
                                     "ip4.dst <-> ip4.src; "
@@ -2729,7 +2557,7 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
             ds_clear(match);
             ds_put_format(match,
                             "ip4 && ip4.dst == %s && !ip.later_frag && tcp",
-                            op->networks.ipv4_addrs[i].addr_s);
+                            op->lrp.networks.ipv4_addrs[i].addr_s);
             action = "tcp_reset {"
                         "eth.dst <-> eth.src; "
                         "ip4.dst <-> ip4.src; "
@@ -2741,7 +2569,7 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
             ds_clear(match);
             ds_put_format(match,
                             "ip4 && ip4.dst == %s && !ip.later_frag && sctp",
-                            op->networks.ipv4_addrs[i].addr_s);
+                            op->lrp.networks.ipv4_addrs[i].addr_s);
             action = "sctp_abort {"
                         "eth.dst <-> eth.src; "
                         "ip4.dst <-> ip4.src; "
@@ -2753,7 +2581,7 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
             ds_clear(match);
             ds_put_format(match,
                             "ip4 && ip4.dst == %s && !ip.later_frag",
-                            op->networks.ipv4_addrs[i].addr_s);
+                            op->lrp.networks.ipv4_addrs[i].addr_s);
             action = "icmp4 {"
                         "eth.dst <-> eth.src; "
                         "ip4.dst <-> ip4.src; "
@@ -2769,17 +2597,17 @@ build_lrouter_ipv4_ip_input(struct hmap *lflows, struct ovn_ctrl_lrp *op,
 }
 
 static void
-build_lrouter_bfd_flows(struct hmap *lflows, struct ovn_ctrl_lrp *op,
+build_lrouter_bfd_flows(struct hmap *lflows, struct local_lport *op,
                         uint8_t *lflow_uuid_idx)
 {
-    if (!op->has_bfd) {
+    if (!op->lrp.has_bfd) {
         return;
     }
 
     struct ds ip_list = DS_EMPTY_INITIALIZER;
     struct ds match = DS_EMPTY_INITIALIZER;
 
-    if (op->networks.n_ipv4_addrs) {
+    if (op->lrp.networks.n_ipv4_addrs) {
         op_put_v4_networks(&ip_list, op, false);
         ds_put_format(&match, "ip4.src == %s && udp.dst == 3784",
                       ds_cstr(&ip_list));
@@ -2794,7 +2622,7 @@ build_lrouter_bfd_flows(struct hmap *lflows, struct ovn_ctrl_lrp *op,
                                 &op->pb->header_.uuid, lflow_uuid_idx);
     }
 
-    if (op->networks.n_ipv6_addrs) {
+    if (op->lrp.networks.n_ipv6_addrs) {
         ds_clear(&ip_list);
         ds_clear(&match);
 
@@ -2821,7 +2649,7 @@ build_lrouter_bfd_flows(struct hmap *lflows, struct ovn_ctrl_lrp *op,
  * with the given priority.
  */
 static void
-build_lrouter_arp_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
+build_lrouter_arp_flow(struct hmap *lflows, struct local_lport *op,
                        const struct uuid *lflow_uuid, uint8_t *lflow_uuid_idx,
                        const char *ip_address, const char *eth_addr,
                        struct ds *extra_match, bool drop, uint16_t priority)
@@ -2864,12 +2692,11 @@ build_lrouter_arp_flow(struct hmap *lflows, struct ovn_ctrl_lrp *op,
 }
 
 static void
-build_lrouter_force_snat_flows_op(struct hmap *lflows, struct ovn_ctrl_lrp *op,
-                                  enum en_lport_type lp_type,
+build_lrouter_force_snat_flows_op(struct hmap *lflows, struct local_lport *op,
                                   uint8_t *lflow_uuid_idx, struct ds *match,
                                   struct ds *actions)
 {
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
@@ -2878,12 +2705,12 @@ build_lrouter_force_snat_flows_op(struct hmap *lflows, struct ovn_ctrl_lrp *op,
         return;
     }
 
-    if (op->networks.n_ipv4_addrs) {
+    if (op->lrp.networks.n_ipv4_addrs) {
         ds_clear(match);
         ds_clear(actions);
 
         ds_put_format(match, "inport == %s && ip4.dst == %s",
-                      op->json_key, op->networks.ipv4_addrs[0].addr_s);
+                      op->json_key, op->lrp.networks.ipv4_addrs[0].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_UNSNAT, 110,
                                 ds_cstr(match), "ct_snat;",
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2896,28 +2723,28 @@ build_lrouter_force_snat_flows_op(struct hmap *lflows, struct ovn_ctrl_lrp *op,
         ds_put_format(match, "flags.force_snat_for_lb == 1 && ip4 && "
                       "outport == %s", op->json_key);
         ds_put_format(actions, "ct_snat(%s);",
-                      op->networks.ipv4_addrs[0].addr_s);
+                      op->lrp.networks.ipv4_addrs[0].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_OUT_SNAT, 110,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
-        if (op->networks.n_ipv4_addrs > 1) {
+        if (op->lrp.networks.n_ipv4_addrs > 1) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
             VLOG_WARN_RL(&rl, "Logical router port %s is configured with "
                               "multiple IPv4 addresses.  Only the first "
                               "IP [%s] is considered as SNAT for load "
                               "balancer", op->json_key,
-                              op->networks.ipv4_addrs[0].addr_s);
+                              op->lrp.networks.ipv4_addrs[0].addr_s);
         }
     }
 
-    /* op->networks.ipv6_addrs will always have LLA and that will be
+    /* op->lrp.networks.ipv6_addrs will always have LLA and that will be
      * last in the list. So add the flows only if n_ipv6_addrs > 1. */
-    if (op->networks.n_ipv6_addrs > 1) {
+    if (op->lrp.networks.n_ipv6_addrs > 1) {
         ds_clear(match);
         ds_clear(actions);
 
         ds_put_format(match, "inport == %s && ip6.dst == %s",
-                      op->json_key, op->networks.ipv6_addrs[0].addr_s);
+                      op->json_key, op->lrp.networks.ipv6_addrs[0].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_UNSNAT, 110,
                                 ds_cstr(match), "ct_snat;",
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2930,17 +2757,17 @@ build_lrouter_force_snat_flows_op(struct hmap *lflows, struct ovn_ctrl_lrp *op,
         ds_put_format(match, "flags.force_snat_for_lb == 1 && ip6 && "
                       "outport == %s", op->json_key);
         ds_put_format(actions, "ct_snat(%s);",
-                      op->networks.ipv6_addrs[0].addr_s);
+                      op->lrp.networks.ipv6_addrs[0].addr_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_OUT_SNAT, 110,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
-        if (op->networks.n_ipv6_addrs > 2) {
+        if (op->lrp.networks.n_ipv6_addrs > 2) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
             VLOG_WARN_RL(&rl, "Logical router port %s is configured with "
                               "multiple IPv6 addresses.  Only the first "
                               "IP [%s] is considered as SNAT for load "
                               "balancer", op->json_key,
-                              op->networks.ipv6_addrs[0].addr_s);
+                              op->lrp.networks.ipv6_addrs[0].addr_s);
         }
     }
 }
@@ -2954,10 +2781,10 @@ build_lrouter_force_snat_flows_op(struct hmap *lflows, struct ovn_ctrl_lrp *op,
  */
 static void
 build_egress_delivery_flows_for_lrouter_port(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op, enum en_lport_type lp_type,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions)
 {
-    if (lp_type == LP_CHASSISREDIRECT) {
+    if (op->type == LP_CHASSISREDIRECT) {
         return;
     }
 
@@ -2978,7 +2805,7 @@ TODO
         ds_clear(actions);
         ds_put_format(match, "(ip4.mcast || ip6.mcast) && outport == %s",
                       op->json_key);
-        ds_put_format(actions, "eth.src = %s; output;", op->networks.ea_s);
+        ds_put_format(actions, "eth.src = %s; output;", op->lrp.networks.ea_s);
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_OUT_DELIVERY, 110,
                                 ds_cstr(match), ds_cstr(actions),
                                 &op->pb->header_.uuid, lflow_uuid_idx);
@@ -2993,19 +2820,19 @@ TODO
 
 /* lrouter util functions. */
 static void
-op_put_v4_networks(struct ds *ds, const struct ovn_ctrl_lrp *op,
+op_put_v4_networks(struct ds *ds, const struct local_lport *op,
                    bool add_bcast)
 {
-    if (!add_bcast && op->networks.n_ipv4_addrs == 1) {
-        ds_put_format(ds, "%s", op->networks.ipv4_addrs[0].addr_s);
+    if (!add_bcast && op->lrp.networks.n_ipv4_addrs == 1) {
+        ds_put_format(ds, "%s", op->lrp.networks.ipv4_addrs[0].addr_s);
         return;
     }
 
     ds_put_cstr(ds, "{");
-    for (int i = 0; i < op->networks.n_ipv4_addrs; i++) {
-        ds_put_format(ds, "%s, ", op->networks.ipv4_addrs[i].addr_s);
+    for (int i = 0; i < op->lrp.networks.n_ipv4_addrs; i++) {
+        ds_put_format(ds, "%s, ", op->lrp.networks.ipv4_addrs[i].addr_s);
         if (add_bcast) {
-            ds_put_format(ds, "%s, ", op->networks.ipv4_addrs[i].bcast_s);
+            ds_put_format(ds, "%s, ", op->lrp.networks.ipv4_addrs[i].bcast_s);
         }
     }
     ds_chomp(ds, ' ');
@@ -3014,16 +2841,16 @@ op_put_v4_networks(struct ds *ds, const struct ovn_ctrl_lrp *op,
 }
 
 static void
-op_put_v6_networks(struct ds *ds, const struct ovn_ctrl_lrp *op)
+op_put_v6_networks(struct ds *ds, const struct local_lport *op)
 {
-    if (op->networks.n_ipv6_addrs == 1) {
-        ds_put_format(ds, "%s", op->networks.ipv6_addrs[0].addr_s);
+    if (op->lrp.networks.n_ipv6_addrs == 1) {
+        ds_put_format(ds, "%s", op->lrp.networks.ipv6_addrs[0].addr_s);
         return;
     }
 
     ds_put_cstr(ds, "{");
-    for (int i = 0; i < op->networks.n_ipv6_addrs; i++) {
-        ds_put_format(ds, "%s, ", op->networks.ipv6_addrs[i].addr_s);
+    for (int i = 0; i < op->lrp.networks.n_ipv6_addrs; i++) {
+        ds_put_format(ds, "%s, ", op->lrp.networks.ipv6_addrs[i].addr_s);
     }
     ds_chomp(ds, ' ');
     ds_chomp(ds, ',');
@@ -3031,7 +2858,7 @@ op_put_v6_networks(struct ds *ds, const struct ovn_ctrl_lrp *op)
 }
 
 static void
-build_route_match(const struct ovn_ctrl_lrp *op_inport, const char *network_s,
+build_route_match(const struct local_lport *op_inport, const char *network_s,
                   int plen, bool is_src_route, bool is_ipv4, struct ds *match,
                   uint16_t *priority)
 {
@@ -3055,14 +2882,14 @@ build_route_match(const struct ovn_ctrl_lrp *op_inport, const char *network_s,
 
 static void
 add_route(
-    struct hmap *lflows, struct ovn_ctrl_lrp *op,
+    struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions,
     const char *lrp_addr_s, const char *network_s, int plen,
     const char *gateway, bool is_src_route, bool is_discard_route)
 {
     bool is_ipv4 = strchr(network_s, '.') ? true : false;
     uint16_t priority;
-    const struct ovn_ctrl_lrp *op_inport = NULL;
+    const struct local_lport *op_inport = NULL;
 
     /* IPv6 link-local addresses must be scoped to the local router port. */
     if (!is_ipv4) {
@@ -3099,7 +2926,7 @@ add_route(
                       "next;",
                       is_ipv4 ? REG_SRC_IPV4 : REG_SRC_IPV6,
                       lrp_addr_s,
-                      op->networks.ea_s,
+                      op->lrp.networks.ea_s,
                       op->json_key);
         ds_put_format(actions, "ip.ttl--; %s", ds_cstr(&common_actions));
     }
@@ -3107,7 +2934,7 @@ add_route(
     ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_IP_ROUTING, priority,
                             ds_cstr(match), ds_cstr(actions),
                             &op->pb->header_.uuid, lflow_uuid_idx);
-    if (op && op->has_bfd) {
+    if (op && op->lrp.has_bfd) {
         ds_put_format(match, " && udp.dst == 3784");
         ovn_ctrl_lflow_add_uuid(lflows, S_ROUTER_IN_IP_ROUTING,
                                 priority + 1, ds_cstr(match),

@@ -183,9 +183,14 @@ ovn_dbctl_main(int argc, char *argv[],
         }
         daemon_mode = true;
     }
+
     /* Initialize IDL. */
     idl = the_idl = ovsdb_idl_create_unconnected(dbctl_options->idl_class,
-                                                 daemon_mode);
+                                                 true);
+    if (dbctl_options->pre_idl_run) {
+        dbctl_options->pre_idl_run(idl);
+    }
+                                                 
     ovsdb_idl_set_shuffle_remotes(idl, shuffle_remotes);
     /* "retry" is true iff in daemon mode. */
     ovsdb_idl_set_remote(idl, db, daemon_mode);

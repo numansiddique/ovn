@@ -25,6 +25,7 @@ struct sbrec_datapath_binding;
 struct sbrec_port_binding;
 struct hmap;
 struct ofpbuf;
+struct local_lport;
 
 /* Pipeline stages. */
 
@@ -313,12 +314,12 @@ void build_lswitch_generic_lflows(struct hmap *lflows);
 void build_lrouter_generic_lflows(struct hmap *lflows);
 
 void ovn_ctrl_lflows_build_dp_lflows(
-    struct hmap *lflows, const struct sbrec_datapath_binding *);
+    struct hmap *lflows, const struct sbrec_datapath_binding *dp);
 
 void ovn_ctrl_lflows_clear(struct hmap *lflows);
 void ovn_ctrl_lflows_destroy(struct hmap *lflows);
 
 void ovn_ctrl_build_lport_lflows(
-    struct hmap *lflows, const struct sbrec_port_binding *);
+    struct hmap *lflows, struct local_lport *);
 
 #endif /* OVN_LIB_LFLOW_H */

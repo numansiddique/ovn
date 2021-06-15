@@ -16,6 +16,7 @@
 #include <config.h>
 
 /* OVS includes. */
+#include "include/openvswitch/json.h"
 #include "lib/hmapx.h"
 #include "lib/util.h"
 #include "openvswitch/vlog.h"
@@ -39,7 +40,15 @@ static void local_datapath_add__(
                            void *aux),
     void *aux);
 
-void local_lport_init_cache(struct local_lport *lport);
+static void local_lport_init_cache(struct local_lport *);
+static void local_lport_update_lsp_data(struct local_lport *);
+static void local_lport_update_lrp_data(struct local_lport *);
+static void local_lport_destroy_lsp_data(struct local_lport *);
+static void local_lport_destroy_lrp_data(struct local_lport *);
+
+static void local_datapath_set_peer_lport(
+    struct local_lport *, const struct sbrec_port_binding *peer_sb,
+    struct hmap *local_datapaths);
 
 static struct tracked_datapath *tracked_datapath_create(
     const struct sbrec_datapath_binding *dp,
@@ -181,6 +190,17 @@ local_datapath_add_peer_port(
         return;
     }
 
+    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
+    struct local_lport *peer_lport =
+        local_datapath_get_lport(peer_ld, peer->logical_port);
+    if (!peer_lport) {
+        peer_lport =
+            local_datapath_add_lport(peer_ld, peer->logical_port, peer);
+    }
+
+    lport->peer = peer_lport;
+    peer_lport->peer = lport;
+
     for (size_t i = 0; i < peer_ld->n_peer_ports; i++) {
         if (peer_ld->peer_ports[i].local == peer) {
             return;
@@ -231,6 +251,12 @@ local_datapath_remove_peer_port(const struct sbrec_port_binding *pb,
          * be no-op. */
         local_datapath_remove_peer_port(peer, peer_ld, local_datapaths);
     }
+
+    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
+    if (lport->peer) {
+        lport->peer->peer = NULL;
+    }
+    lport->peer = NULL;
 }
 
 struct local_lport *
@@ -250,9 +276,14 @@ local_datapath_add_lport(struct local_datapath *ld,
 
         shash_add(&ld->lports, lport_name, dp_lport);
         local_lport_init_cache(dp_lport);
+
+        dp_lport->ldp = ld;
     } else {
         local_lport_update_cache(dp_lport);
     }
+
+    dp_lport->ldp = ld;
+    dp_lport->type = get_lport_type(pb);
 
     return dp_lport;
 }
@@ -291,11 +322,12 @@ local_lport_clear_cache(struct local_lport *lport)
         free(lport->addresses[i]);
     }
     free(lport->addresses);
-
+    lport->n_addresses = 0;
     for (size_t i = 0; i < lport->n_port_security; i++) {
         free(lport->port_security[i]);
     }
     free(lport->port_security);
+    lport->n_port_security = 0;
 
     smap_destroy(&lport->options);
 }
@@ -332,6 +364,32 @@ local_lport_is_cache_old(struct local_lport *lport)
     bool claimed_ = !!pb->chassis;
 
     return (lport->claimed != claimed_);
+}
+
+void
+local_lport_init_lflow_gen_data(struct local_lport *lport)
+{
+    struct ds json_key = DS_EMPTY_INITIALIZER;
+    json_string_escape(lport->pb->logical_port, &json_key);
+    lport->json_key = ds_steal_cstr(&json_key);
+
+    if (lport->ldp->is_switch) {
+        local_lport_update_lsp_data(lport);
+    } else {
+        local_lport_update_lrp_data(lport);
+    }
+}
+
+void
+local_lport_destroy_lflow_gen_data(struct local_lport *lport)
+{
+    free(lport->json_key);
+    lport->json_key = NULL;
+    if (lport->ldp->is_switch) {
+        local_lport_destroy_lsp_data(lport);
+    } else {
+        local_lport_destroy_lrp_data(lport);
+    }
 }
 
 void
@@ -432,7 +490,7 @@ tracked_datapaths_destroy(struct hmap *tracked_datapaths)
 }
 
 /* static functions. */
-void
+static void
 local_lport_init_cache(struct local_lport *lport)
 {
     const struct sbrec_port_binding *pb = lport->pb;
@@ -482,7 +540,9 @@ local_datapath_add__(struct hmap *local_datapaths,
     hmap_insert(local_datapaths, &ld->hmap_node, dp_key);
     ld->datapath = dp;
 
-    datapath_added_cb(ld, aux);
+    if (datapath_added_cb) {
+        datapath_added_cb(ld, aux);
+    }
 
     if (depth >= 100) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
@@ -497,6 +557,9 @@ local_datapath_add__(struct hmap *local_datapaths,
     const struct sbrec_port_binding *pb;
     SBREC_PORT_BINDING_FOR_EACH_EQUAL (pb, target,
                                        sbrec_port_binding_by_datapath) {
+        struct local_lport *lport =
+            local_datapath_add_lport(ld, pb->logical_port, pb);
+
         if (!strcmp(pb->type, "patch") || !strcmp(pb->type, "l3gateway")) {
             const char *peer_name = smap_get(&pb->options, "peer");
             if (peer_name) {
@@ -528,11 +591,13 @@ local_datapath_add__(struct hmap *local_datapaths,
                     }
                     ld->peer_ports[ld->n_peer_ports - 1].local = pb;
                     ld->peer_ports[ld->n_peer_ports - 1].remote = peer;
+
+                    if (!lport->peer) {
+                        local_datapath_set_peer_lport(lport, peer, local_datapaths);
+                    }
                 }
             }
         }
-
-        local_datapath_add_lport(ld, pb->logical_port, pb);
     }
     sbrec_port_binding_index_destroy_row(target);
 }
@@ -548,4 +613,122 @@ tracked_datapath_create(const struct sbrec_datapath_binding *dp,
     shash_init(&t_dp->lports);
     hmap_insert(tracked_datapaths, &t_dp->node, uuid_hash(&dp->header_.uuid));
     return t_dp;
+}
+
+static void
+local_lport_destroy_lsp_data(struct local_lport *lport)
+{
+    if (lport->lsp.n_addrs) {
+        destroy_lport_addresses(lport->lsp.addrs);
+    }
+
+    if (lport->lsp.n_ps_addrs){
+        destroy_lport_addresses(lport->lsp.ps_addrs);
+    }
+
+    free(lport->lsp.addrs);
+    free(lport->lsp.ps_addrs);
+    lport->lsp.addrs = NULL;
+    lport->lsp.ps_addrs = NULL;
+    lport->lsp.n_addrs = 0;
+    lport->lsp.n_ps_addrs = 0;
+}
+
+static void
+local_lport_destroy_lrp_data(struct local_lport *lport)
+{
+    destroy_lport_addresses(&lport->lrp.networks);
+    if (lport->lrp.is_l3dgw_port) {
+        free(lport->lrp.chassis_redirect_json_key);
+    }
+}
+
+static void
+local_lport_update_lsp_data(struct local_lport *lport)
+{
+    lport->lsp.addrs = xmalloc(sizeof *lport->lsp.addrs * lport->pb->n_mac);
+    lport->lsp.ps_addrs =
+        xmalloc(sizeof *lport->lsp.ps_addrs * lport->pb->n_mac);
+    for (size_t i = 0; i < lport->pb->n_mac; i++) {
+        if (!strcmp(lport->pb->mac[i], "unknown")) {
+            lport->lsp.has_unknown = true;
+            continue;
+        }
+        if (!strcmp(lport->pb->mac[i], "router")) {
+            continue;
+        }
+
+        if (!extract_lsp_addresses(lport->pb->mac[i],
+                                   &lport->lsp.addrs[lport->lsp.n_addrs])) {
+            continue;
+        }
+
+        lport->lsp.n_addrs++;
+    }
+
+    for (size_t i = 0; i < lport->pb->n_port_security; i++) {
+        if (!extract_lsp_addresses(
+            lport->pb->port_security[i],
+            &lport->lsp.ps_addrs[lport->lsp.n_ps_addrs])) {
+            continue;
+        }
+        lport->lsp.n_ps_addrs++;
+    }
+
+    lport->lsp.check_lport_is_up =
+        !smap_get_bool(&lport->pb->datapath->options,
+        "ignore_lport_down", false);
+}
+
+static void
+local_lport_update_lrp_data(struct local_lport *lport)
+{
+    if (!extract_lsp_addresses(lport->pb->mac[0], &lport->lrp.networks)) {
+        return;
+    }
+
+    /* Always add the IPv6 link local address. */
+    struct in6_addr lla;
+    in6_generate_lla(lport->lrp.networks.ea, &lla);
+    lport_addr_add_ip6ddr(&lport->lrp.networks, lla, 64);
+
+    struct ds json_key = DS_EMPTY_INITIALIZER;
+    json_string_escape(lport->pb->logical_port, &json_key);
+    lport->json_key = ds_steal_cstr(&json_key);
+
+    lport->lrp.is_l3dgw_port = smap_get_bool(&lport->pb->options,
+                                             "is-l3dgw-port", false);
+    if (lport->lrp.is_l3dgw_port) {
+        char *chassis_redirect_name =
+            ovn_chassis_redirect_name(lport->pb->logical_port);
+        json_string_escape(chassis_redirect_name, &json_key);
+        lport->lrp.chassis_redirect_json_key = ds_steal_cstr(&json_key);
+        free(chassis_redirect_name);
+    }
+
+    lport->lrp.dp_has_l3dgw_port = smap_get_bool(&lport->pb->datapath->options,
+                                          "has-l3dgw-port", false);
+
+    lport->lrp.peer_dp_has_localnet_ports =
+        smap_get_bool(&lport->pb->options,
+                      "peer-dp-has-localnet-ports", false);
+}
+
+static void
+local_datapath_set_peer_lport(struct local_lport *lport,
+                              const struct sbrec_port_binding *peer_sb,
+                              struct hmap *local_datapaths)
+{
+    struct local_datapath *peer_ld =
+        get_local_datapath(local_datapaths, peer_sb->datapath->tunnel_key);
+    if (!peer_ld) {
+        return;
+    }
+
+    struct local_lport *peer_lport = local_datapath_get_lport(
+        peer_ld, peer_sb->logical_port);
+    if (peer_lport) {
+        lport->peer = peer_lport;
+        peer_lport->peer = lport;
+    }
 }

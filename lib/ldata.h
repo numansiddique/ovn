@@ -20,12 +20,16 @@
 #include "include/openvswitch/shash.h"
 #include "lib/smap.h"
 
+/* OVN includes. */
+#include "lib/ovn-util.h"
+
 struct sbrec_datapath_binding;
 struct sbrec_port_binding;
 struct ovsdb_idl_index;
 
 struct local_lport {
     const struct sbrec_port_binding *pb;
+    enum en_lport_type type;
 
     /* cached data. */
     char **addresses;
@@ -35,9 +39,53 @@ struct local_lport {
     struct smap options;
     bool claimed;
 
+    union {
+        struct {
+            /* Logical switch port data. */
+            struct lport_addresses *addrs;  /* Logical switch port
+                                             * addresses. */
+            unsigned int n_addrs;
+
+            struct lport_addresses *ps_addrs;  /* Port security addresses. */
+            unsigned int n_ps_addrs;
+
+            bool has_unknown;
+            bool check_lport_is_up;
+        } lsp;
+
+        struct {
+            struct lport_addresses networks;
+            bool has_bfd;
+            bool is_l3dgw_port;
+            char *chassis_redirect_json_key; /* Initialized only if
+                                              * 'is_l3dgw_port'. */
+            bool dp_has_l3dgw_port; /* True if the router datapath has a
+                                     * gw port. */
+            bool peer_dp_has_localnet_ports; /* True if the peer datapath has
+                                      * localnet ports. */
+        } lrp;
+    };
+    char *json_key;
+
+    /* The port's peer:
+     *
+     *     - A switch port S of type "router" has a router port R as a peer,
+     *       and R in turn has S has its peer.
+     *
+     *     - Two connected logical router ports have each other as peer.
+     *
+     *     - Other kinds of ports have no peer. */
+    struct local_lport *peer;
+
+    /* Logical port multicast data. */
+    /*struct mcast_port_info mcast_info; */
+
+    struct local_datapath *ldp;
+
     struct hmap ctrl_lflows[2];
     struct hmap *active_lflows;
     struct hmap *cleared_lflows;
+
 };
 
 /* A logical datapath that has some relevance to this hypervisor.  A logical
@@ -68,6 +116,9 @@ struct local_datapath {
 
     size_t n_peer_ports;
     size_t n_allocated_peer_ports;
+
+    /* Multicast data. */
+    /*struct mcast_info mcast_info; */
 
     /* Data related to lflow generation. */
     struct smap dp_options;
@@ -130,6 +181,8 @@ void local_lport_update_cache(struct local_lport *);
 void local_lport_clear_cache(struct local_lport *);
 bool local_lport_is_cache_old(struct local_lport *);
 void local_lport_switch_lflow_map(struct local_lport *);
+void local_lport_init_lflow_gen_data(struct local_lport *);
+void local_lport_destroy_lflow_gen_data(struct local_lport *);
 
 /* Represents a tracked logical port. */
 enum en_tracked_resource_type {

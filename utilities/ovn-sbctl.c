@@ -43,6 +43,7 @@
 #include "openvswitch/shash.h"
 #include "openvswitch/vconn.h"
 #include "openvswitch/vlog.h"
+#include "lib/ldata.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/lflow.h"
@@ -144,6 +145,25 @@ Other options:\n\
     stream_usage("database", true, true, true);
     exit(EXIT_SUCCESS);
 }
+
+static struct ovsdb_idl_index *sbrec_datapath_binding_by_key;
+static struct ovsdb_idl_index *sbrec_port_binding_by_datapath;
+static struct ovsdb_idl_index *sbrec_port_binding_by_name;
+
+static void
+sbctl_pre_idl_run(struct ovsdb_idl *sb_idl)
+{
+    sbrec_datapath_binding_by_key
+        = ovsdb_idl_index_create1(sb_idl,
+                                  &sbrec_datapath_binding_col_tunnel_key);
+    sbrec_port_binding_by_datapath
+        = ovsdb_idl_index_create1(sb_idl,
+                                  &sbrec_port_binding_col_datapath);
+    sbrec_port_binding_by_name
+        = ovsdb_idl_index_create1(sb_idl,
+                                  &sbrec_port_binding_col_logical_port);
+}
+
 
 /* One should not use ctl_fatal() within commands because it will kill the
  * daemon if we're in daemon mode.  Use ctl_error() instead and return
@@ -325,6 +345,7 @@ pre_get_info(struct ctl_context *ctx)
 
     ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_external_ids);
     ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_options);
+    ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_tunnel_key);
     ovsdb_idl_add_column(ctx->idl, &sbrec_datapath_binding_col_load_balancers);
 
     ovsdb_idl_add_column(ctx->idl, &sbrec_ip_multicast_col_datapath);
@@ -1126,33 +1147,6 @@ ctrl_lflow_list(struct hmap *lflows, struct hmap *gen_flows, bool print_uuid,
     free(ctrl_lflows);
 }
 
-struct sbctl_datapath {
-    struct hmap_node node;
-    const struct sbrec_datapath_binding *dp;
-    struct hmap lflows;
-    struct shash lports;
-};
-
-static uint32_t
-dp_hash(const struct sbrec_datapath_binding *dp)
-{
-    return hash_uint64(dp->tunnel_key);
-}
-
-static struct sbctl_datapath *
-get_sbctl_datapath(struct hmap *datapaths,
-                   const struct sbrec_datapath_binding *dp)
-{
-    struct sbctl_datapath *sdp;
-    HMAP_FOR_EACH_WITH_HASH (sdp, node, dp_hash(dp), datapaths) {
-        if (sdp->dp == dp) {
-            return sdp;
-        }
-    }
-
-    return NULL;
-}
-
 static void
 build_sbctl_datapaths(struct hmap *datapaths,
                       const struct sbrec_datapath_binding *dp,
@@ -1160,29 +1154,25 @@ build_sbctl_datapaths(struct hmap *datapaths,
 {
     if (!dp) {
         SBREC_DATAPATH_BINDING_FOR_EACH (dp, ctx->idl) {
-            struct sbctl_datapath *sdp = xzalloc(sizeof *sdp);
-            sdp->dp = dp;
-            hmap_init(&sdp->lflows);
-            shash_init(&sdp->lports);
-            hmap_insert(datapaths, &sdp->node, dp_hash(dp));
+           local_datapath_add(datapaths, dp, sbrec_datapath_binding_by_key,
+                              sbrec_port_binding_by_datapath,
+                              sbrec_port_binding_by_name, NULL, NULL);
         }
     } else {
-        struct sbctl_datapath *sdp = xzalloc(sizeof *sdp);
-        sdp->dp = dp;
-        hmap_init(&sdp->lflows);
-        shash_init(&sdp->lports);
-        hmap_insert(datapaths, &sdp->node, dp_hash(dp));
+        local_datapath_add(datapaths, dp, sbrec_datapath_binding_by_key,
+                           sbrec_port_binding_by_datapath,
+                           sbrec_port_binding_by_name, NULL, NULL);
     }
 
     const struct sbrec_port_binding *pb;
     SBREC_PORT_BINDING_FOR_EACH (pb, ctx->idl) {
-        struct sbctl_datapath *sdp =
-            get_sbctl_datapath(datapaths, pb->datapath);
-        if (!sdp) {
+        struct local_datapath *ldp =
+            get_local_datapath(datapaths, pb->datapath->tunnel_key);
+        if (!ldp) {
             continue;
         }
 
-        shash_add(&sdp->lports, pb->logical_port, pb);
+        local_datapath_add_lport(ldp, pb->logical_port, pb);
     }
 }
 
@@ -1218,24 +1208,26 @@ cmd_ctrl_lflow_list(struct ctl_context *ctx)
     struct hmap datapaths = HMAP_INITIALIZER(&datapaths);
     build_sbctl_datapaths(&datapaths, dp, ctx);
 
-    struct sbctl_datapath *sdp;
-    HMAP_FOR_EACH_POP (sdp, node, &datapaths) {
-        ovn_ctrl_lflows_build_dp_lflows(&sdp->lflows, sdp->dp);
-
-        struct shash_node *shash_node;
-        SHASH_FOR_EACH (shash_node, &sdp->lports) {
-            ovn_ctrl_build_lport_lflows(&sdp->lflows, shash_node->data);
+    struct local_datapath *ldp;
+    HMAP_FOR_EACH (ldp, hmap_node, &datapaths) {
+        if (dp && ldp->datapath != dp) {
+            continue;
         }
 
-        ctrl_lflow_list(&sdp->lflows, datapath_is_switch(sdp->dp) ?
+        ovn_ctrl_lflows_build_dp_lflows(&ldp->ctrl_lflows[0], ldp->datapath);
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &ldp->lports) {
+            ovn_ctrl_build_lport_lflows(&ldp->ctrl_lflows[0],
+                                        shash_node->data);
+        }
+
+        ctrl_lflow_list(&ldp->ctrl_lflows[0], ldp->is_switch ?
                         &gen_lswitch_flows : &gen_lrouter_flows,
-                        print_uuid, sdp->dp, ctx);
-        ovn_ctrl_lflows_destroy(&sdp->lflows);
-        shash_destroy(&sdp->lports);
-        free(sdp);
+                        print_uuid, ldp->datapath, ctx);
     }
 
-    hmap_destroy(&datapaths);
+    local_datapaths_destroy(&datapaths);
     ovn_ctrl_lflows_destroy(&gen_lswitch_flows);
     ovn_ctrl_lflows_destroy(&gen_lrouter_flows);
 }
@@ -1629,6 +1621,7 @@ main(int argc, char *argv[])
         .commands = sbctl_commands,
 
         .usage = sbctl_usage,
+        .pre_idl_run = sbctl_pre_idl_run,
         .add_base_prerequisites = sbctl_add_base_prerequisites,
         .pre_execute = sbctl_pre_execute,
         .post_execute = NULL,

@@ -43,7 +43,8 @@ struct ovn_dbctl_options {
     const struct ctl_command_syntax *commands;
 
     void (*usage)(void);
-
+    void (*pre_idl_run)(struct ovsdb_idl *);
+    void (*pre_idl_destroy)(struct ovsdb_idl *);
     void (*add_base_prerequisites)(struct ovsdb_idl *, enum nbctl_wait_type);
     void (*pre_execute)(struct ovsdb_idl *, struct ovsdb_idl_txn *,
                         enum nbctl_wait_type);

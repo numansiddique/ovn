@@ -2231,6 +2231,10 @@ delete_done:
             get_local_datapath(b_ctx_out->local_datapaths,
                                pb->datapath->tunnel_key);
 
+        if (ld) {
+            local_datapath_add_lport(ld, pb->logical_port, pb);
+        }
+
         switch (lport_type) {
         case LP_VIF:
         case LP_CONTAINER:
