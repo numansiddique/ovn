@@ -2907,8 +2907,14 @@ ovn_port_update_sbrec(struct northd_context *ctx,
 
         sbrec_port_binding_set_parent_port(op->sb, op->nbsp->parent_name);
         sbrec_port_binding_set_tag(op->sb, op->nbsp->tag, op->nbsp->n_tag);
-        sbrec_port_binding_set_mac(op->sb, (const char **) op->nbsp->addresses,
-                                   op->nbsp->n_addresses);
+        if (op->nbsp->dynamic_addresses) {
+            sbrec_port_binding_set_mac(
+                op->sb, (const char **)&op->nbsp->dynamic_addresses, 1);
+        } else {
+            sbrec_port_binding_set_mac(op->sb,
+                                       (const char **) op->nbsp->addresses,
+                                       op->nbsp->n_addresses);
+        }
         sbrec_port_binding_set_port_security(
             op->sb, (const char **) op->nbsp->port_security,
             op->nbsp->n_port_security);
