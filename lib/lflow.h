@@ -311,6 +311,7 @@ struct ovn_ctrl_lflow {
     const char *where;
 };
 
+size_t ovn_ctrl_lflow_hash(const struct ovn_ctrl_lflow *);
 void build_lswitch_generic_lflows(struct hmap *lflows);
 void build_lrouter_generic_lflows(struct hmap *lflows);
 

@@ -1210,16 +1210,33 @@ cmd_ctrl_lflow_list(struct ctl_context *ctx)
 
     struct local_datapath *ldp;
     HMAP_FOR_EACH (ldp, hmap_node, &datapaths) {
-        if (dp && ldp->datapath != dp) {
-            continue;
-        }
-
         ovn_ctrl_lflows_build_dp_lflows(&ldp->ctrl_lflows[0], ldp->datapath);
 
         struct shash_node *shash_node;
         SHASH_FOR_EACH (shash_node, &ldp->lports) {
             ovn_ctrl_build_lport_lflows(&ldp->ctrl_lflows[0],
                                         shash_node->data);
+        }
+    }
+
+    HMAP_FOR_EACH (ldp, hmap_node, &datapaths) {
+        struct ovn_ctrl_lflow *lflow, *next;
+        HMAP_FOR_EACH_SAFE (lflow, next, hmap_node, &ldp->ctrl_lflows[0]) {
+            if (lflow->dp_key && lflow->dp_key != ldp->datapath->tunnel_key ) {
+                hmap_remove(&ldp->ctrl_lflows[0], &lflow->hmap_node);
+                struct local_datapath *other_ldp =
+                    get_local_datapath(&datapaths, lflow->dp_key);
+                if (other_ldp) {
+                    hmap_insert(&other_ldp->ctrl_lflows[0], &lflow->hmap_node,
+                                ovn_ctrl_lflow_hash(lflow));
+                }
+            }
+        }
+    }
+
+    HMAP_FOR_EACH (ldp, hmap_node, &datapaths) {
+        if (dp && ldp->datapath != dp) {
+            continue;
         }
 
         ctrl_lflow_list(&ldp->ctrl_lflows[0], ldp->is_switch ?

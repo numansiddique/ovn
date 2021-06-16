@@ -33,15 +33,15 @@
 
 VLOG_DEFINE_THIS_MODULE(lib_lflow);
 
-static size_t ovn_ctrl_lflow_hash(const struct ovn_ctrl_lflow *lflow);
 static char *ovn_ctrl_lflow_hint(const struct ovsdb_idl_row *row);
-static void ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow,
+static void ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow, uint32_t dp_key,
                                 enum ovn_stage stage, uint16_t priority,
                                 char *match, char *actions,
                                 const struct uuid *lflow_uuid,
                                 uint8_t lflow_idx,
                                 char *stage_hint, const char *where);
-static void ovn_ctrl_lflow_add_at(struct hmap *lflow_map, enum ovn_stage stage,
+static void ovn_ctrl_lflow_add_at(struct hmap *lflow_map, uint32_t dp_key,
+                                  enum ovn_stage stage,
                                   uint16_t priority, const char *match,
                                   const char *actions,
                                   const struct uuid *lflow_uuid,
@@ -52,11 +52,15 @@ static void ovn_ctrl_lflow_destroy(struct ovn_ctrl_lflow *lflow);
 
 
 #define ovn_ctrl_lflow_add(LFLOW_MAP, STAGE, PRIORITY, MATCH, ACTIONS) \
-    ovn_ctrl_lflow_add_at(LFLOW_MAP, STAGE, PRIORITY, MATCH, ACTIONS, \
+    ovn_ctrl_lflow_add_at(LFLOW_MAP, 0, STAGE, PRIORITY, MATCH, ACTIONS, \
+                          NULL, 0, NULL, OVS_SOURCE_LOCATOR)
+
+#define ovn_ctrl_lflow_add_dp_key(LFLOW_MAP, DP_KEY, STAGE, PRIORITY, MATCH, ACTIONS) \
+    ovn_ctrl_lflow_add_at(LFLOW_MAP, DP_KEY, STAGE, PRIORITY, MATCH, ACTIONS, \
                           NULL, 0, NULL, OVS_SOURCE_LOCATOR)
 
 #define ovn_ctrl_lflow_add_uuid(LFLOW_MAP, STAGE, PRIORITY, MATCH, ACTIONS, UUID, LFLOW_IDX) \
-    ovn_ctrl_lflow_add_at(LFLOW_MAP, STAGE, PRIORITY, MATCH, ACTIONS, \
+    ovn_ctrl_lflow_add_at(LFLOW_MAP, 0, STAGE, PRIORITY, MATCH, ACTIONS, \
                           UUID, *LFLOW_IDX, NULL, OVS_SOURCE_LOCATOR); \
     (*LFLOW_IDX)++
 
@@ -95,6 +99,15 @@ ovn_ctrl_lflows_destroy(struct hmap *lflows)
 {
     ovn_ctrl_lflows_clear(lflows);
     hmap_destroy(lflows);
+}
+
+size_t
+ovn_ctrl_lflow_hash(const struct ovn_ctrl_lflow *lflow)
+{
+    return ovn_logical_flow_hash(ovn_stage_get_table(lflow->stage),
+                                 ovn_stage_get_pipeline_name(lflow->stage),
+                                 lflow->priority, lflow->match,
+                                 lflow->actions);
 }
 
 void
@@ -140,22 +153,14 @@ void
 ovn_ctrl_build_lport_lflows(struct hmap *lflows, struct local_lport *op)
 {
     if (op->ldp->is_switch) {
-            build_lswitch_port_lflows(lflows, op);
+        build_lswitch_port_lflows(lflows, op);
     } else {
         build_lrouter_port_lflows(lflows, op);
     }
 }
 
-/* static functions. */
-static size_t
-ovn_ctrl_lflow_hash(const struct ovn_ctrl_lflow *lflow)
-{
-    return ovn_logical_flow_hash(ovn_stage_get_table(lflow->stage),
-                                 ovn_stage_get_pipeline_name(lflow->stage),
-                                 lflow->priority, lflow->match,
-                                 lflow->actions);
-}
 
+/* static functions. */
 static char *
 ovn_ctrl_lflow_hint(const struct ovsdb_idl_row *row)
 {
@@ -166,7 +171,7 @@ ovn_ctrl_lflow_hint(const struct ovsdb_idl_row *row)
 }
 
 static void
-ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow,
+ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow, uint32_t dp_key,
                     enum ovn_stage stage, uint16_t priority,
                     char *match, char *actions,
                     const struct uuid *lflow_uuid, uint8_t lflow_idx OVS_UNUSED,
@@ -179,6 +184,7 @@ ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow,
     lflow->actions = actions;
     lflow->stage_hint = stage_hint;
     lflow->where = where;
+    lflow->dp_key = dp_key;
     lflow_uuid = NULL; /* TODO. */
     if (lflow_uuid) {
         lflow->uuid_ = *lflow_uuid;
@@ -192,7 +198,8 @@ ovn_ctrl_lflow_init(struct ovn_ctrl_lflow *lflow,
 
 /* Adds a row with the specified contents to the Logical_Flow table. */
 static void
-ovn_ctrl_lflow_add_at(struct hmap *lflow_map, enum ovn_stage stage,
+ovn_ctrl_lflow_add_at(struct hmap *lflow_map, uint32_t dp_key,
+                      enum ovn_stage stage,
                       uint16_t priority, const char *match,
                       const char *actions,
                       const struct uuid *lflow_uuid,
@@ -204,7 +211,7 @@ ovn_ctrl_lflow_add_at(struct hmap *lflow_map, enum ovn_stage stage,
     size_t hash;
 
     lflow = xzalloc(sizeof *lflow);
-    ovn_ctrl_lflow_init(lflow, stage, priority,
+    ovn_ctrl_lflow_init(lflow, dp_key, stage, priority,
                         xstrdup(match), xstrdup(actions),
                         lflow_uuid, lflow_idx,
                         ovn_ctrl_lflow_hint(stage_hint), where);
@@ -1184,6 +1191,17 @@ static void build_lswitch_ip_unicast_lookup(struct hmap *lflows,
                                             struct ds *match,
                                             struct ds *actions);
 
+static void build_arp_resolve_flows_for_lsp_in_router(
+    struct hmap *lflow, struct local_lport *, struct ds *match,
+    struct ds *actions);
+
+
+static bool is_ip4_in_router_network(struct local_lport *, ovs_be32 ip);
+static bool is_ip6_in_router_network(struct local_lport *, struct in6_addr);
+static void op_put_v4_networks(struct ds *ds, const struct local_lport *op,
+                               bool add_bcast);
+static void op_put_v6_networks(struct ds *ds, const struct local_lport *op);
+
 static void
 build_lswitch_port_lflows(struct hmap *lflows, struct local_lport *op)
 {
@@ -1204,6 +1222,8 @@ build_lswitch_port_lflows(struct hmap *lflows, struct local_lport *op)
     build_lswitch_ip_unicast_lookup(lflows, op, &lflow_uuid_idx,
                                     &match, &actions);
 
+    build_arp_resolve_flows_for_lsp_in_router(lflows, op, &match,
+                                              &actions);
     ds_destroy(&match);
     ds_destroy(&actions);
 }
@@ -1853,6 +1873,184 @@ build_lswitch_ip_unicast_lookup(struct hmap *lflows, struct local_lport *op,
     }
 }
 
+static void build_arp_resolve_flows_for_lsp_in_router(
+    struct hmap *lflows, struct local_lport *op, struct ds *match, struct ds *actions)
+{
+    if (op->type == LP_VIRTUAL) {
+        const char *vip_s = smap_get(&op->pb->options,
+                                    "virtual-ip");
+        const char *virtual_parents = smap_get(&op->pb->options,
+                                               "virtual-parents");
+        ovs_be32 vip;
+        if (!vip_s || !virtual_parents || !ip_parse(vip_s, &vip)) {
+            return;
+        }
+
+        if (!op->pb->virtual_parent || !op->pb->virtual_parent[0] ||
+            !op->pb->chassis) {
+            /* The virtual port is not claimed yet. */
+            for (size_t i = 0; i < op->ldp->n_peer_ports; i++) {
+                struct local_lport *peer = op->ldp->peer_ports[i].remote;
+
+                if (!is_ip4_in_router_network(peer, vip)) {
+                    continue;
+                }
+
+                ds_clear(match);
+                ds_put_format(match, "outport == %s && "
+                              REG_NEXT_HOP_IPV4 " == %s",
+                              peer->json_key, vip_s);
+
+                const char *arp_actions = "eth.dst = 00:00:00:00:00:00; next;";
+                ovn_ctrl_lflow_add_dp_key(
+                    lflows, peer->ldp->datapath->tunnel_key,
+                    S_ROUTER_IN_ARP_RESOLVE, 100,
+                    ds_cstr(match), arp_actions);
+                break;
+            }
+        } else {
+            struct local_lport *vp =
+                local_datapath_get_lport(op->ldp, op->pb->virtual_parent);
+            ovs_assert(vp);
+            for (size_t i = 0; i < vp->lsp.n_addrs; i++) {
+                bool found_vip_network = false;
+                const char *ea_s = vp->lsp.addrs[i].ea_s;
+                for (size_t j = 0; j < vp->ldp->n_peer_ports; j++) {
+                    struct local_lport *peer = op->ldp->peer_ports[i].remote;
+
+                    if (!is_ip4_in_router_network(peer, vip)) {
+                        continue;
+                    }
+
+                    ds_clear(match);
+                    ds_put_format(match, "outport == %s && "
+                                  REG_NEXT_HOP_IPV4 " == %s",
+                                  peer->json_key, vip_s);
+
+                    ds_clear(actions);
+                    ds_put_format(actions, "eth.dst = %s; next;", ea_s);
+                    ovn_ctrl_lflow_add_dp_key(
+                        lflows, peer->ldp->datapath->tunnel_key,
+                        S_ROUTER_IN_ARP_RESOLVE, 100,
+                        ds_cstr(match), ds_cstr(actions));
+                    found_vip_network = true;
+                    break;
+                }
+
+                if (found_vip_network) {
+                    break;
+                }
+            }
+        }
+    } else if (op->peer) {
+        /* This is a logical switch port that connects to a router. */
+
+        /* The peer of this switch port is the router port for which
+         * we need to add logical flows such that it can resolve
+         * ARP entries for all the other router ports connected to
+         * the switch in question. */
+        if (smap_get_bool(&op->peer->ldp->datapath->options,
+                          "dynamic_neigh_routers", false)) {
+            return;
+        }
+
+        for (size_t i = 0; i < op->ldp->n_peer_ports; i++) {
+            struct local_lport *router_port = op->ldp->peer_ports[i].remote;
+            /* Skip the router port under consideration. */
+            if (router_port == op->peer) {
+               continue;
+            }
+
+            if (router_port->lrp.networks.n_ipv4_addrs) {
+                ds_clear(match);
+                ds_put_format(match, "outport == %s && "
+                              REG_NEXT_HOP_IPV4 " == ",
+                              op->peer->json_key);
+                op_put_v4_networks(match, router_port, false);
+
+                ds_clear(actions);
+                ds_put_format(actions, "eth.dst = %s; next;",
+                              router_port->lrp.networks.ea_s);
+                ovn_ctrl_lflow_add_dp_key(
+                    lflows, op->peer->ldp->datapath->tunnel_key,
+                    S_ROUTER_IN_ARP_RESOLVE, 100,
+                    ds_cstr(match), ds_cstr(actions));
+
+            }
+
+            if (router_port->lrp.networks.n_ipv6_addrs) {
+                ds_clear(match);
+                ds_put_format(match, "outport == %s && "
+                              REG_NEXT_HOP_IPV6 " == ",
+                              op->peer->json_key);
+                op_put_v6_networks(match, router_port);
+
+                ds_clear(actions);
+                ds_put_format(actions, "eth.dst = %s; next;",
+                              router_port->lrp.networks.ea_s);
+                ovn_ctrl_lflow_add_dp_key(
+                    lflows, op->peer->ldp->datapath->tunnel_key,
+                    S_ROUTER_IN_ARP_RESOLVE, 100,
+                    ds_cstr(match), ds_cstr(actions));
+            }
+        }
+    } else {
+        for (size_t i = 0; i < op->lsp.n_addrs; i++) {
+            const char *ea_s = op->lsp.addrs[i].ea_s;
+            for (size_t j = 0; j < op->lsp.addrs[i].n_ipv4_addrs; j++) {
+                ovs_be32 ip = op->lsp.addrs[i].ipv4_addrs[j].addr;
+                for (size_t k = 0; k < op->ldp->n_peer_ports; k++) {
+                    /* Get the Logical_Router_Port that the Logical_Switch_Port
+                    * is connected to, as 'peer'. */
+                    struct local_lport *peer = op->ldp->peer_ports[k].remote;
+
+                    if (!is_ip4_in_router_network(peer, ip)) {
+                        continue;
+                    }
+
+                    ds_clear(match);
+                    ds_put_format(match, "outport == %s && "
+                                REG_NEXT_HOP_IPV4 " == %s", peer->json_key,
+                                op->lsp.addrs[i].ipv4_addrs[j].addr_s);
+
+                    ds_clear(actions);
+                    ds_put_format(actions, "eth.dst = %s; next;", ea_s);
+                    ovn_ctrl_lflow_add_dp_key(
+                        lflows, peer->ldp->datapath->tunnel_key,
+                        S_ROUTER_IN_ARP_RESOLVE, 100,
+                        ds_cstr(match), ds_cstr(actions));
+                }
+            }
+
+            for (size_t j = 0; j < op->lsp.addrs[i].n_ipv6_addrs; j++) {
+                for (size_t k = 0; k < op->ldp->n_peer_ports; k++) {
+                    /* Get the Logical_Router_Port that the Logical_Switch_Port
+                    * is connected to, as 'peer'. */
+                    struct local_lport *peer = op->ldp->peer_ports[k].remote;
+
+                    if (!is_ip6_in_router_network(
+                        peer, op->lsp.addrs[i].ipv6_addrs[j].addr)) {
+                        continue;
+                    }
+
+                    ds_clear(match);
+                    ds_put_format(match, "outport == %s && "
+                                REG_NEXT_HOP_IPV6 " == %s",
+                                peer->json_key,
+                                op->lsp.addrs[i].ipv6_addrs[j].addr_s);
+
+                    ds_clear(actions);
+                    ds_put_format(actions, "eth.dst = %s; next;", ea_s);
+                    ovn_ctrl_lflow_add_dp_key(
+                        lflows, peer->ldp->datapath->tunnel_key,
+                        S_ROUTER_IN_ARP_RESOLVE, 100,
+                        ds_cstr(match), ds_cstr(actions));
+                }
+            }
+        }
+    }
+}
+
 static void build_adm_ctrl_flows_for_lrouter_port(
     struct hmap *lflows, struct local_lport *,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
@@ -1901,10 +2099,6 @@ static void build_egress_delivery_flows_for_lrouter_port(
     struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
 
-static void op_put_v4_networks(struct ds *ds, const struct local_lport *op,
-                               bool add_bcast);
-
-static void op_put_v6_networks(struct ds *ds, const struct local_lport *op);
 static void add_route(
     struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions,
@@ -2994,4 +3188,51 @@ add_route(
     }
 
     ds_destroy(&common_actions);
+}
+
+static bool
+is_ip4_in_router_network(struct local_lport *router_lport,
+                         ovs_be32 ip)
+{
+    ovs_assert(!router_lport->ldp->is_switch);
+
+    for (size_t i = 0; i < router_lport->lrp.networks.n_ipv4_addrs; i++) {
+        const struct ipv4_netaddr *na =
+            &router_lport->lrp.networks.ipv4_addrs[i];
+
+        if (!((na->network ^ ip) & na->mask)) {
+            /* There should be only 1 interface that matches the
+             * supplied IP.  Otherwise, it's a configuration error,
+             * because subnets of a router's interfaces should NOT
+             * overlap. */
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool
+is_ip6_in_router_network(struct local_lport *router_lport,
+                         struct in6_addr ip6)
+{
+    ovs_assert(!router_lport->ldp->is_switch);
+
+    for (size_t i = 0; i < router_lport->lrp.networks.n_ipv6_addrs; i++) {
+        const struct ipv6_netaddr *na =
+            &router_lport->lrp.networks.ipv6_addrs[i];
+
+        struct in6_addr xor_addr = ipv6_addr_bitxor(&na->network, &ip6);
+        struct in6_addr and_addr = ipv6_addr_bitand(&xor_addr, &na->mask);
+
+        if (ipv6_is_zero(&and_addr)) {
+            /* There should be only 1 interface that matches the
+             * supplied IP.  Otherwise, it's a configuration error,
+             * because subnets of a router's interfaces should NOT
+             * overlap. */
+            return true;
+        }
+    }
+
+    return false;
 }
