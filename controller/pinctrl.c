@@ -41,7 +41,6 @@
 #include "lib/random.h"
 #include "lib/crc32c.h"
 
-#include "ldata.h"
 #include "lib/dhcp.h"
 #include "ovn-controller.h"
 #include "ovn/actions.h"
@@ -51,6 +50,7 @@
 #include "lib/mcast-group-index.h"
 #include "lib/ovn-l7.h"
 #include "lib/ovn-util.h"
+#include "lib/ldata.h"
 #include "ovn/logical-fields.h"
 #include "openvswitch/poll-loop.h"
 #include "openvswitch/rconn.h"
@@ -1185,7 +1185,7 @@ fill_ipv6_prefix_state(struct ovsdb_idl_txn *ovnsb_idl_txn,
     bool changed = false;
 
     for (size_t i = 0; i < ld->n_peer_ports; i++) {
-        const struct sbrec_port_binding *pb = ld->peer_ports[i].local;
+        const struct sbrec_port_binding *pb = ld->peer_ports[i].local->pb;
         struct ipv6_prefixd_state *pfd;
 
         if (!smap_get_bool(&pb->options, "ipv6_prefix", false)) {
@@ -1265,7 +1265,7 @@ prepare_ipv6_prefixd(struct ovsdb_idl_txn *ovnsb_idl_txn,
         }
 
         for (size_t i = 0; i < ld->n_peer_ports; i++) {
-            const struct sbrec_port_binding *pb = ld->peer_ports[i].local;
+            const struct sbrec_port_binding *pb = ld->peer_ports[i].local->pb;
             int j;
 
             if (!smap_get_bool(&pb->options, "ipv6_prefix_delegation",
@@ -3896,10 +3896,11 @@ prepare_ipv6_ras(const struct hmap *local_datapaths)
     HMAP_FOR_EACH (ld, hmap_node, local_datapaths) {
 
         for (size_t i = 0; i < ld->n_peer_ports; i++) {
-            const struct sbrec_port_binding *peer = ld->peer_ports[i].remote;
-            const struct sbrec_port_binding *pb = ld->peer_ports[i].local;
+            const struct sbrec_port_binding *peer = ld->peer_ports[i].remote->pb;
+            const struct sbrec_port_binding *pb = ld->peer_ports[i].local->pb;
 
-            if (!smap_get_bool(&pb->options, "ipv6_ra_send_periodic", false)) {
+            if (!smap_get_bool(&pb->options, "ipv6_ra_send_periodic",
+                               false)) {
                 continue;
             }
 
@@ -4133,8 +4134,8 @@ send_garp_locally(struct ovsdb_idl_txn *ovnsb_idl_txn,
 
     ovs_assert(ldp);
     for (size_t i = 0; i < ldp->n_peer_ports; i++) {
-        const struct sbrec_port_binding *local = ldp->peer_ports[i].local;
-        const struct sbrec_port_binding *remote = ldp->peer_ports[i].remote;
+        const struct sbrec_port_binding *local = ldp->peer_ports[i].local->pb;
+        const struct sbrec_port_binding *remote = ldp->peer_ports[i].remote->pb;
 
         /* Skip "ingress" port. */
         if (local == in_pb) {
@@ -4229,7 +4230,7 @@ run_buffered_binding(struct ovsdb_idl_index *sbrec_mac_binding_by_lport_ip,
 
         for (size_t i = 0; i < ld->n_peer_ports; i++) {
 
-            const struct sbrec_port_binding *pb = ld->peer_ports[i].local;
+            const struct sbrec_port_binding *pb = ld->peer_ports[i].local->pb;
             struct buffered_packets *cur_qp, *next_qp;
             HMAP_FOR_EACH_SAFE (cur_qp, next_qp, hmap_node,
                                 &buffered_packets_map) {

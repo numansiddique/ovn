@@ -110,8 +110,8 @@ struct local_datapath {
     bool has_local_l3gateway;
 
     struct {
-        const struct sbrec_port_binding *local;
-        const struct sbrec_port_binding *remote;
+        struct local_lport *local;
+        struct local_lport *remote;
     } *peer_ports;
 
     size_t n_peer_ports;

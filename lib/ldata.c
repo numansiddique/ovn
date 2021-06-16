@@ -29,7 +29,7 @@
 
 VLOG_DEFINE_THIS_MODULE(ldata);
 
-static void local_datapath_add__(
+static struct local_datapath *local_datapath_add__(
     struct hmap *local_datapaths,
     const struct sbrec_datapath_binding *,
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
@@ -47,10 +47,6 @@ static void local_lport_destroy_lsp_data(struct local_lport *);
 static void local_lport_destroy_lrp_data(struct local_lport *);
 static void local_lport_init_lflow_gen_data(struct local_lport *);
 static void local_lport_destroy_lflow_gen_data(struct local_lport *);
-
-static void local_datapath_set_peer_lport(
-    struct local_lport *, const struct sbrec_port_binding *peer_sb,
-    struct hmap *local_datapaths);
 
 static struct tracked_datapath *tracked_datapath_create(
     const struct sbrec_datapath_binding *dp,
@@ -160,9 +156,29 @@ local_datapath_add_peer_port(
         return;
     }
 
+    struct local_datapath *peer_ld =
+        get_local_datapath(local_datapaths, peer->datapath->tunnel_key);
+    if (!peer_ld){
+        peer_ld = local_datapath_add__(local_datapaths, peer->datapath,
+                                       sbrec_datapath_binding_by_key,
+                                       sbrec_port_binding_by_datapath,
+                                       sbrec_port_binding_by_name, 1,
+                                       datapath_added_cb, aux);
+    }
+
+    struct local_lport *peer_lport =
+        local_datapath_get_lport(peer_ld, peer->logical_port);
+
+    if (!peer_lport) {
+        return;
+    }
+
+    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
+    ovs_assert(lport);
+
     bool present = false;
     for (size_t i = 0; i < ld->n_peer_ports; i++) {
-        if (ld->peer_ports[i].local == pb) {
+        if (ld->peer_ports[i].local == lport) {
             present = true;
             break;
         }
@@ -176,35 +192,15 @@ local_datapath_add_peer_port(
                            &ld->n_allocated_peer_ports,
                            sizeof *ld->peer_ports);
         }
-        ld->peer_ports[ld->n_peer_ports - 1].local = pb;
-        ld->peer_ports[ld->n_peer_ports - 1].remote = peer;
-    }
-
-    struct local_datapath *peer_ld =
-        get_local_datapath(local_datapaths,
-                           peer->datapath->tunnel_key);
-    if (!peer_ld) {
-        local_datapath_add__(local_datapaths, peer->datapath,
-                             sbrec_datapath_binding_by_key,
-                             sbrec_port_binding_by_datapath,
-                             sbrec_port_binding_by_name, 1,
-                             datapath_added_cb, aux);
-        return;
-    }
-
-    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
-    struct local_lport *peer_lport =
-        local_datapath_get_lport(peer_ld, peer->logical_port);
-    if (!peer_lport) {
-        peer_lport =
-            local_datapath_add_lport(peer_ld, peer->logical_port, peer);
+        ld->peer_ports[ld->n_peer_ports - 1].local = lport;
+        ld->peer_ports[ld->n_peer_ports - 1].remote = peer_lport;
     }
 
     lport->peer = peer_lport;
     peer_lport->peer = lport;
 
     for (size_t i = 0; i < peer_ld->n_peer_ports; i++) {
-        if (peer_ld->peer_ports[i].local == peer) {
+        if (peer_ld->peer_ports[i].local == peer_lport) {
             return;
         }
     }
@@ -216,8 +212,8 @@ local_datapath_add_peer_port(
                         &peer_ld->n_allocated_peer_ports,
                         sizeof *peer_ld->peer_ports);
     }
-    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].local = peer;
-    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].remote = pb;
+    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].local = peer_lport;
+    peer_ld->peer_ports[peer_ld->n_peer_ports - 1].remote = lport;
 }
 
 void
@@ -225,9 +221,14 @@ local_datapath_remove_peer_port(const struct sbrec_port_binding *pb,
                                 struct local_datapath *ld,
                                 struct hmap *local_datapaths)
 {
+    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
+    if (!lport) {
+        return;
+    }
+
     size_t i = 0;
     for (i = 0; i < ld->n_peer_ports; i++) {
-        if (ld->peer_ports[i].local == pb) {
+        if (ld->peer_ports[i].local == lport) {
             break;
         }
     }
@@ -236,7 +237,7 @@ local_datapath_remove_peer_port(const struct sbrec_port_binding *pb,
         return;
     }
 
-    const struct sbrec_port_binding *peer = ld->peer_ports[i].remote;
+    struct local_lport *peer = ld->peer_ports[i].remote;
 
     /* Possible improvement: We can shrink the allocated peer ports
      * if (ld->n_peer_ports < ld->n_allocated_peer_ports / 2).
@@ -245,16 +246,14 @@ local_datapath_remove_peer_port(const struct sbrec_port_binding *pb,
     ld->peer_ports[i].remote = ld->peer_ports[ld->n_peer_ports - 1].remote;
     ld->n_peer_ports--;
 
-    struct local_datapath *peer_ld =
-        get_local_datapath(local_datapaths, peer->datapath->tunnel_key);
+    struct local_datapath *peer_ld = peer->ldp;
     if (peer_ld) {
         /* Remove the peer port from the peer datapath. The peer
          * datapath also tries to remove its peer lport, but that would
          * be no-op. */
-        local_datapath_remove_peer_port(peer, peer_ld, local_datapaths);
+        local_datapath_remove_peer_port(peer->pb, peer_ld, local_datapaths);
     }
 
-    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
     if (lport->peer) {
         lport->peer->peer = NULL;
     }
@@ -524,7 +523,7 @@ local_lport_init_cache(struct local_lport *lport)
     local_lport_init_lflow_gen_data(lport);
 }
 
-static void
+static struct local_datapath *
 local_datapath_add__(struct hmap *local_datapaths,
                      const struct sbrec_datapath_binding *dp,
                      struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
@@ -539,7 +538,7 @@ local_datapath_add__(struct hmap *local_datapaths,
     uint32_t dp_key = dp->tunnel_key;
     struct local_datapath *ld = get_local_datapath(local_datapaths, dp_key);
     if (ld) {
-        return;
+        return ld;
     }
 
     ld = local_datapath_alloc(dp);
@@ -553,7 +552,7 @@ local_datapath_add__(struct hmap *local_datapaths,
     if (depth >= 100) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
         VLOG_WARN_RL(&rl, "datapaths nested too deep");
-        return;
+        return ld;
     }
 
     struct sbrec_port_binding *target =
@@ -588,24 +587,34 @@ local_datapath_add__(struct hmap *local_datapaths,
                                              depth + 1, datapath_added_cb,
                                              aux);
                     }
-                    ld->n_peer_ports++;
-                    if (ld->n_peer_ports > ld->n_allocated_peer_ports) {
-                        ld->peer_ports =
-                            x2nrealloc(ld->peer_ports,
-                                       &ld->n_allocated_peer_ports,
-                                       sizeof *ld->peer_ports);
-                    }
-                    ld->peer_ports[ld->n_peer_ports - 1].local = pb;
-                    ld->peer_ports[ld->n_peer_ports - 1].remote = peer;
+                    struct local_datapath *peer_ld =
+                        get_local_datapath(local_datapaths, peer->datapath->tunnel_key);
+                    if (peer_ld){
+                        struct local_lport *peer_lport =
+                            local_datapath_get_lport(peer_ld, peer->logical_port);
 
-                    if (!lport->peer) {
-                        local_datapath_set_peer_lport(lport, peer, local_datapaths);
+                        if (peer_lport) {
+                            ld->n_peer_ports++;
+                            if (ld->n_peer_ports > ld->n_allocated_peer_ports) {
+                                ld->peer_ports =
+                                    x2nrealloc(ld->peer_ports,
+                                            &ld->n_allocated_peer_ports,
+                                            sizeof *ld->peer_ports);
+                            }
+
+                            ld->peer_ports[ld->n_peer_ports - 1].local = lport;
+                            ld->peer_ports[ld->n_peer_ports - 1].remote = peer_lport;
+
+                            lport->peer = peer_lport;
+                            peer_lport->peer = lport;
+                        }
                     }
                 }
             }
         }
     }
     sbrec_port_binding_index_destroy_row(target);
+    return ld;
 }
 
 static struct tracked_datapath *
@@ -718,23 +727,4 @@ local_lport_update_lrp_data(struct local_lport *lport)
     lport->lrp.peer_dp_has_localnet_ports =
         smap_get_bool(&lport->pb->options,
                       "peer-dp-has-localnet-ports", false);
-}
-
-static void
-local_datapath_set_peer_lport(struct local_lport *lport,
-                              const struct sbrec_port_binding *peer_sb,
-                              struct hmap *local_datapaths)
-{
-    struct local_datapath *peer_ld =
-        get_local_datapath(local_datapaths, peer_sb->datapath->tunnel_key);
-    if (!peer_ld) {
-        return;
-    }
-
-    struct local_lport *peer_lport = local_datapath_get_lport(
-        peer_ld, peer_sb->logical_port);
-    if (peer_lport) {
-        lport->peer = peer_lport;
-        peer_lport->peer = lport;
-    }
 }
