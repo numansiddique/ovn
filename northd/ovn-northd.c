@@ -8056,48 +8056,13 @@ build_ingress_policy_flows_for_lrouter(
  */
 static void
 build_arp_resolve_flows_for_lrouter_port(
-        struct ovn_port *op, struct hmap *lflows,
-        struct hmap *ports,
-        struct ds *match, struct ds *actions)
+        struct ovn_port *op, struct hmap *lflows)
 {
     if (op->nbsp && !lsp_is_enabled(op->nbsp)) {
         return;
     }
 
     if (op->nbrp) {
-        /* This is a logical router port. If next-hop IP address in
-         * REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6 matches IP address of this
-         * router port, then the packet is intended to eventually be sent
-         * to this logical port. Set the destination mac address using
-         * this port's mac address.
-         *
-         * The packet is still in peer's logical pipeline. So the match
-         * should be on peer's outport. */
-        if (!op->derived && op->od->l3redirect_port) {
-            const char *redirect_type = smap_get(&op->nbrp->options,
-                                                 "redirect-type");
-            if (redirect_type && !strcasecmp(redirect_type, "bridged")) {
-                /* Packet is on a non gateway chassis and
-                 * has an unresolved ARP on a network behind gateway
-                 * chassis attached router port. Since, redirect type
-                 * is "bridged", instead of calling "get_arp"
-                 * on this node, we will redirect the packet to gateway
-                 * chassis, by setting destination mac router port mac.*/
-                ds_clear(match);
-                ds_put_format(match, "outport == %s && "
-                              "!is_chassis_resident(%s)", op->json_key,
-                              op->od->l3redirect_port->json_key);
-                ds_clear(actions);
-                ds_put_format(actions, "eth.dst = %s; next;",
-                              op->lrp_networks.ea_s);
-
-                ovn_lflow_add_with_hint(lflows, op->od,
-                                        S_ROUTER_IN_ARP_RESOLVE, 50,
-                                        ds_cstr(match), ds_cstr(actions),
-                                        &op->nbrp->header_);
-            }
-        }
-
         /* Drop IP traffic destined to router owned IPs. Part of it is dropped
          * in stage "lr_in_ip_input" but traffic that could have been unSNATed
          * but didn't match any existing session might still end up here.
@@ -9197,8 +9162,7 @@ build_lswitch_and_lrouter_iterate_by_op(struct ovn_port *op,
                                     &lsi->actions, &lsi->match);
 
     /* Build Logical Router Flows. */
-    build_arp_resolve_flows_for_lrouter_port(op, lsi->lflows, lsi->ports,
-                                             &lsi->match, &lsi->actions);
+    build_arp_resolve_flows_for_lrouter_port(op, lsi->lflows);
     build_lrouter_ipv4_ip_input(op, lsi->lflows, &lsi->match);
 }
 

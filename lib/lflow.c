@@ -2973,18 +2973,14 @@ build_arp_resolve_flows_for_lrouter_port(
         struct hmap *lflows, struct local_lport *op,
         struct ds *match, struct ds *actions)
 {
-    if (!op->peer) {
-        return;
-    }
-
     /* This is a logical router port. If next-hop IP address in
-        * REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6 matches IP address of this
-        * router port, then the packet is intended to eventually be sent
-        * to this logical port. Set the destination mac address using
-        * this port's mac address.
-        *
-        * The packet is still in peer's logical pipeline. So the match
-        * should be on peer's outport. */
+     * REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6 matches IP address of this
+     * router port, then the packet is intended to eventually be sent
+     * to this logical port. Set the destination mac address using
+     * this port's mac address.
+     *
+     * The packet is still in peer's logical pipeline. So the match
+     * should be on peer's outport. */
     if (op->peer && !op->peer->ldp->is_switch) {
         /* Both the peer's are router ports. */
         if (op->peer->lrp.networks.n_ipv4_addrs) {
@@ -3012,6 +3008,28 @@ build_arp_resolve_flows_for_lrouter_port(
             ds_put_format(actions, "eth.dst = %s; next;",
                           op->peer->lrp.networks.ea_s);
             ovn_ctrl_lflow_add(lflows, S_ROUTER_IN_ARP_RESOLVE, 100,
+                               ds_cstr(match), ds_cstr(actions));
+        }
+    }
+
+    if (op->type == LP_CHASSISREDIRECT) {
+        const char *redir_type = smap_get(&op->pb->options, "redirect-type");
+        const char *gw_port = smap_get(&op->pb->options, "distributed-port");
+        if (redir_type && gw_port && !strcasecmp(redir_type, "bridged")) {
+            /* Packet is on a non gateway chassis and
+             * has an unresolved ARP on a network behind gateway
+             * chassis attached router port. Since, redirect type
+             * is "bridged", instead of calling "get_arp"
+             * on this node, we will redirect the packet to gateway
+             * chassis, by setting destination mac router port mac.*/
+            ds_clear(match);
+            ds_put_format(match, "outport == \"%s\" && "
+                          "!is_chassis_resident(%s)", gw_port, op->json_key);
+            ds_clear(actions);
+            ds_put_format(actions, "eth.dst = %s; next;",
+                          op->lrp.networks.ea_s);
+
+            ovn_ctrl_lflow_add(lflows, S_ROUTER_IN_ARP_RESOLVE, 50,
                                ds_cstr(match), ds_cstr(actions));
         }
     }
