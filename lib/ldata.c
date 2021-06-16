@@ -45,6 +45,8 @@ static void local_lport_update_lsp_data(struct local_lport *);
 static void local_lport_update_lrp_data(struct local_lport *);
 static void local_lport_destroy_lsp_data(struct local_lport *);
 static void local_lport_destroy_lrp_data(struct local_lport *);
+static void local_lport_init_lflow_gen_data(struct local_lport *);
+static void local_lport_destroy_lflow_gen_data(struct local_lport *);
 
 static void local_datapath_set_peer_lport(
     struct local_lport *, const struct sbrec_port_binding *peer_sb,
@@ -275,9 +277,9 @@ local_datapath_add_lport(struct local_datapath *ld,
         dp_lport->cleared_lflows = &dp_lport->ctrl_lflows[1];
 
         shash_add(&ld->lports, lport_name, dp_lport);
-        local_lport_init_cache(dp_lport);
-
         dp_lport->ldp = ld;
+        dp_lport->type = get_lport_type(pb);
+        local_lport_init_cache(dp_lport);
     } else {
         local_lport_update_cache(dp_lport);
     }
@@ -330,6 +332,8 @@ local_lport_clear_cache(struct local_lport *lport)
     lport->n_port_security = 0;
 
     smap_destroy(&lport->options);
+
+    local_lport_destroy_lflow_gen_data(lport);
 }
 
 bool
@@ -366,7 +370,7 @@ local_lport_is_cache_old(struct local_lport *lport)
     return (lport->claimed != claimed_);
 }
 
-void
+static void
 local_lport_init_lflow_gen_data(struct local_lport *lport)
 {
     struct ds json_key = DS_EMPTY_INITIALIZER;
@@ -380,7 +384,7 @@ local_lport_init_lflow_gen_data(struct local_lport *lport)
     }
 }
 
-void
+static void
 local_lport_destroy_lflow_gen_data(struct local_lport *lport)
 {
     free(lport->json_key);
@@ -516,6 +520,8 @@ local_lport_init_cache(struct local_lport *lport)
     }
 
     lport->claimed = !!pb->chassis;
+
+    local_lport_init_lflow_gen_data(lport);
 }
 
 static void

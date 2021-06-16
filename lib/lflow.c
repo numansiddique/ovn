@@ -139,21 +139,10 @@ ovn_ctrl_lflows_build_dp_lflows(struct hmap *lflows,
 void
 ovn_ctrl_build_lport_lflows(struct hmap *lflows, struct local_lport *op)
 {
-    /* Initialize the data required for lflow generation. */
-    local_lport_init_lflow_gen_data(op);
-    if (op->peer) {
-        local_lport_init_lflow_gen_data(op->peer);
-    }
-
     if (op->ldp->is_switch) {
             build_lswitch_port_lflows(lflows, op);
     } else {
         build_lrouter_port_lflows(lflows, op);
-    }
-
-    local_lport_destroy_lflow_gen_data(op);
-    if (op->peer) {
-        local_lport_destroy_lflow_gen_data(op->peer);
     }
 }
 

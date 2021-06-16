@@ -181,8 +181,6 @@ void local_lport_update_cache(struct local_lport *);
 void local_lport_clear_cache(struct local_lport *);
 bool local_lport_is_cache_old(struct local_lport *);
 void local_lport_switch_lflow_map(struct local_lport *);
-void local_lport_init_lflow_gen_data(struct local_lport *);
-void local_lport_destroy_lflow_gen_data(struct local_lport *);
 
 /* Represents a tracked logical port. */
 enum en_tracked_resource_type {
