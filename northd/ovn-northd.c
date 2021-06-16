@@ -8110,40 +8110,6 @@ build_arp_resolve_flows_for_lrouter_port(
          *
          * The packet is still in peer's logical pipeline. So the match
          * should be on peer's outport. */
-        if (op->peer && op->nbrp->peer) {
-            if (op->lrp_networks.n_ipv4_addrs) {
-                ds_clear(match);
-                ds_put_format(match, "outport == %s && "
-                              REG_NEXT_HOP_IPV4 "== ",
-                              op->peer->json_key);
-                op_put_v4_networks(match, op, false);
-
-                ds_clear(actions);
-                ds_put_format(actions, "eth.dst = %s; next;",
-                              op->lrp_networks.ea_s);
-                ovn_lflow_add_with_hint(lflows, op->peer->od,
-                                        S_ROUTER_IN_ARP_RESOLVE, 100,
-                                        ds_cstr(match), ds_cstr(actions),
-                                        &op->nbrp->header_);
-            }
-
-            if (op->lrp_networks.n_ipv6_addrs) {
-                ds_clear(match);
-                ds_put_format(match, "outport == %s && "
-                              REG_NEXT_HOP_IPV6 " == ",
-                              op->peer->json_key);
-                op_put_v6_networks(match, op);
-
-                ds_clear(actions);
-                ds_put_format(actions, "eth.dst = %s; next;",
-                              op->lrp_networks.ea_s);
-                ovn_lflow_add_with_hint(lflows, op->peer->od,
-                                        S_ROUTER_IN_ARP_RESOLVE, 100,
-                                        ds_cstr(match), ds_cstr(actions),
-                                        &op->nbrp->header_);
-            }
-        }
-
         if (!op->derived && op->od->l3redirect_port) {
             const char *redirect_type = smap_get(&op->nbrp->options,
                                                  "redirect-type");

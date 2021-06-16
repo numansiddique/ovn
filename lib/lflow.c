@@ -1905,6 +1905,9 @@ static void build_lrouter_force_snat_flows_op(
     struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx,
     struct ds *match, struct ds *actions);
+static void build_arp_resolve_flows_for_lrouter_port(
+    struct hmap *lflows, struct local_lport *op,
+    struct ds *match, struct ds *actions);
 static void build_egress_delivery_flows_for_lrouter_port(
     struct hmap *lflows, struct local_lport *op,
     uint8_t *lflow_uuid_idx, struct ds *match, struct ds *actions);
@@ -1944,6 +1947,7 @@ build_lrouter_port_lflows(struct hmap *lflows, struct local_lport *op)
                                 &match, &actions);
     build_lrouter_force_snat_flows_op(lflows, op, &lflow_uuid_idx,
                                       &match, &actions);
+    build_arp_resolve_flows_for_lrouter_port(lflows, op, &match, &actions);
     build_egress_delivery_flows_for_lrouter_port(lflows, op,
                                                  &lflow_uuid_idx,
                                                  &match, &actions);
@@ -2768,6 +2772,64 @@ build_lrouter_force_snat_flows_op(struct hmap *lflows, struct local_lport *op,
                               "IP [%s] is considered as SNAT for load "
                               "balancer", op->json_key,
                               op->lrp.networks.ipv6_addrs[0].addr_s);
+        }
+    }
+}
+
+/* Local router ingress table ARP_RESOLVE: ARP Resolution.
+ *
+ * Any unicast packet that reaches this table is an IP packet whose
+ * next-hop IP address is in REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6
+ * (ip4.dst/ipv6.dst is the final destination).
+ * This table resolves the IP address in
+ * REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6 into an output port in outport and
+ * an Ethernet address in eth.dst.
+ */
+static void
+build_arp_resolve_flows_for_lrouter_port(
+        struct hmap *lflows, struct local_lport *op,
+        struct ds *match, struct ds *actions)
+{
+    if (!op->peer) {
+        return;
+    }
+
+    /* This is a logical router port. If next-hop IP address in
+        * REG_NEXT_HOP_IPV4/REG_NEXT_HOP_IPV6 matches IP address of this
+        * router port, then the packet is intended to eventually be sent
+        * to this logical port. Set the destination mac address using
+        * this port's mac address.
+        *
+        * The packet is still in peer's logical pipeline. So the match
+        * should be on peer's outport. */
+    if (op->peer && !op->peer->ldp->is_switch) {
+        /* Both the peer's are router ports. */
+        if (op->peer->lrp.networks.n_ipv4_addrs) {
+            ds_clear(match);
+            ds_put_format(match, "outport == %s && "
+                          REG_NEXT_HOP_IPV4 " == ",
+                          op->json_key);
+            op_put_v4_networks(match, op->peer, false);
+
+            ds_clear(actions);
+            ds_put_format(actions, "eth.dst = %s; next;",
+                          op->peer->lrp.networks.ea_s);
+            ovn_ctrl_lflow_add(lflows, S_ROUTER_IN_ARP_RESOLVE, 100,
+                               ds_cstr(match), ds_cstr(actions));
+        }
+
+        if (op->peer->lrp.networks.n_ipv6_addrs) {
+            ds_clear(match);
+            ds_put_format(match, "outport == %s && "
+                          REG_NEXT_HOP_IPV4 " == ",
+                          op->json_key);
+            op_put_v6_networks(match, op->peer);
+
+            ds_clear(actions);
+            ds_put_format(actions, "eth.dst = %s; next;",
+                          op->peer->lrp.networks.ea_s);
+            ovn_ctrl_lflow_add(lflows, S_ROUTER_IN_ARP_RESOLVE, 100,
+                               ds_cstr(match), ds_cstr(actions));
         }
     }
 }
