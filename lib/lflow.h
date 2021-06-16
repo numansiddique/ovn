@@ -302,6 +302,7 @@ struct ovn_ctrl_lflow {
     struct hmap_node hmap_node;
     struct uuid uuid_;
 
+    uint32_t dp_key; /* Datapath tunnel key. */
     enum ovn_stage stage;
     uint16_t priority;
     char *match;

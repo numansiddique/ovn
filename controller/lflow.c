@@ -748,18 +748,22 @@ convert_match_to_expr(char *lflow_match,
 static bool
 consider_logical_flow__(const struct ovn_ctrl_lflow *lflow,
                         bool ingress, uint8_t table_id,
-                        const struct sbrec_datapath_binding *dp,
+                        uint32_t dp_key,
                         struct hmap *dhcp_opts, struct hmap *dhcpv6_opts,
                         struct hmap *nd_ra_opts,
                         struct controller_event_options *controller_event_opts,
                         struct lflow_ctx_in *l_ctx_in,
                         struct lflow_ctx_out *l_ctx_out)
 {
-    if (!get_local_datapath(l_ctx_in->local_datapaths, dp->tunnel_key)) {
+    struct local_datapath *ldp = get_local_datapath(l_ctx_in->local_datapaths,
+                                                    dp_key);
+    if (!ldp) {
         VLOG_DBG("lflow "UUID_FMT" is not for local datapath, skip",
                  UUID_ARGS(&lflow->uuid_));
         return true;
     }
+
+    const struct sbrec_datapath_binding *dp = ldp->datapath;
 
     /* Determine translation of logical table IDs to physical table IDs. */
     uint8_t first_ptable = (ingress
@@ -958,7 +962,7 @@ consider_sb_logical_flow__(const struct sbrec_logical_flow *lflow,
 
     bool ingress = !strcmp(lflow->pipeline, "ingress");
     return consider_logical_flow__(&ctrl_lflow, ingress, lflow->table_id,
-                                   dp, dhcp_opts, dhcpv6_opts, nd_ra_opts,
+                                   dp->tunnel_key, dhcp_opts, dhcpv6_opts, nd_ra_opts,
                                    event_opts, l_ctx_in, l_ctx_out);
 }
 
@@ -1909,7 +1913,9 @@ lflow_process_ctrl_lflows(struct hmap *ctrl_lflows,
     HMAP_FOR_EACH (ctrl_lflow, hmap_node, ctrl_lflows) {
         bool ingress = (ovn_stage_get_pipeline(ctrl_lflow->stage) == P_IN);
         uint8_t table_id = ovn_stage_get_table(ctrl_lflow->stage);
-        consider_logical_flow__(ctrl_lflow, ingress, table_id, dp,
+        uint32_t dp_key =
+            ctrl_lflow->dp_key ? ctrl_lflow->dp_key : dp->tunnel_key;
+        consider_logical_flow__(ctrl_lflow, ingress, table_id, dp_key,
                                  &dhcp_opts, &dhcpv6_opts,
                                  &nd_ra_opts, &controller_event_opts,
                                  l_ctx_in, l_ctx_out);
