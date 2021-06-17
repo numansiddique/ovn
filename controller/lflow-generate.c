@@ -37,7 +37,7 @@ lflow_generate_run(struct hmap *local_datapaths)
 {
     struct local_datapath *ldp;
     HMAP_FOR_EACH (ldp, hmap_node, local_datapaths) {
-        ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp->datapath);
+        ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp);
 
         struct shash_node *node;
         SHASH_FOR_EACH (node, &ldp->lports) {
@@ -51,7 +51,7 @@ lflow_generate_datapath_flows(struct local_datapath *ldp,
                               bool build_lport_flows)
 {
     local_datapath_switch_lflow_map(ldp);
-    ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp->datapath);
+    ovn_ctrl_lflows_build_dp_lflows(ldp->active_lflows, ldp);
 
     if (build_lport_flows) {
         struct shash_node *node;

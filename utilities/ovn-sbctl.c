@@ -1210,7 +1210,7 @@ cmd_ctrl_lflow_list(struct ctl_context *ctx)
 
     struct local_datapath *ldp;
     HMAP_FOR_EACH (ldp, hmap_node, &datapaths) {
-        ovn_ctrl_lflows_build_dp_lflows(&ldp->ctrl_lflows[0], ldp->datapath);
+        ovn_ctrl_lflows_build_dp_lflows(&ldp->ctrl_lflows[0], ldp);
 
         struct shash_node *shash_node;
         SHASH_FOR_EACH (shash_node, &ldp->lports) {

@@ -4315,11 +4315,6 @@ build_pre_acls(struct ovn_datapath *od, struct hmap *port_groups,
      * send IP packets for some (allow) filters through the conntrack action,
      * which handles defragmentation, in order to match L4 headers. */
     if (od->has_stateful_acl) {
-        for (size_t i = 0; i < od->n_router_ports; i++) {
-            skip_port_from_conntrack(od, od->router_ports[i],
-                                     S_SWITCH_IN_PRE_ACL, S_SWITCH_OUT_PRE_ACL,
-                                     110, lflows);
-        }
         for (size_t i = 0; i < od->n_localnet_ports; i++) {
             skip_port_from_conntrack(od, od->localnet_ports[i],
                                      S_SWITCH_IN_PRE_ACL, S_SWITCH_OUT_PRE_ACL,
@@ -4411,11 +4406,6 @@ static void
 build_pre_lb(struct ovn_datapath *od, struct hmap *lflows,
              struct shash *meter_groups, struct hmap *lbs)
 {
-    for (size_t i = 0; i < od->n_router_ports; i++) {
-        skip_port_from_conntrack(od, od->router_ports[i],
-                                 S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
-                                 110, lflows);
-    }
     for (size_t i = 0; i < od->n_localnet_ports; i++) {
         skip_port_from_conntrack(od, od->localnet_ports[i],
                                  S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
