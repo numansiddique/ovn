@@ -707,13 +707,10 @@ local_lport_update_lrp_data(struct local_lport *lport)
     in6_generate_lla(lport->lrp.networks.ea, &lla);
     lport_addr_add_ip6ddr(&lport->lrp.networks, lla, 64);
 
-    struct ds json_key = DS_EMPTY_INITIALIZER;
-    json_string_escape(lport->pb->logical_port, &json_key);
-    lport->json_key = ds_steal_cstr(&json_key);
-
     lport->lrp.is_l3dgw_port = smap_get_bool(&lport->pb->options,
                                              "is-l3dgw-port", false);
     if (lport->lrp.is_l3dgw_port) {
+        struct ds json_key = DS_EMPTY_INITIALIZER;
         char *chassis_redirect_name =
             ovn_chassis_redirect_name(lport->pb->logical_port);
         json_string_escape(chassis_redirect_name, &json_key);
