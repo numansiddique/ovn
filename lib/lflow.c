@@ -75,7 +75,7 @@ static void build_generic_lb_hairpin(struct hmap *lflows);
 static void build_generic_l2_lkup(struct hmap *lflows);
 
 static void build_lswitch_dp_lflows(struct hmap *lflows,
-                                    const struct sbrec_datapath_binding *dp,
+                                    struct local_datapath *,
                                     bool use_ct_inv_match);
 static void build_lrouter_dp_lflows(struct hmap *lflows,
                                     const struct sbrec_datapath_binding *dp);
@@ -84,6 +84,12 @@ static void build_lswitch_port_lflows(struct hmap *lflows,
                                       struct local_lport *);
 static void build_lrouter_port_lflows(struct hmap *lflows,
                                       struct local_lport *);
+
+static void skip_lport_from_conntrack(struct hmap *lflows,
+                                      struct local_lport *,
+                                      enum ovn_stage in_stage,
+                                      enum ovn_stage out_stage,
+                                      uint16_t priority, struct ds *match);
 
 void
 ovn_ctrl_lflows_clear(struct hmap *lflows)
@@ -140,12 +146,12 @@ build_lswitch_generic_lflows(struct hmap *lflows)
 
 void
 ovn_ctrl_lflows_build_dp_lflows(struct hmap *lflows,
-                                const struct sbrec_datapath_binding *dp)
+                                struct local_datapath *ldp)
 {
-    if (datapath_is_switch(dp)) {
-        build_lswitch_dp_lflows(lflows, dp, true);
+    if (ldp->is_switch) {
+        build_lswitch_dp_lflows(lflows, ldp, true);
     } else {
-        build_lrouter_dp_lflows(lflows, dp);
+        build_lrouter_dp_lflows(lflows, ldp->datapath);
     }
 }
 
@@ -454,9 +460,18 @@ has_dp_dns_records(const struct sbrec_datapath_binding *dp)
 }
 
 static void
-build_lswitch_pre_acls(struct hmap *lflows, bool has_stateful_acls,
+build_lswitch_pre_acls(struct hmap *lflows, struct local_datapath *ldp,
+                       bool has_stateful_acls,
                        const struct uuid *lflow_uuid, uint8_t *lflow_uuid_idx)
 {
+    struct ds match = DS_EMPTY_INITIALIZER;
+    for (size_t i = 0; i < ldp->n_peer_ports; i++) {
+        skip_lport_from_conntrack(lflows, ldp->peer_ports[i].local,
+                                  S_SWITCH_IN_PRE_ACL, S_SWITCH_OUT_PRE_ACL,
+                                  110, &match);
+    }
+    ds_destroy(&match);
+
     /* If there are any stateful ACL rules in this datapath, we may
      * send IP packets for some (allow) filters through the conntrack action,
      * which handles defragmentation, in order to match L4 headers. */
@@ -495,9 +510,18 @@ build_lswitch_pre_acls(struct hmap *lflows, bool has_stateful_acls,
 }
 
 static void
-build_lswitch_pre_lb(struct hmap *lflows, bool vip_configured,
+build_lswitch_pre_lb(struct hmap *lflows, struct local_datapath *ldp,
+                     bool vip_configured,
                      const struct uuid *lflow_uuid, uint8_t *lflow_uuid_idx)
 {
+    struct ds match = DS_EMPTY_INITIALIZER;
+    for (size_t i = 0; i < ldp->n_peer_ports; i++) {
+        skip_lport_from_conntrack(lflows, ldp->peer_ports[i].local,
+                                  S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
+                                  110, &match);
+    }
+    ds_destroy(&match);
+
     /* 'REGBIT_CONNTRACK_NAT' is set to let the pre-stateful table send
      * packet to conntrack for defragmentation and possibly for unNATting.
      *
@@ -817,19 +841,21 @@ build_lswitch_lb_hairpin(struct hmap *lflows, bool has_lb_vips,
 
 static void
 build_lswitch_pre_acls_and_acls(struct hmap *lflows,
-                                const struct sbrec_datapath_binding *dp,
+                                struct local_datapath *ldp,
                                 bool use_ct_inv_match,
                                 const struct uuid *lflow_uuid,
                                 uint8_t *lflow_uuid_idx)
 {
+    const struct sbrec_datapath_binding *dp = ldp->datapath;
+
     bool has_stateful_acls = has_dp_stateful_acls(dp);
     bool has_lb_vips = has_dp_lb_vip(dp);
     bool has_stateful = (has_stateful_acls || has_lb_vips);
     bool has_acls_or_lbs = has_dp_acls(dp) || has_lb_vips;
 
-    build_lswitch_pre_acls(lflows, has_stateful_acls, lflow_uuid,
+    build_lswitch_pre_acls(lflows, ldp, has_stateful_acls, lflow_uuid,
                            lflow_uuid_idx);
-    build_lswitch_pre_lb(lflows, has_lb_vips, lflow_uuid, lflow_uuid_idx);
+    build_lswitch_pre_lb(lflows, ldp, has_lb_vips, lflow_uuid, lflow_uuid_idx);
     build_lswitch_acl_hints(lflows, has_acls_or_lbs, lflow_uuid,
                             lflow_uuid_idx);
     build_lswitch_acls(lflows, has_acls_or_lbs, has_stateful,
@@ -886,30 +912,34 @@ build_lswitch_dns_lkup(struct hmap *lflows,
 
 static void
 build_lswitch_dp_lflows(struct hmap *lflows,
-                        const struct sbrec_datapath_binding *dp,
+                        struct local_datapath *ldp,
                         bool use_ct_inv_match)
 {
     uint8_t lflow_uuid_idx = 1;
 
     /* Logical VLANs not supported. */
-    if (!is_dp_vlan_transparent(dp)) {
+    if (!is_dp_vlan_transparent(ldp->datapath)) {
         /* Block logical VLANs. */
         ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_PORT_SEC_L2, 100,
-                                "vlan.present", "drop;", &dp->header_.uuid,
+                                "vlan.present", "drop;",
+                                &ldp->datapath->header_.uuid,
                                 &lflow_uuid_idx);
     }
 
-    build_lswitch_pre_acls_and_acls(lflows, dp, use_ct_inv_match,
-                                    &dp->header_.uuid, &lflow_uuid_idx);
+    build_lswitch_pre_acls_and_acls(lflows, ldp, use_ct_inv_match,
+                                    &ldp->datapath->header_.uuid,
+                                    &lflow_uuid_idx);
 
-    if (has_dp_dns_records(dp)) {
-        build_lswitch_dns_lkup(lflows, &dp->header_.uuid, &lflow_uuid_idx);
+    if (has_dp_dns_records(ldp->datapath)) {
+        build_lswitch_dns_lkup(lflows, &ldp->datapath->header_.uuid,
+                               &lflow_uuid_idx);
     }
 
-    if (has_dp_unknown_lports(dp)) {
+    if (has_dp_unknown_lports(ldp->datapath)) {
         ovn_ctrl_lflow_add_uuid(lflows, S_SWITCH_IN_L2_LKUP, 0, "1",
                                 "outport = \""MC_UNKNOWN"\"; output;",
-                                 &dp->header_.uuid, &lflow_uuid_idx);
+                                 &ldp->datapath->header_.uuid,
+                                 &lflow_uuid_idx);
     }
 }
 
@@ -2049,6 +2079,22 @@ static void build_arp_resolve_flows_for_lsp_in_router(
             }
         }
     }
+}
+
+static void
+skip_lport_from_conntrack(struct hmap *lflows, struct local_lport *op,
+                          enum ovn_stage in_stage, enum ovn_stage out_stage,
+                          uint16_t priority, struct ds *match)
+{
+    ds_clear(match);
+    ds_put_format(match, "ip && inport == %s", op->json_key);
+    ovn_ctrl_lflow_add(lflows, in_stage, priority,
+                       ds_cstr(match), "next;");
+
+    ds_clear(match);
+    ds_put_format(match, "ip && outport == %s", op->json_key);
+    ovn_ctrl_lflow_add(lflows, out_stage, priority,
+                       ds_cstr(match), "next;");
 }
 
 static void build_adm_ctrl_flows_for_lrouter_port(
