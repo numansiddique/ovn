@@ -6004,21 +6004,7 @@ build_lswitch_ip_unicast_lookup(struct ovn_port *op,
                     op->od->has_unknown = true;
                 }
             } else if (is_dynamic_lsp_address(op->nbsp->addresses[i])) {
-                if (!op->nbsp->dynamic_addresses
-                    || !ovs_scan(op->nbsp->dynamic_addresses,
-                            ETH_ADDR_SCAN_FMT, ETH_ADDR_SCAN_ARGS(mac))) {
-                    continue;
-                }
-                ds_clear(match);
-                ds_put_format(match, "eth.dst == "ETH_ADDR_FMT,
-                              ETH_ADDR_ARGS(mac));
-
-                ds_clear(actions);
-                ds_put_format(actions, "outport = %s; output;", op->json_key);
-                ovn_lflow_add_with_hint(lflows, op->od, S_SWITCH_IN_L2_LKUP,
-                                        50, ds_cstr(match),
-                                        ds_cstr(actions),
-                                        &op->nbsp->header_);
+                /* Do nothing. */
             } else if (!strcmp(op->nbsp->addresses[i], "router")) {
                 if (!op->peer || !op->peer->nbrp
                     || !ovs_scan(op->peer->nbrp->mac,
