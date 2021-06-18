@@ -130,7 +130,7 @@ lflow_lport_needs_generation(struct local_datapath *ldp,
         return true;
     }
 
-    return local_lport_is_cache_old(dp_lport);
+    return local_lport_update_cache(dp_lport);
 }
 
 static void

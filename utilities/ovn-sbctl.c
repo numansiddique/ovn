@@ -1214,6 +1214,7 @@ cmd_ctrl_lflow_list(struct ctl_context *ctx)
 
         struct shash_node *shash_node;
         SHASH_FOR_EACH (shash_node, &ldp->lports) {
+            local_lport_update_cache(shash_node->data);
             ovn_ctrl_build_lport_lflows(&ldp->ctrl_lflows[0],
                                         shash_node->data);
         }

@@ -177,7 +177,7 @@ struct local_lport *local_datapath_unlink_lport(struct local_datapath *ld,
 
 void local_lport_destroy(struct local_lport *);
 
-void local_lport_update_cache(struct local_lport *);
+bool local_lport_update_cache(struct local_lport *);
 void local_lport_clear_cache(struct local_lport *);
 bool local_lport_is_cache_old(struct local_lport *);
 void local_lport_switch_lflow_map(struct local_lport *);

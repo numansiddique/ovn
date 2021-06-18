@@ -288,6 +288,7 @@ local_datapath_add_lport(struct local_datapath *ld,
         shash_add(&ld->lports, lport_name, dp_lport);
         dp_lport->ldp = ld;
         dp_lport->type = get_lport_type(pb);
+        local_lport_init_cache(dp_lport);
     }
 
     return dp_lport;
@@ -310,13 +311,16 @@ local_datapath_remove_lport(struct local_datapath *ld, const char *lport_name)
     }
 }
 
-void
+bool
 local_lport_update_cache(struct local_lport *lport)
 {
     if (local_lport_is_cache_old(lport)) {
         local_lport_clear_cache(lport);
         local_lport_init_cache(lport);
+        return true;
     }
+
+    return false;
 }
 
 
