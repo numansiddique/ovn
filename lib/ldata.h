@@ -157,7 +157,7 @@ struct local_lport *local_datapath_add_lport(
 void local_datapath_remove_lport(struct local_datapath *ld,
                                  const char *lport_name);
 
-void local_datapath_add_peer_port(
+void local_datapath_add_or_update_peer_port(
     const struct sbrec_port_binding *pb,
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,

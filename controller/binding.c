@@ -1613,11 +1613,12 @@ add_local_datapath_peer_port(const struct sbrec_port_binding *pb,
         .tracked_datapaths = b_ctx_out->tracked_dp_bindings,
     };
 
-    local_datapath_add_peer_port(pb, b_ctx_in->sbrec_datapath_binding_by_key,
-                                 b_ctx_in->sbrec_port_binding_by_datapath,
-                                 b_ctx_in->sbrec_port_binding_by_name,
-                                 ld, b_ctx_out->local_datapaths,
-                                 local_datapath_added, &aux);
+    local_datapath_add_or_update_peer_port(
+        pb, b_ctx_in->sbrec_datapath_binding_by_key,
+        b_ctx_in->sbrec_port_binding_by_datapath,
+        b_ctx_in->sbrec_port_binding_by_name,
+        ld, b_ctx_out->local_datapaths,
+        local_datapath_added, &aux);
 }
 
 static void

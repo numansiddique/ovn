@@ -137,7 +137,7 @@ local_datapath_switch_lflow_map(struct local_datapath *ldp)
 }
 
 void
-local_datapath_add_peer_port(
+local_datapath_add_or_update_peer_port(
     const struct sbrec_port_binding *pb,
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
@@ -149,11 +149,24 @@ local_datapath_add_peer_port(
                          void *aux),
     void *aux)
 {
+    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
+    ovs_assert(lport);
+
     const struct sbrec_port_binding *peer;
     peer = lport_get_peer(pb, sbrec_port_binding_by_name);
 
     if (!peer) {
+        if (lport->peer) {
+            /* The peer is updated.  Remove the lport and the removed 'peer'
+             * from the local datapath's peer ports. */
+            local_datapath_remove_peer_port(pb, ld, local_datapaths);
+        }
         return;
+    }
+
+    if (lport->peer && lport->peer->pb != peer) {
+        /* The peer port is updated. Remove the old one. */
+        local_datapath_remove_peer_port(pb, ld, local_datapaths);
     }
 
     struct local_datapath *peer_ld =
@@ -172,9 +185,6 @@ local_datapath_add_peer_port(
     if (!peer_lport) {
         return;
     }
-
-    struct local_lport *lport = local_datapath_get_lport(ld, pb->logical_port);
-    ovs_assert(lport);
 
     bool present = false;
     for (size_t i = 0; i < ld->n_peer_ports; i++) {
@@ -274,17 +284,11 @@ local_datapath_add_lport(struct local_datapath *ld,
         hmap_init(&dp_lport->ctrl_lflows[1]);
         dp_lport->active_lflows = &dp_lport->ctrl_lflows[0];
         dp_lport->cleared_lflows = &dp_lport->ctrl_lflows[1];
-
+        smap_init(&dp_lport->options);
         shash_add(&ld->lports, lport_name, dp_lport);
         dp_lport->ldp = ld;
         dp_lport->type = get_lport_type(pb);
-        local_lport_init_cache(dp_lport);
-    } else {
-        local_lport_update_cache(dp_lport);
     }
-
-    dp_lport->ldp = ld;
-    dp_lport->type = get_lport_type(pb);
 
     return dp_lport;
 }

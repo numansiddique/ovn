@@ -71,6 +71,7 @@ lflow_generate_lport_flows(const struct sbrec_port_binding *pb,
         generate_lflows_for_lport__(lport);
     } else {
         lport = local_datapath_add_lport(ldp, pb->logical_port, pb);
+        local_lport_update_cache(lport);
         ovn_ctrl_build_lport_lflows(lport->active_lflows, lport);
     }
 }
