@@ -12437,6 +12437,13 @@ build_lflows(struct northd_context *ctx, struct hmap *datapaths,
             ovn_stage_build(dp_type, pipeline, sbflow->table_id),
             sbflow->priority, sbflow->match, sbflow->actions, sbflow->hash);
         if (lflow) {
+            const char *stage_name = smap_get_def(&sbflow->external_ids,
+                                                  "stage-name", "");
+            if (strcmp(stage_name, ovn_stage_to_str(lflow->stage))) {
+                sbrec_logical_flow_update_external_ids_setkey(sbflow,
+                     "stage-name", ovn_stage_to_str(lflow->stage));
+            }
+
             /* This is a valid lflow.  Checking if the datapath group needs
              * updates. */
             bool update_dp_group = false;
@@ -14228,6 +14235,8 @@ main(int argc, char *argv[])
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_logical_flow_col_priority);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_logical_flow_col_match);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_logical_flow_col_actions);
+    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
+                         &sbrec_logical_flow_col_external_ids);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl,
                         &sbrec_table_logical_dp_group);
