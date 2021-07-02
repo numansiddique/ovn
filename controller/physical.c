@@ -20,6 +20,7 @@
 #include "encaps.h"
 #include "flow.h"
 #include "ha-chassis.h"
+#include "ldata.h"
 #include "lflow.h"
 #include "lport.h"
 #include "chassis.h"

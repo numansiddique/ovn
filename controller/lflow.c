@@ -17,6 +17,7 @@
 #include "lflow.h"
 #include "coverage.h"
 #include "ha-chassis.h"
+#include "ldata.h"
 #include "lflow-cache.h"
 #include "lport.h"
 #include "ofctrl.h"

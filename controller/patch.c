@@ -18,6 +18,7 @@
 #include "patch.h"
 
 #include "hash.h"
+#include "ldata.h"
 #include "lflow.h"
 #include "lib/vswitch-idl.h"
 #include "lport.h"
