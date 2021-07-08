@@ -618,6 +618,11 @@ static struct binding_lport *local_binding_add_lport(
     enum en_lport_type);
 static struct binding_lport *local_binding_get_primary_lport(
     struct local_binding *);
+static struct binding_lport *local_binding_get_first_lport(
+    struct local_binding *lbinding);
+static struct binding_lport *local_binding_get_primary_or_localport_lport(
+    struct local_binding *lbinding);
+
 static bool local_binding_handle_stale_binding_lports(
     struct local_binding *lbinding, struct binding_ctx_in *b_ctx_in,
     struct binding_ctx_out *b_ctx_out, struct hmap *qos_map);
@@ -803,12 +808,15 @@ binding_dump_local_bindings(struct local_binding_data *lbinding_data,
         if (num_lports) {
             struct shash child_lports = SHASH_INITIALIZER(&child_lports);
             struct binding_lport *primary_lport = NULL;
+            struct binding_lport *localport_lport = NULL;
             struct binding_lport *b_lport;
             bool first_elem = true;
 
             LIST_FOR_EACH (b_lport, list_node, &lbinding->binding_lports) {
                 if (first_elem && b_lport->type == LP_VIF) {
                     primary_lport = b_lport;
+                } else if (first_elem && b_lport->type == LP_LOCALPORT) {
+                    localport_lport = b_lport;
                 } else {
                     shash_add(&child_lports, b_lport->name, b_lport);
                 }
@@ -818,6 +826,9 @@ binding_dump_local_bindings(struct local_binding_data *lbinding_data,
             if (primary_lport) {
                 ds_put_format(out_data, "primary lport : [%s]\n",
                               primary_lport->name);
+            } else if (localport_lport) {
+                ds_put_format(out_data, "localport lport : [%s]\n",
+                              localport_lport->name);
             } else {
                 ds_put_format(out_data, "no primary lport\n");
             }
@@ -1007,8 +1018,7 @@ claim_lport(const struct sbrec_port_binding *pb,
  * Caller should make sure that this is the case.
  */
 static bool
-release_lport(const struct sbrec_port_binding *pb, bool sb_readonly,
-              struct hmap *tracked_datapaths, struct if_status_mgr *if_mgr)
+release_lport_(const struct sbrec_port_binding *pb, bool sb_readonly)
 {
     if (pb->encap) {
         if (sb_readonly) {
@@ -1031,9 +1041,20 @@ release_lport(const struct sbrec_port_binding *pb, bool sb_readonly,
         sbrec_port_binding_set_virtual_parent(pb, NULL);
     }
 
+    VLOG_INFO("Releasing lport %s from this chassis.", pb->logical_port);
+    return true;
+}
+
+static bool
+release_lport(const struct sbrec_port_binding *pb, bool sb_readonly,
+              struct hmap *tracked_datapaths, struct if_status_mgr *if_mgr)
+{
+    if (!release_lport_(pb, sb_readonly)) {
+        return false;
+    }
+
     update_lport_tracking(pb, tracked_datapaths, false);
     if_status_mgr_release_iface(if_mgr, pb->logical_port);
-    VLOG_INFO("Releasing lport %s from this chassis.", pb->logical_port);
     return true;
 }
 
@@ -1320,6 +1341,36 @@ consider_virtual_lport(const struct sbrec_port_binding *pb,
     return true;
 }
 
+static bool
+consider_localport(const struct sbrec_port_binding *pb,
+                   struct binding_ctx_in *b_ctx_in,
+                   struct binding_ctx_out *b_ctx_out)
+{
+    struct shash *local_bindings = &b_ctx_out->lbinding_data->bindings;
+    struct local_binding *lbinding = local_binding_find(local_bindings,
+                                                        pb->logical_port);
+
+    if (!lbinding) {
+        return true;
+    }
+
+    local_binding_add_lport(&b_ctx_out->lbinding_data->lports, lbinding, pb,
+                            LP_LOCALPORT);
+
+    /* If the port binding is claimed, then release it as localport is claimed
+     * by any ovn-controller. */
+    if (pb->chassis == b_ctx_in->chassis_rec) {
+        if (!release_lport_(pb, !b_ctx_in->ovnsb_idl_txn)) {
+            return false;
+        }
+
+        remove_related_lport(pb, b_ctx_out);
+    }
+
+    update_related_lport(pb, b_ctx_out);
+    return true;
+}
+
 /* Considers either claiming the lport or releasing the lport
  * for non VIF lports.
  */
@@ -1548,9 +1599,12 @@ binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
 
         switch (lport_type) {
         case LP_PATCH:
-        case LP_LOCALPORT:
         case LP_VTEP:
             update_related_lport(pb, b_ctx_out);
+            break;
+
+        case LP_LOCALPORT:
+            consider_localport(pb, b_ctx_in, b_ctx_out);
             break;
 
         case LP_VIF:
@@ -1766,20 +1820,28 @@ consider_iface_claim(const struct ovsrec_interface *iface_rec,
         lbinding->iface = iface_rec;
     }
 
-    struct binding_lport *b_lport = local_binding_get_primary_lport(lbinding);
+    struct binding_lport *b_lport =
+        local_binding_get_primary_or_localport_lport(lbinding);
     const struct sbrec_port_binding *pb = NULL;
     if (!b_lport) {
         pb = lport_lookup_by_name(b_ctx_in->sbrec_port_binding_by_name,
                                   lbinding->name);
-        if (pb && get_lport_type(pb) == LP_VIF) {
-            b_lport = local_binding_add_lport(binding_lports, lbinding, pb,
-                                              LP_VIF);
+        if (pb) {
+            enum en_lport_type lport_type= get_lport_type(pb);
+            if (lport_type == LP_VIF || lport_type == LP_LOCALPORT) {
+                b_lport = local_binding_add_lport(binding_lports, lbinding, pb,
+                                                  lport_type);
+            }
         }
     }
 
     if (!b_lport) {
         /* There is no binding lport for this local binding. */
         return true;
+    }
+
+    if (b_lport->type == LP_LOCALPORT) {
+        return consider_localport(pb, b_ctx_in, b_ctx_out);
     }
 
     if (!consider_vif_lport(b_lport->pb, b_ctx_in, b_ctx_out,
@@ -1826,7 +1888,8 @@ consider_iface_release(const struct ovsrec_interface *iface_rec,
     struct shash *binding_lports = &b_ctx_out->lbinding_data->lports;
 
     lbinding = local_binding_find(local_bindings, iface_id);
-    struct binding_lport *b_lport = local_binding_get_primary_lport(lbinding);
+    struct binding_lport *b_lport =
+        local_binding_get_primary_or_localport_lport(lbinding);
     if (is_binding_lport_this_chassis(b_lport, b_ctx_in->chassis_rec)) {
         struct local_datapath *ld =
             get_local_datapath(b_ctx_out->local_datapaths,
@@ -1847,6 +1910,10 @@ consider_iface_release(const struct ovsrec_interface *iface_rec,
             }
         }
 
+    } else if (lbinding && b_lport && b_lport->type == LP_LOCALPORT) {
+        /* lbinding is associated with a localport.  Remove it from the
+         * related lports. */
+        remove_related_lport(b_lport->pb, b_ctx_out);
     }
 
     if (lbinding) {
@@ -2182,6 +2249,8 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
         SHASH_INITIALIZER(&deleted_virtual_pbs);
     struct shash deleted_vif_pbs =
         SHASH_INITIALIZER(&deleted_vif_pbs);
+    struct shash deleted_localport_pbs =
+        SHASH_INITIALIZER(&deleted_localport_pbs);
     struct shash deleted_other_pbs =
         SHASH_INITIALIZER(&deleted_other_pbs);
     const struct sbrec_port_binding *pb;
@@ -2216,6 +2285,8 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
             shash_add(&deleted_container_pbs, pb->logical_port, pb);
         } else if (lport_type == LP_VIRTUAL) {
             shash_add(&deleted_virtual_pbs, pb->logical_port, pb);
+        } else if (lport_type == LP_LOCALPORT) {
+            shash_add(&deleted_localport_pbs, pb->logical_port, pb);
         } else {
             shash_add(&deleted_other_pbs, pb->logical_port, pb);
         }
@@ -2250,6 +2321,12 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
         }
     }
 
+    SHASH_FOR_EACH_SAFE (node, node_next, &deleted_localport_pbs) {
+        handle_deleted_vif_lport(node->data, LP_LOCALPORT, b_ctx_in,
+                                 b_ctx_out);
+        shash_delete(&deleted_localport_pbs, node);
+    }
+
     SHASH_FOR_EACH_SAFE (node, node_next, &deleted_other_pbs) {
         handle_deleted_lport(node->data, b_ctx_in, b_ctx_out);
         shash_delete(&deleted_other_pbs, node);
@@ -2259,6 +2336,7 @@ delete_done:
     shash_destroy(&deleted_container_pbs);
     shash_destroy(&deleted_virtual_pbs);
     shash_destroy(&deleted_vif_pbs);
+    shash_destroy(&deleted_localport_pbs);
     shash_destroy(&deleted_other_pbs);
 
     if (!handled) {
@@ -2318,8 +2396,11 @@ delete_done:
                                                b_ctx_out, qos_map_ptr);
             break;
 
-        case LP_PATCH:
         case LP_LOCALPORT:
+            handled = consider_localport(pb, b_ctx_in, b_ctx_out);
+            break;
+
+        case LP_PATCH:
         case LP_VTEP:
             update_related_lport(pb, b_ctx_out);
             if (lport_type ==  LP_PATCH) {
@@ -2473,6 +2554,24 @@ local_binding_delete(struct local_binding *lbinding,
     local_binding_destroy(lbinding, binding_lports);
 }
 
+static struct binding_lport *
+local_binding_get_first_lport(struct local_binding *lbinding)
+{
+    if (!lbinding) {
+        return NULL;
+    }
+
+    if (!ovs_list_is_empty(&lbinding->binding_lports)) {
+        struct binding_lport *b_lport = NULL;
+        b_lport = CONTAINER_OF(ovs_list_front(&lbinding->binding_lports),
+                               struct binding_lport, list_node);
+
+        return b_lport;
+    }
+
+    return NULL;
+}
+
 /* Returns the primary binding lport if present in lbinding's
  * binding lports list.  A binding lport is considered primary
  * if binding lport's type is LP_VIF and the name matches
@@ -2485,15 +2584,26 @@ local_binding_get_primary_lport(struct local_binding *lbinding)
         return NULL;
     }
 
-    if (!ovs_list_is_empty(&lbinding->binding_lports)) {
-        struct binding_lport *b_lport = NULL;
-        b_lport = CONTAINER_OF(ovs_list_front(&lbinding->binding_lports),
-                               struct binding_lport, list_node);
-
-        if (b_lport->type == LP_VIF &&
+    struct binding_lport *b_lport = local_binding_get_first_lport(lbinding);
+    if (b_lport && b_lport->type == LP_VIF &&
             !strcmp(lbinding->name, b_lport->name)) {
-            return b_lport;
-        }
+        return b_lport;
+    }
+
+    return NULL;
+}
+
+static struct binding_lport *
+local_binding_get_primary_or_localport_lport(struct local_binding *lbinding)
+{
+    if (!lbinding) {
+        return NULL;
+    }
+
+    struct binding_lport *b_lport = local_binding_get_first_lport(lbinding);
+    if (b_lport && (b_lport->type == LP_VIF || b_lport->type == LP_LOCALPORT)
+            && !strcmp(lbinding->name, b_lport->name)) {
+        return b_lport;
     }
 
     return NULL;
@@ -2541,8 +2651,10 @@ local_binding_handle_stale_binding_lports(struct local_binding *lbinding,
                                           struct binding_ctx_out *b_ctx_out,
                                           struct hmap *qos_map)
 {
-    /* Check if this lbinding has a primary binding_lport or not. */
-    struct binding_lport *p_lport = local_binding_get_primary_lport(lbinding);
+    /* Check if this lbinding has a primary binding_lport or
+     * localport binding_lport or not. */
+    struct binding_lport *p_lport =
+        local_binding_get_primary_or_localport_lport(lbinding);
     if (p_lport) {
         /* Nothing to be done. */
         return true;
@@ -2709,6 +2821,7 @@ binding_lport_check_and_cleanup(struct binding_lport *b_lport,
 
     switch (b_lport->type) {
     case LP_VIF:
+    case LP_LOCALPORT:
         if (strcmp(b_lport->name, b_lport->lbinding->name)) {
             cleanup_blport = true;
         }
@@ -2728,7 +2841,6 @@ binding_lport_check_and_cleanup(struct binding_lport *b_lport,
         break;
 
     case LP_PATCH:
-    case LP_LOCALPORT:
     case LP_VTEP:
     case LP_L2GATEWAY:
     case LP_L3GATEWAY:
