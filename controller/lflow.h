@@ -146,6 +146,7 @@ struct lflow_ctx_in {
     const struct shash *port_groups;
     const struct sset *active_tunnels;
     const struct sset *related_lport_ids;
+    const struct hmap *chassis_tunnels;
 };
 
 struct lflow_ctx_out {

@@ -34,6 +34,7 @@ struct simap;
 struct sbrec_multicast_group_table;
 struct sbrec_port_binding_table;
 struct sset;
+struct local_nonvif_data;
 
 /* OVN Geneve option information.
  *
@@ -56,18 +57,18 @@ struct physical_ctx {
     const struct simap *ct_zones;
     enum mf_field_id mff_ovn_geneve;
     struct shash *local_bindings;
+    struct local_nonvif_data *nonvif_data;
 };
 
 void physical_register_ovs_idl(struct ovsdb_idl *);
 void physical_run(struct physical_ctx *,
                   struct ovn_desired_flow_table *);
 void physical_clear_unassoc_flows_with_db(struct ovn_desired_flow_table *);
-void physical_handle_port_binding_changes(struct physical_ctx *,
-                                          struct ovn_desired_flow_table *);
 void physical_handle_mc_group_changes(struct physical_ctx *,
                                       struct ovn_desired_flow_table *);
-bool physical_handle_ovs_iface_changes(struct physical_ctx *,
-                                       struct ovn_desired_flow_table *);
-bool get_tunnel_ofport(const char *chassis_name, char *encap_ip,
-                       ofp_port_t *ofport);
+bool physical_handle_ovs_iface_changes(struct physical_ctx *);
+void physical_handle_flows_for_lport(const struct sbrec_port_binding *,
+                                     bool removed,
+                                     struct physical_ctx *,
+                                     struct ovn_desired_flow_table *);
 #endif /* controller/physical.h */

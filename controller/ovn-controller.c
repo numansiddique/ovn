@@ -1039,6 +1039,8 @@ struct ed_type_runtime_data {
     struct related_lports related_lports;
     struct sset active_tunnels;
 
+    struct local_nonvif_data nonvif_data;
+
     /* runtime data engine private data. */
     struct sset egress_ifaces;
     struct smap local_iface_ids;
@@ -1139,6 +1141,7 @@ en_runtime_data_init(struct engine_node *node OVS_UNUSED,
     local_binding_data_init(&data->lbinding_data);
     shash_init(&data->local_active_ports_ipv6_pd);
     shash_init(&data->local_active_ports_ras);
+    local_nonvif_data_init(&data->nonvif_data);
 
     /* Init the tracked data. */
     hmap_init(&data->tracked_dp_bindings);
@@ -1160,6 +1163,7 @@ en_runtime_data_cleanup(void *data)
     shash_destroy_free_data(&rt_data->local_active_ports_ipv6_pd);
     shash_destroy_free_data(&rt_data->local_active_ports_ras);
     local_binding_data_destroy(&rt_data->lbinding_data);
+    local_nonvif_data_destroy(&rt_data->nonvif_data);
 }
 
 static void
@@ -1272,6 +1276,7 @@ en_runtime_data_run(struct engine_node *node, void *data)
         shash_clear_free_data(local_active_ipv6_pd);
         shash_clear_free_data(local_active_ras);
         local_binding_data_destroy(&rt_data->lbinding_data);
+        local_nonvif_data_destroy(&rt_data->nonvif_data);
         sset_destroy(local_lports);
         related_lports_destroy(&rt_data->related_lports);
         sset_destroy(active_tunnels);
@@ -1284,6 +1289,7 @@ en_runtime_data_run(struct engine_node *node, void *data)
         sset_init(&rt_data->egress_ifaces);
         smap_init(&rt_data->local_iface_ids);
         local_binding_data_init(&rt_data->lbinding_data);
+        local_nonvif_data_init(&rt_data->nonvif_data);
     }
 
     struct binding_ctx_in b_ctx_in;
@@ -1303,6 +1309,7 @@ en_runtime_data_run(struct engine_node *node, void *data)
         bfd_calculate_active_tunnels(b_ctx_in.br_int, active_tunnels);
     }
 
+    ldata_run(b_ctx_in.br_int, b_ctx_in.chassis_rec, &rt_data->nonvif_data);
     binding_run(&b_ctx_in, &b_ctx_out);
 
     engine_set_node_state(node, EN_UPDATED);
@@ -1317,6 +1324,10 @@ runtime_data_ovs_interface_handler(struct engine_node *node, void *data)
     init_binding_ctx(node, rt_data, &b_ctx_in, &b_ctx_out);
     rt_data->tracked = true;
     b_ctx_out.tracked_dp_bindings = &rt_data->tracked_dp_bindings;
+
+    if (!ldata_handle_ovs_iface_changes(b_ctx_in.iface_table)) {
+        return false;
+    }
 
     if (!binding_handle_ovs_interface_changes(&b_ctx_in, &b_ctx_out)) {
         return false;
@@ -2060,6 +2071,7 @@ init_lflow_ctx(struct engine_node *node,
     l_ctx_in->port_groups = port_groups;
     l_ctx_in->active_tunnels = &rt_data->active_tunnels;
     l_ctx_in->related_lport_ids = &rt_data->related_lports.lport_ids;
+    l_ctx_in->chassis_tunnels = &rt_data->nonvif_data.chassis_tunnels;
 
     l_ctx_out->flow_table = &fo->flow_table;
     l_ctx_out->group_table = &fo->group_table;
@@ -2527,6 +2539,7 @@ static void init_physical_ctx(struct engine_node *node,
     p_ctx->ct_zones = ct_zones;
     p_ctx->mff_ovn_geneve = ed_mff_ovn_geneve->mff_ovn_geneve;
     p_ctx->local_bindings = &rt_data->lbinding_data.bindings;
+    p_ctx->nonvif_data = &rt_data->nonvif_data;
 }
 
 static void *
@@ -2583,7 +2596,11 @@ pflow_output_sb_port_binding_handler(struct engine_node *node,
      * only. flow_output runtime data handler takes care of processing
      * logical flows for any port binding changes.
      */
-    physical_handle_port_binding_changes(&p_ctx, &pfo->flow_table);
+    const struct sbrec_port_binding *pb;
+    SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, p_ctx.port_binding_table) {
+        bool removed = sbrec_port_binding_is_deleted(pb);
+        physical_handle_flows_for_lport(pb, removed, &p_ctx, &pfo->flow_table);
+    }
 
     engine_set_node_state(node, EN_UPDATED);
     return true;
@@ -2613,13 +2630,55 @@ pflow_output_ovs_iface_handler(struct engine_node *node OVS_UNUSED,
     struct ed_type_runtime_data *rt_data =
         engine_get_input_data("runtime_data", node);
 
+    struct physical_ctx p_ctx;
+    init_physical_ctx(node, rt_data, &p_ctx);
+
+    engine_set_node_state(node, EN_UPDATED);
+    return physical_handle_ovs_iface_changes(&p_ctx);
+}
+
+static bool
+pflow_output_runtime_data_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    /* There is no tracked data. Fall back to full recompute of
+     * pflow_output. */
+    if (!rt_data->tracked) {
+        return false;
+    }
+
+    struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
+    if (hmap_is_empty(tracked_dp_bindings)) {
+        return true;
+    }
+
     struct ed_type_pflow_output *pfo = data;
 
     struct physical_ctx p_ctx;
     init_physical_ctx(node, rt_data, &p_ctx);
 
+    struct tracked_datapath *tdp;
+    HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
+        if (tdp->tracked_type != TRACKED_RESOURCE_UPDATED) {
+            /* Fall back to full recompute when a local datapath
+             * is added or deleted. */
+            return false;
+        }
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &tdp->lports) {
+            struct tracked_lport *lport = shash_node->data;
+            bool removed =
+                lport->tracked_type == TRACKED_RESOURCE_REMOVED ? true: false;
+            physical_handle_flows_for_lport(lport->pb, removed, &p_ctx,
+                                            &pfo->flow_table);
+        }
+    }
+
     engine_set_node_state(node, EN_UPDATED);
-    return physical_handle_ovs_iface_changes(&p_ctx, &pfo->flow_table);
+    return true;
 }
 
 static void *
@@ -2914,7 +2973,7 @@ main(int argc, char *argv[])
                      pflow_output_sb_multicast_group_handler);
 
     engine_add_input(&en_pflow_output, &en_runtime_data,
-                     NULL);
+                     pflow_output_runtime_data_handler);
     engine_add_input(&en_pflow_output, &en_sb_encap, NULL);
     engine_add_input(&en_pflow_output, &en_mff_ovn_geneve, NULL);
     engine_add_input(&en_pflow_output, &en_ovs_open_vswitch, NULL);
