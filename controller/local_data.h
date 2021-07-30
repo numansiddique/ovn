@@ -65,6 +65,7 @@ void add_local_datapath(
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
     const struct sbrec_datapath_binding *datapath,
+    const struct sbrec_chassis *chassis,
     struct hmap *local_datapaths,
     struct hmap *tracked_datapaths);
 
@@ -75,6 +76,7 @@ void add_local_datapath_peer_port(
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const struct sbrec_chassis *chassis,
     struct local_datapath *ld,
     struct hmap *local_datapaths,
     struct hmap *tracked_datapaths);
@@ -82,6 +84,10 @@ void add_local_datapath_peer_port(
 void remove_local_datapath_peer_port(const struct sbrec_port_binding *pb,
                                      struct local_datapath *ld,
                                      struct hmap *local_datapaths);
+bool need_add_patch_peer_to_local(
+    struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const struct sbrec_port_binding *pb,
+    const struct sbrec_chassis *chassis);
 
 enum en_tracked_resource_type {
     TRACKED_RESOURCE_NEW,
