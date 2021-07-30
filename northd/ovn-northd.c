@@ -6492,9 +6492,10 @@ build_lrouter_groups__(struct hmap *ports, struct ovn_datapath *od)
      * ha chassis group name. */
     for (size_t i = 0; i < od->n_l3dgw_ports; i++) {
         struct ovn_port *crp = od->l3dgw_ports[i]->cr_port;
-        if (crp->sb->ha_chassis_group) {
+        if (crp->sb->ha_chassis_group &&
+            crp->sb->ha_chassis_group->n_ha_chassis > 1) {
             sset_add(&od->lr_group->ha_chassis_groups,
-                     crp->sb->ha_chassis_group->name);
+                        crp->sb->ha_chassis_group->name);
         }
     }
 
@@ -14216,11 +14217,13 @@ handle_port_binding_changes(struct northd_context *ctx, struct hmap *ports,
     if (ctx->ovnsb_txn) {
         const struct sbrec_ha_chassis_group *ha_ch_grp;
         SBREC_HA_CHASSIS_GROUP_FOR_EACH (ha_ch_grp, ctx->ovnsb_idl) {
-            struct ha_ref_chassis_info *ref_ch_info =
-                xzalloc(sizeof *ref_ch_info);
-            ref_ch_info->ha_chassis_group = ha_ch_grp;
-            build_ha_chassis_ref = true;
-            shash_add(ha_ref_chassis_map, ha_ch_grp->name, ref_ch_info);
+            if (ha_ch_grp->n_ha_chassis > 1) {
+                struct ha_ref_chassis_info *ref_ch_info =
+                    xzalloc(sizeof *ref_ch_info);
+                ref_ch_info->ha_chassis_group = ha_ch_grp;
+                build_ha_chassis_ref = true;
+                shash_add(ha_ref_chassis_map, ha_ch_grp->name, ref_ch_info);
+            }
         }
     }
 
