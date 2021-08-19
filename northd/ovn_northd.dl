@@ -1620,11 +1620,11 @@ function rEGBIT_LKUP_FDB()         : string = "reg0[11]"
 function rEGBIT_HAIRPIN_REPLY()    : string = "reg0[12]"
 function rEGBIT_ACL_LABEL()        : string = "reg0[13]"
 
-function rEG_ORIG_DIP_IPV4()       : string = "reg1"
-function rEG_ORIG_DIP_IPV6()       : string = "xxreg1"
-function rEG_ORIG_TP_DPORT()       : string = "reg2[0..15]"
 
 /* Register definitions for switches and routers. */
+function rEG_ORIG_TP_DPORT()       : string = "reg2[0..15]"
+function rEG_ORIG_DIP_IPV4()       : string = "reg1"
+function rEG_ORIG_DIP_IPV6()       : string = "xxreg1"
 
 /* Indicate that this packet has been recirculated using egress
  * loopback.  This allows certain checks to be bypassed, such as a
@@ -3147,7 +3147,9 @@ function get_match_for_lb_key(ip_address: v46_ip,
                               port: bit<16>,
                               protocol: Option<string>,
                               redundancy: bool,
-                              use_nexthop_reg: bool): string = {
+                              use_nexthop_reg: bool,
+                              use_dest_tp_reg: bool,
+                              use_orig_dip_reg: bool): string = {
     var port_match = if (port != 0) {
         var proto = if (protocol == Some{"udp"}) {
             "udp"
@@ -3155,7 +3157,11 @@ function get_match_for_lb_key(ip_address: v46_ip,
             "tcp"
         };
         if (redundancy) { " && ${proto}" } else { "" } ++
-        " && ${proto}.dst == ${port}"
+        if (use_dest_tp_reg) {
+            " && ${rEG_ORIG_TP_DPORT()} == ${port}"
+        } else {
+            " && ${proto}.dst == ${port}"
+        }
     } else {
         ""
     };
@@ -3164,12 +3170,16 @@ function get_match_for_lb_key(ip_address: v46_ip,
         IPv4{ipv4} ->
             if (use_nexthop_reg) {
                 "${rEG_NEXT_HOP()} == ${ipv4}"
+            } else if (use_orig_dip_reg) {
+                "${rEG_ORIG_DIP_IPV4()} == ${ipv4}"
             } else {
                 "ip4.dst == ${ipv4}"
             },
         IPv6{ipv6} ->
             if (use_nexthop_reg) {
                 "xx${rEG_NEXT_HOP()} == ${ipv6}"
+            } else if (use_orig_dip_reg) {
+                "${rEG_ORIG_DIP_IPV6()} == ${ipv6}"
             } else {
                 "ip6.dst == ${ipv6}"
             }
@@ -3268,7 +3278,7 @@ Flow(.logical_datapath = sw._uuid,
     } else {
         None
     },
-    var __match = "ct.new && " ++ get_match_for_lb_key(lbvip.vip_addr, lbvip.vip_port, lb.protocol, false, false).
+    var __match = "ct.new && " ++ get_match_for_lb_key(lbvip.vip_addr, lbvip.vip_port, lb.protocol, false, false, false, false).
 
 /* Ingress Pre-Hairpin/Nat-Hairpin/Hairpin tabled (Priority 0).
  * Packets that don't need hairpinning should continue processing.
@@ -6730,8 +6740,18 @@ for (RouterLBVIP(
                 (100, "")
             } in
         var __match = match1 ++ match2 in
-        var xx = ip_address.xxreg() in
-        var __actions = i"${xx}${rEG_NEXT_HOP()} = ${ip_address}; ct_dnat;" in
+        var actions1 =
+            match (ip_address) {
+                IPv4{_} -> "${rEG_ORIG_DIP_IPV4()} = ${ip_address}; ",
+                IPv6{_} -> "${rEG_ORIG_DIP_IPV6()} = ${ip_address}; "
+            } in
+        var actions2 =
+            if (port != 0) {
+                "${rEG_ORIG_TP_DPORT()} = ${proto}.dst; ct_dnat;"
+            } else {
+                "ct_dnat;"
+            } in
+        var __actions = actions1 ++ actions2 in
         /* One of these flows must be created for each unique LB VIP address.
          * We create one for each VIP:port pair; flows with the same IP and
          * different port numbers will produce identical flows that will
@@ -6740,7 +6760,7 @@ for (RouterLBVIP(
              .stage            = s_ROUTER_IN_DEFRAG(),
              .priority         = prio,
              .__match          = __match.intern(),
-             .actions          = __actions,
+             .actions          = __actions.intern(),
              .stage_hint       = 0,
              .io_port          = None,
              .controller_meter = None);
@@ -6751,10 +6771,14 @@ for (RouterLBVIP(
          * on ct.new with an action of "ct_lb($targets);".  The other
          * flow is for ct.est with an action of "ct_dnat;". */
         var xx = ip_address.xxreg() in
-        var match1 = "${ipX} && ${xx}${rEG_NEXT_HOP()} == ${ip_address}" in
+        var match1 =
+            match (ip_address) {
+                IPv4{_} -> "${ipX} && ${rEG_ORIG_DIP_IPV4()} == ${ip_address}",
+                IPv6{_} -> "${ipX} && ${rEG_ORIG_DIP_IPV6()} == ${ip_address}"
+            } in
         (var prio, var match2) =
             if (port != 0) {
-                (120, " && ${proto} && ${proto}.dst == ${port}")
+                (120, " && ${proto} && ${rEG_ORIG_TP_DPORT()} == ${port}")
             } else {
                 (110, "")
             } in
@@ -6766,12 +6790,7 @@ for (RouterLBVIP(
         var snat_for_lb = snat_for_lb(r.options, lb) in
         {
             /* A match and actions for established connections. */
-            var est_match = "ct.est && " ++ match1 ++ " && ct_label.natted == 1" ++
-                if (port != 0) {
-                    " && ${proto}"
-                } else {
-                    ""
-                } ++
+            var est_match = "ct.est && " ++ match1 ++ match2 ++ " && ct_label.natted == 1" ++
                 match ((l3dgw_ports.nth(0), backends != "" or lb.options.get_bool_def("reject", false))) {
                     (Some {var gw_port}, true) -> " && is_chassis_resident(${json_string_escape(chassis_redirect_name(gw_port.name))})",
                     _ -> ""
@@ -6879,7 +6898,7 @@ Flow(.logical_datapath = r._uuid,
     r.load_balancer.contains(lb._uuid),
     var __match
         = "ct.new && " ++
-          get_match_for_lb_key(lbvip.vip_addr, lbvip.vip_port, lb.protocol, true, true) ++
+          get_match_for_lb_key(lbvip.vip_addr, lbvip.vip_port, lb.protocol, true, false, true, true) ++
           match (r.l3dgw_ports.nth(0)) {
               Some{gw_port} -> " && is_chassis_resident(${json_string_escape(chassis_redirect_name(gw_port.name))})",
               _ -> ""
