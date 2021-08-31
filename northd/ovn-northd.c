@@ -15446,6 +15446,8 @@ main(int argc, char *argv[])
     /* Main loop. */
     exiting = false;
 
+    unsigned int ovnnb_seqno = ovsdb_idl_get_seqno(ovnnb_idl_loop.idl);
+    unsigned int ovnsb_seqno = ovsdb_idl_get_seqno(ovnsb_idl_loop.idl);;
     while (!exiting) {
         update_ssl_config();
         memory_run();
@@ -15493,12 +15495,25 @@ main(int argc, char *argv[])
             }
 
             if (ovsdb_idl_has_lock(ovnsb_idl_loop.idl)) {
-                ovn_db_run(&ctx, sbrec_chassis_by_name, &ovnsb_idl_loop,
-                           ovn_internal_version);
-                if (ctx.ovnsb_txn) {
-                    check_and_add_supported_dhcp_opts_to_sb_db(&ctx);
-                    check_and_add_supported_dhcpv6_opts_to_sb_db(&ctx);
-                    check_and_update_rbac(&ctx);
+                bool dbs_changed = false;
+                if (ovnnb_seqno != ovsdb_idl_get_seqno(ovnnb_idl_loop.idl)) {
+                    dbs_changed = true;
+                    ovnnb_seqno = ovsdb_idl_get_seqno(ovnnb_idl_loop.idl);
+                }
+
+                if (ovnsb_seqno != ovsdb_idl_get_seqno(ovnsb_idl_loop.idl)) {
+                    dbs_changed = true;
+                    ovnsb_seqno =  ovsdb_idl_get_seqno(ovnsb_idl_loop.idl);
+                }
+
+                if (dbs_changed) {
+                    ovn_db_run(&ctx, sbrec_chassis_by_name, &ovnsb_idl_loop,
+                               ovn_internal_version);
+                    if (ctx.ovnsb_txn) {
+                        check_and_add_supported_dhcp_opts_to_sb_db(&ctx);
+                        check_and_add_supported_dhcpv6_opts_to_sb_db(&ctx);
+                        check_and_update_rbac(&ctx);
+                    }
                 }
             }
 
