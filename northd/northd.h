@@ -22,6 +22,8 @@ struct northd_context {
     const char *ovnsb_db;
     struct ovsdb_idl *ovnnb_idl;
     struct ovsdb_idl *ovnsb_idl;
+    struct ovsdb_idl_loop *ovnnb_idl_loop;
+    struct ovsdb_idl_loop *ovnsb_idl_loop;
     struct ovsdb_idl_txn *ovnnb_txn;
     struct ovsdb_idl_txn *ovnsb_txn;
     struct ovsdb_idl_index *sbrec_chassis_by_name;
@@ -31,12 +33,10 @@ struct northd_context {
 
     bool use_parallel_build;
     struct hashrow_locks *lflow_locks;
+
+    const char *ovn_internal_version;
 };
 
-void
-ovn_db_run(struct northd_context *ctx,
-           struct ovsdb_idl_index *sbrec_chassis_by_name,
-           struct ovsdb_idl_loop *ovnsb_idl_loop,
-           const char *ovn_internal_version);
+void ovn_db_run(struct northd_context *ctx);
 
 #endif /* NORTHD_H */

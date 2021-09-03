@@ -22,6 +22,7 @@
 #include "command-line.h"
 #include "daemon.h"
 #include "fatal-signal.h"
+#include "inc-proc-northd.h"
 #include "lib/ip-mcast-index.h"
 #include "lib/mcast-group-index.h"
 #include "memory.h"
@@ -436,6 +437,14 @@ check_and_add_supported_dhcpv6_opts_to_sb_db(struct northd_context *ctx)
 }
 
 static void
+add_column_noalert(struct ovsdb_idl *idl,
+                   const struct ovsdb_idl_column *column)
+{
+    ovsdb_idl_add_column(idl, column);
+    ovsdb_idl_omit_alert(idl, column);
+}
+
+static void
 usage(void)
 {
     printf("\
@@ -558,14 +567,6 @@ parse_options(int argc OVS_UNUSED, char *argv[] OVS_UNUSED,
 }
 
 static void
-add_column_noalert(struct ovsdb_idl *idl,
-                   const struct ovsdb_idl_column *column)
-{
-    ovsdb_idl_add_column(idl, column);
-    ovsdb_idl_omit_alert(idl, column);
-}
-
-static void
 update_ssl_config(void)
 {
     if (ssl_private_key_file && ssl_certificate_file) {
@@ -629,6 +630,7 @@ main(int argc, char *argv[])
     /* We want to detect (almost) all changes to the ovn-nb db. */
     struct ovsdb_idl_loop ovnnb_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
         ovsdb_idl_create(ovnnb_db, &nbrec_idl_class, true, true));
+    ovsdb_idl_track_add_all(ovnnb_idl_loop.idl);
     ovsdb_idl_omit_alert(ovnnb_idl_loop.idl,
                          &nbrec_nb_global_col_nb_cfg_timestamp);
     ovsdb_idl_omit_alert(ovnnb_idl_loop.idl, &nbrec_nb_global_col_sb_cfg);
@@ -643,12 +645,13 @@ main(int argc, char *argv[])
 
     /* We want to detect only selected changes to the ovn-sb db. */
     struct ovsdb_idl_loop ovnsb_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
-        ovsdb_idl_create(ovnsb_db, &sbrec_idl_class, false, true));
-
+        ovsdb_idl_create(ovnsb_db, &sbrec_idl_class, true, true));
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_sb_global);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_sb_global_col_nb_cfg);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_sb_global_col_options);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_sb_global_col_ipsec);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_sb_global_col_connections);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_logical_flow);
     add_column_noalert(ovnsb_idl_loop.idl,
@@ -700,24 +703,26 @@ main(int argc, char *argv[])
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_port_binding_col_mac);
     add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_port_binding_col_nat_addresses);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_port_binding_col_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_port_binding_col_gateway_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_port_binding_col_ha_chassis_group);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_port_binding_col_virtual_parent);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_port_binding_col_up);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_gateway_chassis_col_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_gateway_chassis_col_name);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_gateway_chassis_col_priority);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_gateway_chassis_col_external_ids);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_gateway_chassis_col_options);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_port_binding_col_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_port_binding_col_gateway_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_port_binding_col_ha_chassis_group);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_port_binding_col_virtual_parent);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_port_binding_col_up);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_gateway_chassis_col_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_gateway_chassis_col_name);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_gateway_chassis_col_priority);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_gateway_chassis_col_external_ids);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_gateway_chassis_col_options);
     add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_port_binding_col_external_ids);
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_mac_binding);
@@ -760,32 +765,35 @@ main(int argc, char *argv[])
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_rbac_permission_col_update);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_meter);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_name);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_unit);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_bands);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_name);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_unit);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_meter_col_bands);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_meter_band);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_band_col_action);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_band_col_rate);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_meter_band_col_burst_size);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_meter_band_col_action);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_meter_band_col_rate);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_meter_band_col_burst_size);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_name);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_other_config);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_encaps);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_name);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_chassis_col_other_config);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_chassis_col_encaps);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_encap);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_encap_col_type);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_encap_col_type);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_chassis_private);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_chassis_private_col_name);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_chassis_private_col_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_chassis_private_col_nb_cfg);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_chassis_private_col_nb_cfg_timestamp);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_chassis_private_col_name);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_chassis_private_col_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_chassis_private_col_nb_cfg);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_chassis_private_col_nb_cfg_timestamp);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_ha_chassis);
     add_column_noalert(ovnsb_idl_loop.idl,
@@ -806,10 +814,14 @@ main(int argc, char *argv[])
                        &sbrec_ha_chassis_group_col_ref_chassis);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_igmp_group);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_igmp_group_col_address);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_igmp_group_col_datapath);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_igmp_group_col_chassis);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_igmp_group_col_ports);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_igmp_group_col_address);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_igmp_group_col_datapath);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_igmp_group_col_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_igmp_group_col_ports);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_ip_multicast);
     add_column_noalert(ovnsb_idl_loop.idl,
@@ -841,8 +853,8 @@ main(int argc, char *argv[])
                        &sbrec_service_monitor_col_port);
     add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_service_monitor_col_options);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl,
-                         &sbrec_service_monitor_col_status);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_service_monitor_col_status);
     add_column_noalert(ovnsb_idl_loop.idl,
                        &sbrec_service_monitor_col_protocol);
     add_column_noalert(ovnsb_idl_loop.idl,
@@ -862,19 +874,20 @@ main(int argc, char *argv[])
                        &sbrec_load_balancer_col_external_ids);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_bfd);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_logical_port);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_dst_ip);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_status);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_min_tx);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_min_rx);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_detect_mult);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_disc);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_src_port);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl,
+                               &sbrec_bfd_col_logical_port);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_dst_ip);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_status);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_min_tx);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_min_rx);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_detect_mult);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_disc);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_bfd_col_src_port);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_fdb);
-    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_fdb_col_mac);
-    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_fdb_col_dp_key);
-    add_column_noalert(ovnsb_idl_loop.idl, &sbrec_fdb_col_port_key);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_fdb_col_mac);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_fdb_col_dp_key);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_fdb_col_port_key);
 
     struct ovsdb_idl_index *sbrec_chassis_by_name
         = chassis_index_create(ovnsb_idl_loop.idl);
@@ -898,9 +911,16 @@ main(int argc, char *argv[])
     stopwatch_create(OVNNB_DB_RUN_STOPWATCH_NAME, SW_MS);
     stopwatch_create(OVNSB_DB_RUN_STOPWATCH_NAME, SW_MS);
 
+    /* Initialize incremental processing engine for ovn-northd */
+    inc_proc_northd_init(&ovnnb_idl_loop, &ovnsb_idl_loop);
+
+    unsigned int ovnnb_cond_seqno = UINT_MAX;
+    unsigned int ovnsb_cond_seqno = UINT_MAX;
+
     /* Main loop. */
     exiting = false;
 
+    bool recompute = false;
     while (!exiting) {
         update_ssl_config();
         memory_run();
@@ -924,19 +944,47 @@ main(int argc, char *argv[])
                 ovsdb_idl_set_lock(ovnsb_idl_loop.idl, "ovn_northd");
             }
 
+
+            struct ovsdb_idl_txn *ovnnb_txn =
+                        ovsdb_idl_loop_run(&ovnnb_idl_loop);
+            unsigned int new_ovnnb_cond_seqno =
+                        ovsdb_idl_get_condition_seqno(ovnnb_idl_loop.idl);
+            if (new_ovnnb_cond_seqno != ovnnb_cond_seqno) {
+                if (!new_ovnnb_cond_seqno) {
+                    VLOG_INFO("OVN NB IDL reconnected, force recompute.");
+                    recompute = true;
+                }
+                ovnnb_cond_seqno = new_ovnnb_cond_seqno;
+            }
+
+            struct ovsdb_idl_txn *ovnsb_txn =
+                        ovsdb_idl_loop_run(&ovnsb_idl_loop);
+            unsigned int new_ovnsb_cond_seqno =
+                        ovsdb_idl_get_condition_seqno(ovnsb_idl_loop.idl);
+            if (new_ovnsb_cond_seqno != ovnsb_cond_seqno) {
+                if (!new_ovnsb_cond_seqno) {
+                    VLOG_INFO("OVN SB IDL reconnected, force recompute.");
+                    recompute = true;
+                }
+                ovnsb_cond_seqno = new_ovnsb_cond_seqno;
+            }
+
             struct northd_context ctx = {
                 .ovnnb_db = ovnnb_db,
                 .ovnsb_db = ovnsb_db,
                 .ovnnb_idl = ovnnb_idl_loop.idl,
-                .ovnnb_txn = ovsdb_idl_loop_run(&ovnnb_idl_loop),
+                .ovnnb_idl_loop = &ovnnb_idl_loop,
+                .ovnnb_txn = ovnnb_txn,
                 .ovnsb_idl = ovnsb_idl_loop.idl,
-                .ovnsb_txn = ovsdb_idl_loop_run(&ovnsb_idl_loop),
+                .ovnsb_idl_loop = &ovnsb_idl_loop,
+                .ovnsb_txn = ovnsb_txn,
                 .sbrec_chassis_by_name = sbrec_chassis_by_name,
                 .sbrec_ha_chassis_grp_by_name = sbrec_ha_chassis_grp_by_name,
                 .sbrec_mcast_group_by_name_dp = sbrec_mcast_group_by_name_dp,
                 .sbrec_ip_mcast_by_dp = sbrec_ip_mcast_by_dp,
                 .lflow_locks = &lflow_locks,
                 .use_parallel_build = use_parallel_build,
+                .ovn_internal_version = ovn_internal_version,
             };
 
             if (!state.had_lock && ovsdb_idl_has_lock(ovnsb_idl_loop.idl)) {
@@ -952,18 +1000,15 @@ main(int argc, char *argv[])
             }
 
             if (ovsdb_idl_has_lock(ovnsb_idl_loop.idl)) {
-
-                ovn_db_run(&ctx, sbrec_chassis_by_name, &ovnsb_idl_loop,
-                           ovn_internal_version);
+                inc_proc_northd_run(&ctx, recompute);
+                recompute = false;
                 if (ctx.ovnsb_txn) {
                     check_and_add_supported_dhcp_opts_to_sb_db(&ctx);
                     check_and_add_supported_dhcpv6_opts_to_sb_db(&ctx);
                     check_and_update_rbac(&ctx);
                 }
-            }
 
-            ovsdb_idl_loop_commit_and_wait(&ovnnb_idl_loop);
-            ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
+            }
         } else {
             /* ovn-northd is paused
              *    - we still want to handle any db updates and update the
@@ -984,6 +1029,19 @@ main(int argc, char *argv[])
             ovsdb_idl_run(ovnsb_idl_loop.idl);
             ovsdb_idl_wait(ovnnb_idl_loop.idl);
             ovsdb_idl_wait(ovnsb_idl_loop.idl);
+        }
+
+        /* If there are any errors, we force a full recompute in order to
+           ensure we handle any new tracked changes. */
+        if (ovsdb_idl_loop_commit_and_wait(&ovnnb_idl_loop) != 1) {
+            recompute = true;
+        } else  {
+            ovsdb_idl_track_clear(ovnnb_idl_loop.idl);
+        }
+        if (ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop) != 1) {
+            recompute = true;
+        } else {
+            ovsdb_idl_track_clear(ovnsb_idl_loop.idl);
         }
 
         stopwatch_stop(NORTHD_LOOP_STOPWATCH_NAME, time_msec());
@@ -1012,7 +1070,7 @@ main(int argc, char *argv[])
             exiting = true;
         }
     }
-
+    inc_proc_northd_cleanup();
 
     free(ovn_internal_version);
     unixctl_server_destroy(unixctl);
