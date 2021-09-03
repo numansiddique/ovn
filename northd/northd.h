@@ -37,6 +37,9 @@ struct northd_context {
     const char *ovn_internal_version;
 };
 
-void ovn_db_run(struct northd_context *ctx);
+void ovn_db_run(struct northd_context *ctx, struct ovs_list *,
+                struct hmap *, struct hmap *);
+void destroy_datapaths_and_ports(struct hmap *datapaths, struct hmap *ports,
+                                 struct ovs_list *lr_list);
 
 #endif /* NORTHD_H */

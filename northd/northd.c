@@ -13838,7 +13838,7 @@ sync_dns_entries(struct northd_context *ctx, struct hmap *datapaths)
     hmap_destroy(&dns_map);
 }
 
-static void
+void
 destroy_datapaths_and_ports(struct hmap *datapaths, struct hmap *ports,
                             struct ovs_list *lr_list)
 {
@@ -14548,13 +14548,9 @@ ovnsb_db_run(struct northd_context *ctx,
 }
 
 void
-ovn_db_run(struct northd_context *ctx)
+ovn_db_run(struct northd_context *ctx, struct ovs_list *lr_list,
+           struct hmap *datapaths, struct hmap *ports)
 {
-    struct hmap datapaths, ports;
-    struct ovs_list lr_list;
-    ovs_list_init(&lr_list);
-    hmap_init(&datapaths);
-    hmap_init(&ports);
     use_parallel_build = ctx->use_parallel_build;
     lflow_locks = ctx->lflow_locks;
 
@@ -14562,12 +14558,11 @@ ovn_db_run(struct northd_context *ctx)
 
     stopwatch_start(OVNNB_DB_RUN_STOPWATCH_NAME, time_msec());
     ovnnb_db_run(ctx, ctx->sbrec_chassis_by_name, ctx->ovnsb_idl_loop,
-                 &datapaths, &ports, &lr_list, start_time,
+                 datapaths, ports, lr_list, start_time,
                  ctx->ovn_internal_version);
     stopwatch_stop(OVNNB_DB_RUN_STOPWATCH_NAME, time_msec());
     stopwatch_start(OVNSB_DB_RUN_STOPWATCH_NAME, time_msec());
-    ovnsb_db_run(ctx, ctx->ovnsb_idl_loop, &ports, start_time);
+    ovnsb_db_run(ctx, ctx->ovnsb_idl_loop, ports, start_time);
     stopwatch_stop(OVNSB_DB_RUN_STOPWATCH_NAME, time_msec());
-    destroy_datapaths_and_ports(&datapaths, &ports, &lr_list);
 }
 

@@ -19,6 +19,7 @@
 #include <stdio.h>
 
 #include "en-northd.h"
+#include "en-runtime.h"
 #include "lib/inc-proc-eng.h"
 #include "northd.h"
 #include "openvswitch/vlog.h"
@@ -29,7 +30,13 @@ void en_northd_run(struct engine_node *node, void *data OVS_UNUSED)
 {
     const struct engine_context *eng_ctx = engine_get_context();
     struct northd_context *ctx = eng_ctx->client_ctx;
-    ovn_db_run(ctx);
+
+    struct ed_type_runtime *runtime_data =
+                         engine_get_input_data("runtime", node);
+
+    ovn_db_run(ctx, &runtime_data->lr_list,
+                    &runtime_data->datapaths,
+                    &runtime_data->ports);
 
     engine_set_node_state(node, EN_UPDATED);
 
