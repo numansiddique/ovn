@@ -34,9 +34,11 @@ void en_northd_run(struct engine_node *node, void *data OVS_UNUSED)
     struct ed_type_runtime *runtime_data =
                          engine_get_input_data("runtime", node);
 
+    struct ed_type_northd *northd_data = data;
     ovn_db_run(ctx, &runtime_data->lr_list,
                     &runtime_data->datapaths,
-                    &runtime_data->ports);
+                    &runtime_data->ports,
+                    &northd_data->common_lflows_data);
 
     engine_set_node_state(node, EN_UPDATED);
 
@@ -44,9 +46,14 @@ void en_northd_run(struct engine_node *node, void *data OVS_UNUSED)
 void *en_northd_init(struct engine_node *node OVS_UNUSED,
                      struct engine_arg *arg OVS_UNUSED)
 {
-    return NULL;
+    struct ed_type_northd *data = xzalloc(sizeof *data);
+    common_lflows_init(&data->common_lflows_data);
+    common_lflows_build(&data->common_lflows_data);
+    return data;
 }
 
 void en_northd_cleanup(void *data OVS_UNUSED)
 {
+    struct ed_type_northd *data_ = data;
+    common_lflows_destroy(&data_->common_lflows_data);
 }

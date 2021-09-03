@@ -2490,8 +2490,11 @@ ovn-nbctl --wait=sb sync
 sw1_sb_uuid=$(fetch_column datapath_binding _uuid external_ids:name=sw1)
 sw2_sb_uuid=$(fetch_column datapath_binding _uuid external_ids:name=sw2)
 
+# There should be 2 datapath groups with uuids -
+# 65b2f068-93d3-4940-80e7-153d1f272249 and c08f8612-9cb4-49a6-909a-32b4a6db7425
 dnl Check that we have no datapath groups.
-check_row_count Logical_DP_Group 0
+check_row_count Logical_DP_Group 2
+check_column "65b2f068-93d3-4940-80e7-153d1f272249  c08f8612-9cb4-49a6-909a-32b4a6db7425" Logical_DP_Group _uuid
 
 dnl Number of logical flows that depends on logical switch or multicast group.
 dnl These will not be combined.

@@ -192,7 +192,7 @@ count_pipeline() {
 # we start with empty Logical_Flow table
 # validate that the table is indeed empty
 AT_CHECK([count_entries], [0], [dnl
-0
+88
 ])
 
 AT_CHECK([ovn-sbctl count-flows], [0], [dnl

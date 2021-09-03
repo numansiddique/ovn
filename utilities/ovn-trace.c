@@ -1018,7 +1018,8 @@ read_flows(void)
             parse_lflow_for_datapath(sblf, g->datapaths[i]);
             missing_datapath = false;
         }
-        if (missing_datapath) {
+        if (missing_datapath &&
+                !smap_get_bool(&sblf->external_ids, "common", false)) {
             VLOG_WARN("logical flow missing datapath");
         }
     }

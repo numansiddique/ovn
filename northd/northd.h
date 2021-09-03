@@ -37,9 +37,22 @@ struct northd_context {
     const char *ovn_internal_version;
 };
 
+struct common_lflows_data {
+    struct hmap lswitch_lflows;
+    struct hmap lrouter_lflows;
+    struct sbrec_logical_dp_group *lswitch_dp_group;
+    struct sbrec_logical_dp_group *lrouter_dp_group;
+    struct uuid lswitch_dp_group_uuid;
+    struct uuid lrouter_dp_group_uuid;
+};
+
 void ovn_db_run(struct northd_context *ctx, struct ovs_list *,
-                struct hmap *, struct hmap *);
+                struct hmap *, struct hmap *, struct common_lflows_data *);
 void destroy_datapaths_and_ports(struct hmap *datapaths, struct hmap *ports,
                                  struct ovs_list *lr_list);
+
+void common_lflows_init(struct common_lflows_data *common_lflows_data);
+void common_lflows_build(struct common_lflows_data *common_lflows_data);
+void common_lflows_destroy(struct common_lflows_data *common_lflows_data);
 
 #endif /* NORTHD_H */

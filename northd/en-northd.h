@@ -8,6 +8,12 @@
 #include <stdio.h>
 
 #include "lib/inc-proc-eng.h"
+#include "northd.h"
+
+struct ed_type_northd {
+    /* Persistent data. */
+    struct common_lflows_data common_lflows_data;
+};
 
 void en_northd_run(struct engine_node *node OVS_UNUSED, void *data OVS_UNUSED);
 void *en_northd_init(struct engine_node *node OVS_UNUSED,
