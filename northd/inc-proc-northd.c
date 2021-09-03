@@ -25,6 +25,7 @@
 #include "openvswitch/vlog.h"
 #include "inc-proc-northd.h"
 #include "en-northd.h"
+#include "en-runtime.h"
 #include "util.h"
 
 VLOG_DEFINE_THIS_MODULE(inc_proc_northd);
@@ -140,70 +141,73 @@ enum sb_engine_node {
 /* Define engine nodes for other nodes. They should be defined as static to
  * avoid sparse errors. */
 static ENGINE_NODE(northd, "northd");
+static ENGINE_NODE(runtime, "runtime");
 
 void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
                           struct ovsdb_idl_loop *sb)
 {
     /* Define relationships between nodes where first argument is dependent
      * on the second argument */
-    engine_add_input(&en_northd, &en_nb_nb_global, NULL);
-    engine_add_input(&en_northd, &en_nb_copp, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_switch, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_switch_port, NULL);
-    engine_add_input(&en_northd, &en_nb_forwarding_group, NULL);
-    engine_add_input(&en_northd, &en_nb_address_set, NULL);
-    engine_add_input(&en_northd, &en_nb_port_group, NULL);
-    engine_add_input(&en_northd, &en_nb_load_balancer, NULL);
-    engine_add_input(&en_northd, &en_nb_load_balancer_health_check, NULL);
-    engine_add_input(&en_northd, &en_nb_acl, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_router, NULL);
-    engine_add_input(&en_northd, &en_nb_qos, NULL);
-    engine_add_input(&en_northd, &en_nb_meter, NULL);
-    engine_add_input(&en_northd, &en_nb_meter_band, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_router_port, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_router_static_route, NULL);
-    engine_add_input(&en_northd, &en_nb_logical_router_policy, NULL);
-    engine_add_input(&en_northd, &en_nb_nat, NULL);
-    engine_add_input(&en_northd, &en_nb_dhcp_options, NULL);
-    engine_add_input(&en_northd, &en_nb_connection, NULL);
-    engine_add_input(&en_northd, &en_nb_dns, NULL);
-    engine_add_input(&en_northd, &en_nb_ssl, NULL);
-    engine_add_input(&en_northd, &en_nb_gateway_chassis, NULL);
-    engine_add_input(&en_northd, &en_nb_ha_chassis_group, NULL);
-    engine_add_input(&en_northd, &en_nb_ha_chassis, NULL);
-    engine_add_input(&en_northd, &en_nb_bfd, NULL);
+    engine_add_input(&en_runtime, &en_nb_nb_global, NULL);
+    engine_add_input(&en_runtime, &en_nb_copp, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_switch, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_switch_port, NULL);
+    engine_add_input(&en_runtime, &en_nb_forwarding_group, NULL);
+    engine_add_input(&en_runtime, &en_nb_address_set, NULL);
+    engine_add_input(&en_runtime, &en_nb_port_group, NULL);
+    engine_add_input(&en_runtime, &en_nb_load_balancer, NULL);
+    engine_add_input(&en_runtime, &en_nb_load_balancer_health_check, NULL);
+    engine_add_input(&en_runtime, &en_nb_acl, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_router, NULL);
+    engine_add_input(&en_runtime, &en_nb_qos, NULL);
+    engine_add_input(&en_runtime, &en_nb_meter, NULL);
+    engine_add_input(&en_runtime, &en_nb_meter_band, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_router_port, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_router_static_route, NULL);
+    engine_add_input(&en_runtime, &en_nb_logical_router_policy, NULL);
+    engine_add_input(&en_runtime, &en_nb_nat, NULL);
+    engine_add_input(&en_runtime, &en_nb_dhcp_options, NULL);
+    engine_add_input(&en_runtime, &en_nb_connection, NULL);
+    engine_add_input(&en_runtime, &en_nb_dns, NULL);
+    engine_add_input(&en_runtime, &en_nb_ssl, NULL);
+    engine_add_input(&en_runtime, &en_nb_gateway_chassis, NULL);
+    engine_add_input(&en_runtime, &en_nb_ha_chassis_group, NULL);
+    engine_add_input(&en_runtime, &en_nb_ha_chassis, NULL);
+    engine_add_input(&en_runtime, &en_nb_bfd, NULL);
 
-    engine_add_input(&en_northd, &en_sb_sb_global, NULL);
-    engine_add_input(&en_northd, &en_sb_chassis, NULL);
-    engine_add_input(&en_northd, &en_sb_chassis_private, NULL);
-    engine_add_input(&en_northd, &en_sb_encap, NULL);
-    engine_add_input(&en_northd, &en_sb_address_set, NULL);
-    engine_add_input(&en_northd, &en_sb_port_group, NULL);
-    engine_add_input(&en_northd, &en_sb_logical_flow, NULL);
-    engine_add_input(&en_northd, &en_sb_logical_dp_group, NULL);
-    engine_add_input(&en_northd, &en_sb_multicast_group, NULL);
-    engine_add_input(&en_northd, &en_sb_meter, NULL);
-    engine_add_input(&en_northd, &en_sb_meter_band, NULL);
-    engine_add_input(&en_northd, &en_sb_datapath_binding, NULL);
-    engine_add_input(&en_northd, &en_sb_port_binding, NULL);
-    engine_add_input(&en_northd, &en_sb_mac_binding, NULL);
-    engine_add_input(&en_northd, &en_sb_dhcp_options, NULL);
-    engine_add_input(&en_northd, &en_sb_dhcpv6_options, NULL);
-    engine_add_input(&en_northd, &en_sb_connection, NULL);
-    engine_add_input(&en_northd, &en_sb_ssl, NULL);
-    engine_add_input(&en_northd, &en_sb_dns, NULL);
-    engine_add_input(&en_northd, &en_sb_rbac_role, NULL);
-    engine_add_input(&en_northd, &en_sb_rbac_permission, NULL);
-    engine_add_input(&en_northd, &en_sb_gateway_chassis, NULL);
-    engine_add_input(&en_northd, &en_sb_ha_chassis, NULL);
-    engine_add_input(&en_northd, &en_sb_ha_chassis_group, NULL);
-    engine_add_input(&en_northd, &en_sb_controller_event, NULL);
-    engine_add_input(&en_northd, &en_sb_ip_multicast, NULL);
-    engine_add_input(&en_northd, &en_sb_igmp_group, NULL);
-    engine_add_input(&en_northd, &en_sb_service_monitor, NULL);
-    engine_add_input(&en_northd, &en_sb_load_balancer, NULL);
-    engine_add_input(&en_northd, &en_sb_bfd, NULL);
-    engine_add_input(&en_northd, &en_sb_fdb, NULL);
+    engine_add_input(&en_runtime, &en_sb_sb_global, NULL);
+    engine_add_input(&en_runtime, &en_sb_chassis, NULL);
+    engine_add_input(&en_runtime, &en_sb_chassis_private, NULL);
+    engine_add_input(&en_runtime, &en_sb_encap, NULL);
+    engine_add_input(&en_runtime, &en_sb_address_set, NULL);
+    engine_add_input(&en_runtime, &en_sb_port_group, NULL);
+    engine_add_input(&en_runtime, &en_sb_logical_flow, NULL);
+    engine_add_input(&en_runtime, &en_sb_logical_dp_group, NULL);
+    engine_add_input(&en_runtime, &en_sb_multicast_group, NULL);
+    engine_add_input(&en_runtime, &en_sb_meter, NULL);
+    engine_add_input(&en_runtime, &en_sb_meter_band, NULL);
+    engine_add_input(&en_runtime, &en_sb_datapath_binding, NULL);
+    engine_add_input(&en_runtime, &en_sb_port_binding, NULL);
+    engine_add_input(&en_runtime, &en_sb_mac_binding, NULL);
+    engine_add_input(&en_runtime, &en_sb_dhcp_options, NULL);
+    engine_add_input(&en_runtime, &en_sb_dhcpv6_options, NULL);
+    engine_add_input(&en_runtime, &en_sb_connection, NULL);
+    engine_add_input(&en_runtime, &en_sb_ssl, NULL);
+    engine_add_input(&en_runtime, &en_sb_dns, NULL);
+    engine_add_input(&en_runtime, &en_sb_rbac_role, NULL);
+    engine_add_input(&en_runtime, &en_sb_rbac_permission, NULL);
+    engine_add_input(&en_runtime, &en_sb_gateway_chassis, NULL);
+    engine_add_input(&en_runtime, &en_sb_ha_chassis, NULL);
+    engine_add_input(&en_runtime, &en_sb_ha_chassis_group, NULL);
+    engine_add_input(&en_runtime, &en_sb_controller_event, NULL);
+    engine_add_input(&en_runtime, &en_sb_ip_multicast, NULL);
+    engine_add_input(&en_runtime, &en_sb_igmp_group, NULL);
+    engine_add_input(&en_runtime, &en_sb_service_monitor, NULL);
+    engine_add_input(&en_runtime, &en_sb_load_balancer, NULL);
+    engine_add_input(&en_runtime, &en_sb_bfd, NULL);
+    engine_add_input(&en_runtime, &en_sb_fdb, NULL);
+
+    engine_add_input(&en_northd, &en_runtime, NULL);
 
     struct engine_arg engine_arg = {
         .nb_idl = nb->idl,
