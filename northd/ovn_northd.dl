@@ -1561,6 +1561,7 @@ function rEGBIT_ACL_HINT_DROP()    : string = "reg0[9]"
 function rEGBIT_ACL_HINT_BLOCK()   : string = "reg0[10]"
 function rEGBIT_LKUP_FDB()         : string = "reg0[11]"
 function rEGBIT_HAIRPIN_REPLY()    : string = "reg0[12]"
+function rEGBIT_FROM_RAMP()        : string = "reg0[14]"
 
 function rEG_ORIG_DIP_IPV4()       : string = "reg1"
 function rEG_ORIG_DIP_IPV6()       : string = "xxreg1"
@@ -1934,6 +1935,16 @@ for (&Switch(._uuid = ls_uuid, .has_stateful_acl = true)) {
          .actions          = "next;",
          .external_ids     = map_empty());
 
+    /* Do not send coming from RAMP switch packets to conntrack. */
+    Flow(.logical_datapath = ls_uuid,
+         .stage            = s_SWITCH_IN_PRE_ACL(),
+         .priority         = 110,
+         .__match          = "${rEGBIT_FROM_RAMP()} == 1",
+         .actions          = "next;",
+         .stage_hint       = 0,
+         .io_port          = None,
+         .controller_meter = None);
+
     /* Ingress and Egress Pre-ACL Table (Priority 100).
      *
      * Regardless of whether the ACL is "from-lport" or "to-lport",
@@ -1987,6 +1998,16 @@ for (&Switch(._uuid = ls_uuid)) {
          .__match          = "eth.src == $svc_monitor_mac",
          .actions          = "next;",
          .external_ids     = map_empty());
+
+    /* Do not send coming from RAMP switch packets to conntrack. */
+    Flow(.logical_datapath = ls_uuid,
+         .stage            = s_SWITCH_IN_PRE_LB(),
+         .priority         = 110,
+         .__match          = "${rEGBIT_FROM_RAMP()} == 1",
+         .actions          = "next;",
+         .stage_hint       = 0,
+         .io_port          = None,
+         .controller_meter = None);
 
     /* Allow all packets to go to next tables by default. */
     Flow(.logical_datapath = ls_uuid,
@@ -3061,10 +3082,18 @@ for (&SwitchPort(.lsp = lsp, .sw = sw, .json_name = json_name, .ps_eth_addresses
             } else {
                 "inport == ${json_name} && eth.src == {${ps_eth_addresses.join(\" \")}}"
             } in
-        var actions = match (pbinding.options.get("qdisc_queue_id")) {
+        var actions = {
+            var ramp = if (lsp.__type == "vtep") {
+                "${rEGBIT_FROM_RAMP()} = 1; "
+            } else {
+                ""
+            };
+            var queue = match (pbinding.options.get("qdisc_queue_id")) {
                 None -> "next;",
                 Some{id} -> "set_queue(${id}); next;"
-            } in
+            };
+            "${ramp}${queue}"
+        } in
         Flow(.logical_datapath = sw._uuid,
              .stage            = s_SWITCH_IN_PORT_SEC_L2(),
              .priority         = 50,

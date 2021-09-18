@@ -236,6 +236,7 @@ enum ovn_stage {
 #define REGBIT_ACL_HINT_BLOCK     "reg0[10]"
 #define REGBIT_LKUP_FDB           "reg0[11]"
 #define REGBIT_HAIRPIN_REPLY      "reg0[12]"
+#define REGBIT_FROM_RAMP          "reg0[14]"
 
 #define REG_ORIG_DIP_IPV4         "reg1"
 #define REG_ORIG_DIP_IPV6         "xxreg1"
@@ -4823,10 +4824,15 @@ build_lswitch_input_port_sec_op(
     build_port_security_l2("eth.src", op->ps_addrs, op->n_ps_addrs,
                            match);
 
+    if (!strcmp(op->nbsp->type, "vtep")) {
+        ds_put_format(actions, REGBIT_FROM_RAMP" = 1; ");
+    }
+
     const char *queue_id = smap_get(&op->sb->options, "qdisc_queue_id");
     if (queue_id) {
         ds_put_format(actions, "set_queue(%s); ", queue_id);
     }
+
     ds_put_cstr(actions, "next;");
     ovn_lflow_add_with_hint(lflows, op->od, S_SWITCH_IN_PORT_SEC_L2, 50,
                             ds_cstr(match), ds_cstr(actions),
@@ -5070,6 +5076,10 @@ build_pre_acls(struct ovn_datapath *od, struct hmap *port_groups,
                       "nd || nd_rs || nd_ra || mldv1 || mldv2 || "
                       "(udp && udp.src == 546 && udp.dst == 547)", "next;");
 
+        /* Do not send coming from RAMP switch packets to conntrack. */
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_ACL, 110,
+                      REGBIT_FROM_RAMP" == 1", "next;");
+
         /* Ingress and Egress Pre-ACL Table (Priority 100).
          *
          * Regardless of whether the ACL is "from-lport" or "to-lport",
@@ -5179,6 +5189,10 @@ build_pre_lb(struct ovn_datapath *od, struct hmap *lflows,
                   "eth.dst == $svc_monitor_mac", "next;");
     ovn_lflow_add(lflows, od, S_SWITCH_OUT_PRE_LB, 110,
                   "eth.src == $svc_monitor_mac", "next;");
+
+    /* Do not send coming from RAMP switch packets to conntrack. */
+    ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_LB, 110,
+                  REGBIT_FROM_RAMP" == 1", "next;");
 
     /* Allow all packets to go to next tables by default. */
     ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_LB, 0, "1", "next;");
