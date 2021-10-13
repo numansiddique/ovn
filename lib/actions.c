@@ -918,6 +918,12 @@ parse_CT_SNAT(struct action_context *ctx)
 }
 
 static void
+parse_CT_FORCE_SNAT(struct action_context *ctx)
+{
+    parse_ct_nat(ctx, "ct_force_snat", ovnact_put_CT_FORCE_SNAT(ctx->ovnacts));
+}
+
+static void
 format_ct_nat(const struct ovnact_ct_nat *cn, const char *name, struct ds *s)
 {
     ds_put_cstr(s, name);
@@ -955,16 +961,22 @@ format_CT_SNAT(const struct ovnact_ct_nat *cn, struct ds *s)
 }
 
 static void
+format_CT_FORCE_SNAT(const struct ovnact_ct_nat *cn, struct ds *s)
+{
+    format_ct_nat(cn, "ct_force_snat", s);
+}
+
+static void
 encode_ct_nat(const struct ovnact_ct_nat *cn,
               const struct ovnact_encode_params *ep,
-              bool snat, struct ofpbuf *ofpacts)
+              bool snat, bool snat_zone, struct ofpbuf *ofpacts)
 {
     const size_t ct_offset = ofpacts->size;
     ofpbuf_pull(ofpacts, ct_offset);
 
     struct ofpact_conntrack *ct = ofpact_put_CT(ofpacts);
     ct->recirc_table = cn->ltable + first_ptable(ep, ep->pipeline);
-    if (snat) {
+    if (snat_zone) {
         ct->zone_src.field = mf_from_id(MFF_LOG_SNAT_ZONE);
     } else {
         ct->zone_src.field = mf_from_id(MFF_LOG_DNAT_ZONE);
@@ -1020,7 +1032,7 @@ encode_CT_DNAT(const struct ovnact_ct_nat *cn,
                const struct ovnact_encode_params *ep,
                struct ofpbuf *ofpacts)
 {
-    encode_ct_nat(cn, ep, false, ofpacts);
+    encode_ct_nat(cn, ep, false, false, ofpacts);
 }
 
 static void
@@ -1028,7 +1040,15 @@ encode_CT_SNAT(const struct ovnact_ct_nat *cn,
                const struct ovnact_encode_params *ep,
                struct ofpbuf *ofpacts)
 {
-    encode_ct_nat(cn, ep, true, ofpacts);
+    encode_ct_nat(cn, ep, true, false, ofpacts);
+}
+
+static void
+encode_CT_FORCE_SNAT(const struct ovnact_ct_nat *cn,
+                     const struct ovnact_encode_params *ep,
+                     struct ofpbuf *ofpacts)
+{
+    encode_ct_nat(cn, ep, true, true, ofpacts);
 }
 
 static void
@@ -4017,6 +4037,8 @@ parse_action(struct action_context *ctx)
         parse_CT_DNAT(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_snat")) {
         parse_CT_SNAT(ctx);
+    } else if (lexer_match_id(ctx->lexer, "ct_force_snat")) {
+        parse_CT_FORCE_SNAT(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_lb")) {
         parse_ct_lb_action(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_clear")) {

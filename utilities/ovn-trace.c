@@ -2281,7 +2281,7 @@ execute_ct_nat(const struct ovnact_ct_nat *ct_nat,
                const struct ovntrace_datapath *dp, struct flow *uflow,
                enum ovnact_pipeline pipeline, struct ovs_list *super)
 {
-    bool is_dst = ct_nat->ovnact.type == OVNACT_CT_DNAT;
+    bool is_dst = (ct_nat->ovnact.type != OVNACT_CT_FORCE_SNAT);
     if (!is_dst && dp->has_local_l3gateway && ct_nat->family == AF_UNSPEC) {
         /* "ct_snat;" has no visible effect in a gateway router. */
         return;
@@ -2597,6 +2597,10 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
 
         case OVNACT_CT_SNAT:
             execute_ct_nat(ovnact_get_CT_SNAT(a), dp, uflow, pipeline, super);
+            break;
+
+        case OVNACT_CT_FORCE_SNAT:
+            execute_ct_nat(ovnact_get_CT_FORCE_SNAT(a), dp, uflow, pipeline, super);
             break;
 
         case OVNACT_CT_LB:
