@@ -1,0 +1,8 @@
+#
+# Unit tests for the lib/plug.c module.
+#
+AT_BANNER([OVN unit tests - plug])
+
+AT_SETUP([unit test -- plugging infrastructure tests])
+AT_CHECK([ovstest test-plug run], [0], [])
+AT_CLEANUP

@@ -441,3 +441,52 @@ AC_DEFUN([OVN_CHECK_OVS], [
   AC_MSG_CHECKING([OVS version])
   AC_MSG_RESULT([$OVSVERSION])
 ])
+
+dnl OVN_CHECK_PLUG_PROVIDER
+dnl
+dnl Check for external plug provider
+AC_DEFUN([OVN_CHECK_PLUG_PROVIDER], [
+  AC_ARG_VAR([PLUG_PROVIDER])
+  AC_ARG_WITH(
+    [plug-provider],
+    [AC_HELP_STRING([--with-plug-provider=/path/to/provider/repository],
+                    [Specify path to a configured and built plug provider repository])],
+    [if test "$withval" = yes; then
+       if test -z "$PLUG_PROVIDER"; then
+         AC_MSG_ERROR([To build with external plug provider, specify the path to a configured and built plug provider repository --with-plug-provider or in \$PLUG_PROVIDER]),
+       fi
+       PLUG_PROVIDER="$(realpath $PLUG_PROVIDER)"
+     else
+       PLUG_PROVIDER="$(realpath $withval)"
+     fi
+     _plug_provider_name="$(basename $PLUG_PROVIDER)"
+     if test ! -f "$PLUG_PROVIDER/lib/.libs/lib${_plug_provider_name}.la"; then
+       AC_MSG_ERROR([$withval is not a configured and built plug provider library repository])
+     fi
+     PLUG_PROVIDER_LDFLAGS="-L$PLUG_PROVIDER/lib/.libs -l$_plug_provider_name"
+    ],
+    [PLUG_PROVIDER=no])
+  AC_MSG_CHECKING([for plug provider])
+  AC_MSG_RESULT([$PLUG_PROVIDER])
+  AC_SUBST([PLUG_PROVIDER_LDFLAGS])
+  AM_CONDITIONAL([HAVE_PLUG_PROVIDER], [test "$PLUG_PROVIDER" != no])
+  if test "$PLUG_PROVIDER" != no; then
+    AC_DEFINE([HAVE_PLUG_PROVIDER], [1],
+              [Build and link with external plug provider])
+  fi
+])
+
+dnl OVN_ENABLE_PLUG
+dnl
+dnl Enable built-in plug providers
+AC_DEFUN([OVN_ENABLE_PLUG], [
+    AC_ARG_ENABLE(
+      [plug-providers],
+      [AC_HELP_STRING([--enable-plug-providers], [Enable building of built-in plug providers])],
+      [], [enable_plug=no])
+    AM_CONDITIONAL([ENABLE_PLUG], [test "$enable_plug" != no])
+    if test "$enable_plug" != no; then
+      AC_DEFINE([ENABLE_PLUG], [1],
+                [Build built-in plug providers])
+    fi
+])
