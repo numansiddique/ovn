@@ -937,6 +937,7 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     binding_register_ovs_idl(ovs_idl);
     bfd_register_ovs_idl(ovs_idl);
     physical_register_ovs_idl(ovs_idl);
+    plug_register_ovs_idl(ovs_idl);
 }
 
 #define SB_NODES \
@@ -2978,6 +2979,180 @@ flow_output_lflow_output_handler(struct engine_node *node,
     return true;
 }
 
+static void *
+en_plug_provider_lookup_init(struct engine_node *node OVS_UNUSED,
+                             struct engine_arg *arg OVS_UNUSED)
+{
+    return NULL;
+}
+
+static void
+en_plug_provider_lookup_cleanup(void *data OVS_UNUSED)
+{
+
+}
+
+static void
+en_plug_provider_lookup_run(struct engine_node *node,
+                            void *data OVS_UNUSED)
+{
+    if (!plug_provider_has_providers()) {
+        engine_set_node_state(node, EN_UNCHANGED);
+        return;
+    }
+
+    if (plug_provider_run_all()) {
+        engine_set_node_state(node, EN_UPDATED);
+    } else {
+        engine_set_node_state(node, EN_UNCHANGED);
+    }
+}
+
+
+struct ed_type_plug_provider {
+    struct shash deleted_iface_ids;
+    struct shash changed_iface_ids;
+    bool pb_handler_has_run;
+};
+
+static void *
+en_plug_provider_init(struct engine_node *node OVS_UNUSED,
+                      struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_plug_provider *data = xzalloc(sizeof *data);
+
+    shash_init(&data->deleted_iface_ids);
+    shash_init(&data->changed_iface_ids);
+    data->pb_handler_has_run = false;
+    return data;
+}
+
+static void
+en_plug_provider_cleanup(void *data)
+{
+    struct ed_type_plug_provider *plug_provider_data = data;
+
+    shash_destroy_free_data(&plug_provider_data->deleted_iface_ids);
+    shash_destroy_free_data(&plug_provider_data->changed_iface_ids);
+}
+
+static void
+init_plug_ctx(struct engine_node *node,
+              void *data,
+              struct plug_ctx_in *plug_ctx_in,
+              struct plug_ctx_out *plug_ctx_out)
+{
+    struct ovsrec_open_vswitch_table *ovs_table =
+        (struct ovsrec_open_vswitch_table *)EN_OVSDB_GET(
+            engine_get_input("OVS_open_vswitch", node));
+    struct ovsrec_bridge_table *bridge_table =
+        (struct ovsrec_bridge_table *)EN_OVSDB_GET(
+            engine_get_input("OVS_bridge", node));
+    const char *chassis_id = get_ovs_chassis_id(ovs_table);
+    const struct ovsrec_bridge *br_int = get_br_int(bridge_table, ovs_table);
+
+    ovs_assert(br_int && chassis_id);
+
+    struct ovsdb_idl_index *sbrec_chassis_by_name =
+        engine_ovsdb_node_get_index(
+                engine_get_input("SB_chassis", node),
+                "name");
+
+    const struct sbrec_chassis *chassis
+        = chassis_lookup_by_name(sbrec_chassis_by_name, chassis_id);
+    ovs_assert(chassis);
+
+    struct ovsrec_interface_table *iface_table =
+        (struct ovsrec_interface_table *)EN_OVSDB_GET(
+            engine_get_input("OVS_interface", node));
+
+    struct sbrec_port_binding_table *pb_table =
+        (struct sbrec_port_binding_table *)EN_OVSDB_GET(
+            engine_get_input("SB_port_binding", node));
+
+    struct ovsdb_idl_index *sbrec_port_binding_by_name =
+        engine_ovsdb_node_get_index(
+                engine_get_input("SB_port_binding", node),
+                "name");
+
+    struct ovsdb_idl_index *ovsrec_port_by_interfaces =
+        engine_ovsdb_node_get_index(
+                engine_get_input("OVS_port", node),
+                "interfaces");
+
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    struct ed_type_plug_provider *plug_provider_data = data;
+
+    plug_ctx_in->ovs_idl_txn = engine_get_context()->ovs_idl_txn;
+    plug_ctx_in->sbrec_port_binding_by_name = sbrec_port_binding_by_name;
+    plug_ctx_in->ovsrec_port_by_interfaces = ovsrec_port_by_interfaces;
+    plug_ctx_in->ovs_table = ovs_table;
+    plug_ctx_in->br_int = br_int;
+    plug_ctx_in->iface_table = iface_table;
+    plug_ctx_in->chassis_rec = chassis;
+    plug_ctx_in->port_binding_table = pb_table;
+    plug_ctx_in->local_bindings = &rt_data->lbinding_data.bindings;
+    plug_ctx_in->pb_handler_has_run = plug_provider_data->pb_handler_has_run;
+
+    plug_ctx_out->deleted_iface_ids = &plug_provider_data->deleted_iface_ids;
+    plug_ctx_out->changed_iface_ids = &plug_provider_data->changed_iface_ids;
+}
+
+static void
+en_plug_provider_run(struct engine_node *node,
+                     void *data)
+{
+    if (!plug_provider_has_providers()) {
+        engine_set_node_state(node, EN_UNCHANGED);
+        return;
+    }
+    struct plug_ctx_in plug_ctx_in;
+    struct plug_ctx_out plug_ctx_out;
+    init_plug_ctx(node, data, &plug_ctx_in, &plug_ctx_out);
+    plug_run(&plug_ctx_in, &plug_ctx_out);
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+static bool
+plug_provider_port_binding_handler(struct engine_node *node,
+                                   void *data)
+{
+    if (!plug_provider_has_providers()) {
+        engine_set_node_state(node, EN_UNCHANGED);
+        return true;
+    }
+    struct plug_ctx_in plug_ctx_in;
+    struct plug_ctx_out plug_ctx_out;
+    init_plug_ctx(node, data, &plug_ctx_in, &plug_ctx_out);
+
+    struct ed_type_plug_provider *plug_provider_data = data;
+
+    bool handled = plug_handle_port_binding_changes(&plug_ctx_in,
+                                                    &plug_ctx_out);
+
+    plug_provider_data->pb_handler_has_run = true;
+
+    return handled;
+}
+
+static bool
+plug_provider_ovs_interface_handler(struct engine_node *node,
+                                    void *data)
+{
+    if (!plug_provider_has_providers()) {
+        engine_set_node_state(node, EN_UNCHANGED);
+        return true;
+    }
+
+    struct plug_ctx_in plug_ctx_in;
+    struct plug_ctx_out plug_ctx_out;
+    init_plug_ctx(node, data, &plug_ctx_in, &plug_ctx_out);
+
+    return plug_handle_ovs_interface_changes(&plug_ctx_in, &plug_ctx_out);
+}
+
 struct ovn_controller_exit_args {
     bool *exiting;
     bool *restart;
@@ -3214,6 +3389,11 @@ main(int argc, char *argv[])
     ENGINE_NODE(flow_output, "flow_output");
     ENGINE_NODE(addr_sets, "addr_sets");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(port_groups, "port_groups");
+    /* The plug provider has two engine nodes.  One that checks for and reacts
+     * to change to plug provider lookup tables, and another that reacts to
+     * change to OVS interface, OVN Port_Binding and runtime data */
+    ENGINE_NODE(plug_provider_lookup, "plug_provider_lookup");
+    ENGINE_NODE(plug_provider, "plug_provider");
 
 #define SB_NODE(NAME, NAME_STR) ENGINE_NODE_SB(NAME, NAME_STR);
     SB_NODES
@@ -3239,6 +3419,24 @@ main(int argc, char *argv[])
     engine_add_input(&en_non_vif_data, &en_sb_chassis, NULL);
     engine_add_input(&en_non_vif_data, &en_ovs_interface,
                      non_vif_data_ovs_iface_handler);
+
+    engine_add_input(&en_plug_provider, &en_plug_provider_lookup, NULL);
+    engine_add_input(&en_plug_provider, &en_ovs_open_vswitch, NULL);
+    engine_add_input(&en_plug_provider, &en_ovs_bridge, NULL);
+    engine_add_input(&en_plug_provider, &en_sb_chassis, NULL);
+    engine_add_input(&en_plug_provider, &en_runtime_data,
+                     engine_noop_handler);
+    engine_add_input(&en_plug_provider, &en_sb_port_binding,
+                     plug_provider_port_binding_handler);
+    engine_add_input(&en_plug_provider, &en_ovs_port,
+                     engine_noop_handler);
+    engine_add_input(&en_plug_provider, &en_ovs_interface,
+                     plug_provider_ovs_interface_handler);
+    /* The node needs somewhere to output to run */
+    engine_add_input(&en_flow_output, &en_plug_provider,
+                     engine_noop_handler);
+
+
 
     /* Note: The order of inputs is important, all OVS interface changes must
      * be handled before any ct_zone changes.
@@ -3800,7 +3998,18 @@ main(int argc, char *argv[])
             engine_set_force_recompute(true);
         }
 
-        if (ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop) == 1) {
+        int ovs_txn_status = ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop);
+        if (!ovs_txn_status) {
+            /* The transaction failed. */
+            struct ed_type_plug_provider *plug_provider_data = engine_get_data(
+                &en_plug_provider);
+            if (plug_provider_data) {
+                plug_clear_deleted(&plug_provider_data->deleted_iface_ids);
+                plug_clear_changed(&plug_provider_data->changed_iface_ids);
+            }
+        } else if (ovs_txn_status == 1) {
+            /* The transaction committed successfully
+             * (or it did not change anything in the database). */
             ct_zones_data = engine_get_data(&en_ct_zones);
             if (ct_zones_data) {
                 struct shash_node *iter, *iter_next;
@@ -3813,6 +4022,17 @@ main(int argc, char *argv[])
                     }
                 }
             }
+
+            struct ed_type_plug_provider *plug_provider_data = engine_get_data(
+                &en_plug_provider);
+            if (plug_provider_data) {
+                plug_finish_deleted(&plug_provider_data->deleted_iface_ids);
+                plug_finish_changed(&plug_provider_data->changed_iface_ids);
+            }
+        } else if (ovs_txn_status == -1) {
+            /* The commit is still in progress */
+        } else {
+            OVS_NOT_REACHED();
         }
 
         ovsdb_idl_track_clear(ovnsb_idl_loop.idl);
