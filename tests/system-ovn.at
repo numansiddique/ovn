@@ -3534,8 +3534,11 @@ NS_CHECK_EXEC([alice1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.3 | FORMAT_PING], \
 ])
 
 # We verify that DNAT indeed happened via 'dump-conntrack' command.
+# We also verify that the connection is tracked but not NATted in SNAT zone.
+# This is due to the POST_UNSNAT table in the ingress router pipeline.
 AT_CHECK([ovs-appctl dpctl/dump-conntrack | FORMAT_CT(172.16.1.3) | \
 sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
+icmp,orig=(src=172.16.1.2,dst=172.16.1.3,id=<cleared>,type=8,code=0),reply=(src=172.16.1.3,dst=172.16.1.2,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=172.16.1.2,dst=172.16.1.3,id=<cleared>,type=8,code=0),reply=(src=192.168.1.2,dst=172.16.1.2,id=<cleared>,type=0,code=0),zone=<cleared>
 ])
 
@@ -3706,9 +3709,12 @@ NS_CHECK_EXEC([alice1], [ping6 -q -c 3 -i 0.3 -w 2 fd20::3 | FORMAT_PING], \
 ])
 
 # We verify that DNAT indeed happened via 'dump-conntrack' command.
+# We also verify that the connection is tracked but not NATted in SNAT zone.
+# This is due to the POST_UNSNAT table in the ingress router pipeline.
 AT_CHECK([ovs-appctl dpctl/dump-conntrack | FORMAT_CT(fd20::3) | \
 sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
 icmpv6,orig=(src=fd20::2,dst=fd20::3,id=<cleared>,type=128,code=0),reply=(src=fd11::2,dst=fd20::2,id=<cleared>,type=129,code=0),zone=<cleared>
+icmpv6,orig=(src=fd20::2,dst=fd20::3,id=<cleared>,type=128,code=0),reply=(src=fd20::3,dst=fd20::2,id=<cleared>,type=129,code=0),zone=<cleared>
 ])
 
 # South-North SNAT: 'foo2' pings 'alice1'. But 'alice1' receives traffic
@@ -3907,6 +3913,7 @@ NS_CHECK_EXEC([foo1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.4 | FORMAT_PING], \
 # Then DNAT of 'bar1' address happens (listed first below).
 AT_CHECK([ovs-appctl dpctl/dump-conntrack | FORMAT_CT(172.16.1.4) | \
 sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
+icmp,orig=(src=172.16.1.1,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=172.16.1.4,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=172.16.1.1,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=192.168.2.2,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=192.168.1.2,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=172.16.1.4,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=192.168.1.2,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=172.16.1.4,dst=192.168.1.2,id=<cleared>,type=0,code=0),zone=<cleared>
@@ -3924,6 +3931,7 @@ NS_CHECK_EXEC([foo2], [ping -q -c 3 -i 0.3 -w 2 172.16.1.4 | FORMAT_PING], \
 # Then DNAT of 'bar1' address happens (listed first below).
 AT_CHECK([ovs-appctl dpctl/dump-conntrack | FORMAT_CT(172.16.1.1) | \
 sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
+icmp,orig=(src=172.16.1.1,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=172.16.1.4,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=172.16.1.1,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=192.168.2.2,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 icmp,orig=(src=192.168.1.3,dst=172.16.1.4,id=<cleared>,type=8,code=0),reply=(src=172.16.1.4,dst=172.16.1.1,id=<cleared>,type=0,code=0),zone=<cleared>
 ])
@@ -4104,6 +4112,7 @@ sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
 icmpv6,orig=(src=fd11::2,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd20::4,dst=fd11::2,id=<cleared>,type=129,code=0),zone=<cleared>
 icmpv6,orig=(src=fd11::2,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd20::4,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
 icmpv6,orig=(src=fd20::1,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd12::2,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
+icmpv6,orig=(src=fd20::1,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd20::4,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
 ])
 
 AT_CHECK([ovs-appctl dpctl/flush-conntrack])
@@ -4120,6 +4129,7 @@ AT_CHECK([ovs-appctl dpctl/dump-conntrack | FORMAT_CT(fd20::1) | \
 sed -e 's/zone=[[0-9]]*/zone=<cleared>/'], [0], [dnl
 icmpv6,orig=(src=fd11::3,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd20::4,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
 icmpv6,orig=(src=fd20::1,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd12::2,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
+icmpv6,orig=(src=fd20::1,dst=fd20::4,id=<cleared>,type=128,code=0),reply=(src=fd20::4,dst=fd20::1,id=<cleared>,type=129,code=0),zone=<cleared>
 ])
 
 OVS_APP_EXIT_AND_WAIT([ovn-controller])

@@ -18251,7 +18251,7 @@ eth_dst=00000000ff01
 ip_src=$(ip_to_hex 10 0 0 10)
 ip_dst=$(ip_to_hex 172 168 0 101)
 send_icmp_packet 1 1 $eth_src $eth_dst $ip_src $ip_dst c4c9 0000000000000000000000
-AT_CHECK([as hv1 ovs-ofctl dump-flows br-int | awk '/table=25, n_packets=1, n_bytes=45/{print $7" "$8}'],[0],[dnl
+AT_CHECK([as hv1 ovs-ofctl dump-flows br-int | awk '/table=26, n_packets=1, n_bytes=45/{print $7" "$8}'],[0],[dnl
 priority=80,ip,reg15=0x3,metadata=0x3,nw_src=10.0.0.10 actions=drop
 ])
 
@@ -23438,7 +23438,7 @@ ovn-sbctl dump-flows > sbflows
 AT_CAPTURE_FILE([sbflows])
 AT_CAPTURE_FILE([offlows])
 OVS_WAIT_UNTIL([
-    as hv1 ovs-ofctl dump-flows br-int table=20 > offlows
+    as hv1 ovs-ofctl dump-flows br-int table=21 > offlows
     test $(grep -c "load:0x64->NXM_NX_PKT_MARK" offlows) = 1 && \
     test $(grep -c "load:0x3->NXM_NX_PKT_MARK" offlows) = 1 && \
     test $(grep -c "load:0x4->NXM_NX_PKT_MARK" offlows) = 1 && \
@@ -23531,12 +23531,12 @@ send_ipv4_pkt hv1 hv1-vif1 505400000003 00000000ff01 \
     $(ip_to_hex 10 0 0 3) $(ip_to_hex 172 168 0 120)
 
 OVS_WAIT_UNTIL([
-    test 1 -eq $(as hv1 ovs-ofctl dump-flows br-int table=20 | \
+    test 1 -eq $(as hv1 ovs-ofctl dump-flows br-int table=21 | \
     grep "load:0x2->NXM_NX_PKT_MARK" -c)
 ])
 
 AT_CHECK([
-    test 0 -eq $(as hv1 ovs-ofctl dump-flows br-int table=20 | \
+    test 0 -eq $(as hv1 ovs-ofctl dump-flows br-int table=21 | \
     grep "load:0x64->NXM_NX_PKT_MARK" -c)
 ])
 
@@ -24259,11 +24259,11 @@ AT_CAPTURE_FILE([hv2flows])
 
 AT_CHECK([
     for hv in 1 2; do
-        grep table=15 hv${hv}flows | \
+        grep table=16 hv${hv}flows | \
         grep "priority=100" | \
         grep -c "ct(commit,zone=NXM_NX_REG11\\[[0..15\\]],.*exec(move:NXM_OF_ETH_SRC\\[[\\]]->NXM_NX_CT_LABEL\\[[32..79\\]],load:0x[[0-9]]->NXM_NX_CT_LABEL\\[[80..95\\]]))"
 
-        grep table=22 hv${hv}flows | \
+        grep table=23 hv${hv}flows | \
         grep "priority=200" | \
         grep -c "actions=move:NXM_NX_CT_LABEL\\[[32..79\\]]->NXM_OF_ETH_DST\\[[\\]]"
     done; :], [0], [dnl
@@ -24384,11 +24384,11 @@ AT_CAPTURE_FILE([hv2flows])
 
 AT_CHECK([
     for hv in 1 2; do
-        grep table=15 hv${hv}flows | \
+        grep table=16 hv${hv}flows | \
         grep "priority=100" | \
         grep -c "ct(commit,zone=NXM_NX_REG11\\[[0..15\\]],.*exec(move:NXM_OF_ETH_SRC\\[[\\]]->NXM_NX_CT_LABEL\\[[32..79\\]],load:0x[[0-9]]->NXM_NX_CT_LABEL\\[[80..95\\]]))"
 
-        grep table=22 hv${hv}flows | \
+        grep table=23 hv${hv}flows | \
         grep "priority=200" | \
         grep -c "actions=move:NXM_NX_CT_LABEL\\[[32..79\\]]->NXM_OF_ETH_DST\\[[\\]]"
     done; :], [0], [dnl
@@ -25010,7 +25010,7 @@ AT_CHECK([as hv1 ovs-ofctl dump-flows br-int | grep "actions=controller" | grep 
 ])
 
 # The packet should've been dropped in the lr_in_arp_resolve stage.
-AT_CHECK([as hv1 ovs-ofctl dump-flows br-int | grep -E "table=22, n_packets=1,.* priority=1,ip,metadata=0x${sw_key},nw_dst=10.0.1.1 actions=drop" -c], [0], [dnl
+AT_CHECK([as hv1 ovs-ofctl dump-flows br-int | grep -E "table=23, n_packets=1,.* priority=1,ip,metadata=0x${sw_key},nw_dst=10.0.1.1 actions=drop" -c], [0], [dnl
 1
 ])
 

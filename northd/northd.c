@@ -143,20 +143,21 @@ enum ovn_stage {
     PIPELINE_STAGE(ROUTER, IN,  LEARN_NEIGHBOR,  2, "lr_in_learn_neighbor") \
     PIPELINE_STAGE(ROUTER, IN,  IP_INPUT,        3, "lr_in_ip_input")     \
     PIPELINE_STAGE(ROUTER, IN,  UNSNAT,          4, "lr_in_unsnat")       \
-    PIPELINE_STAGE(ROUTER, IN,  DEFRAG,          5, "lr_in_defrag")       \
-    PIPELINE_STAGE(ROUTER, IN,  DNAT,            6, "lr_in_dnat")         \
-    PIPELINE_STAGE(ROUTER, IN,  ECMP_STATEFUL,   7, "lr_in_ecmp_stateful") \
-    PIPELINE_STAGE(ROUTER, IN,  ND_RA_OPTIONS,   8, "lr_in_nd_ra_options") \
-    PIPELINE_STAGE(ROUTER, IN,  ND_RA_RESPONSE,  9, "lr_in_nd_ra_response") \
-    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING,      10, "lr_in_ip_routing")   \
-    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING_ECMP, 11, "lr_in_ip_routing_ecmp") \
-    PIPELINE_STAGE(ROUTER, IN,  POLICY,          12, "lr_in_policy")       \
-    PIPELINE_STAGE(ROUTER, IN,  POLICY_ECMP,     13, "lr_in_policy_ecmp")  \
-    PIPELINE_STAGE(ROUTER, IN,  ARP_RESOLVE,     14, "lr_in_arp_resolve")  \
-    PIPELINE_STAGE(ROUTER, IN,  CHK_PKT_LEN   ,  15, "lr_in_chk_pkt_len")  \
-    PIPELINE_STAGE(ROUTER, IN,  LARGER_PKTS,     16, "lr_in_larger_pkts")  \
-    PIPELINE_STAGE(ROUTER, IN,  GW_REDIRECT,     17, "lr_in_gw_redirect")  \
-    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST,     18, "lr_in_arp_request")  \
+    PIPELINE_STAGE(ROUTER, IN,  POST_UNSNAT,     5, "lr_in_post_unsnat")       \
+    PIPELINE_STAGE(ROUTER, IN,  DEFRAG,          6, "lr_in_defrag")       \
+    PIPELINE_STAGE(ROUTER, IN,  DNAT,            7, "lr_in_dnat")         \
+    PIPELINE_STAGE(ROUTER, IN,  ECMP_STATEFUL,   8, "lr_in_ecmp_stateful") \
+    PIPELINE_STAGE(ROUTER, IN,  ND_RA_OPTIONS,   9, "lr_in_nd_ra_options") \
+    PIPELINE_STAGE(ROUTER, IN,  ND_RA_RESPONSE,  10, "lr_in_nd_ra_response") \
+    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING,      11, "lr_in_ip_routing")   \
+    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING_ECMP, 12, "lr_in_ip_routing_ecmp") \
+    PIPELINE_STAGE(ROUTER, IN,  POLICY,          13, "lr_in_policy")       \
+    PIPELINE_STAGE(ROUTER, IN,  POLICY_ECMP,     14, "lr_in_policy_ecmp")  \
+    PIPELINE_STAGE(ROUTER, IN,  ARP_RESOLVE,     15, "lr_in_arp_resolve")  \
+    PIPELINE_STAGE(ROUTER, IN,  CHK_PKT_LEN   ,  16, "lr_in_chk_pkt_len")  \
+    PIPELINE_STAGE(ROUTER, IN,  LARGER_PKTS,     17, "lr_in_larger_pkts")  \
+    PIPELINE_STAGE(ROUTER, IN,  GW_REDIRECT,     18, "lr_in_gw_redirect")  \
+    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST,     19, "lr_in_arp_request")  \
                                                                       \
     /* Logical router egress stages. */                               \
     PIPELINE_STAGE(ROUTER, OUT, UNDNAT,      0, "lr_out_undnat")        \
@@ -210,6 +211,10 @@ enum ovn_stage {
 #define REGBIT_PKT_LARGER        "reg9[1]"
 #define REGBIT_LOOKUP_NEIGHBOR_RESULT "reg9[2]"
 #define REGBIT_LOOKUP_NEIGHBOR_IP_RESULT "reg9[3]"
+
+/* Reg bit to indicate that the packet was sent to conntrack for
+ * un(S/D)NATting. */
+#define REGBIT_UNNAT             "reg9[4]"
 
 /* Register to store the eth address associated to a router port for packets
  * received in S_ROUTER_IN_ADMISSION.
@@ -10167,7 +10172,7 @@ build_lrouter_force_snat_flows(struct hmap *lflows, struct ovn_datapath *od,
     ds_put_format(&match, "ip%s && ip%s.dst == %s",
                   ip_version, ip_version, ip_addr);
     ovn_lflow_add(lflows, od, S_ROUTER_IN_UNSNAT, 110,
-                  ds_cstr(&match), "ct_snat;");
+                  ds_cstr(&match), REGBIT_UNNAT" = 1; ct_snat;");
 
     /* Higher priority rules to force SNAT with the IP addresses
      * configured in the Gateway router.  This only takes effect
@@ -10199,7 +10204,7 @@ build_lrouter_force_snat_flows_op(struct ovn_port *op,
         ds_put_format(match, "inport == %s && ip4.dst == %s",
                       op->json_key, op->lrp_networks.ipv4_addrs[0].addr_s);
         ovn_lflow_add(lflows, op->od, S_ROUTER_IN_UNSNAT, 110,
-                      ds_cstr(match), "ct_snat;");
+                      ds_cstr(match), REGBIT_UNNAT" = 1; ct_snat;");
 
         ds_clear(match);
 
@@ -10231,7 +10236,7 @@ build_lrouter_force_snat_flows_op(struct ovn_port *op,
         ds_put_format(match, "inport == %s && ip6.dst == %s",
                       op->json_key, op->lrp_networks.ipv6_addrs[0].addr_s);
         ovn_lflow_add(lflows, op->od, S_ROUTER_IN_UNSNAT, 110,
-                      ds_cstr(match), "ct_snat;");
+                      ds_cstr(match), REGBIT_UNNAT" = 1; ct_snat;");
 
         ds_clear(match);
 
@@ -12229,7 +12234,7 @@ build_lrouter_in_unsnat_flow(struct hmap *lflows, struct ovn_datapath *od,
             ds_put_format(actions, "ip%s.dst=%s; next;",
                           is_v6 ? "6" : "4", nat->logical_ip);
         } else {
-            ds_put_cstr(actions, "ct_snat;");
+            ds_put_cstr(actions, REGBIT_UNNAT" = 1; ct_snat;");
         }
 
         ovn_lflow_add_with_hint(lflows, od, S_ROUTER_IN_UNSNAT,
@@ -12255,7 +12260,7 @@ build_lrouter_in_unsnat_flow(struct hmap *lflows, struct ovn_datapath *od,
             ds_put_format(actions, "ip%s.dst=%s; next;",
                           is_v6 ? "6" : "4", nat->logical_ip);
         } else {
-            ds_put_cstr(actions, "ct_snat;");
+            ds_put_cstr(actions, REGBIT_UNNAT" = 1; ct_snat;");
         }
 
         ovn_lflow_add_with_hint(lflows, od, S_ROUTER_IN_UNSNAT,
@@ -12639,6 +12644,7 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od, struct hmap *lflows,
     /* Packets are allowed by default. */
     ovn_lflow_add(lflows, od, S_ROUTER_IN_DEFRAG, 0, "1", "next;");
     ovn_lflow_add(lflows, od, S_ROUTER_IN_UNSNAT, 0, "1", "next;");
+    ovn_lflow_add(lflows, od, S_ROUTER_IN_POST_UNSNAT, 0, "1", "next;");
     ovn_lflow_add(lflows, od, S_ROUTER_OUT_SNAT, 0, "1", "next;");
     ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 0, "1", "next;");
     ovn_lflow_add(lflows, od, S_ROUTER_OUT_UNDNAT, 0, "1", "next;");
@@ -12657,6 +12663,12 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od, struct hmap *lflows,
      */
     if ((od->is_gw_router || od->n_l3dgw_ports) &&
         (od->nbr->n_nat || od->has_lb_vip)) {
+        if (!od->is_gw_router) {
+            ovn_lflow_add(lflows, od, S_ROUTER_IN_POST_UNSNAT, 50,
+                          "ip && ct.new && "REGBIT_UNNAT" == 1",
+                          "ct_commit_szone { } ; next; ");
+        }
+
         ovn_lflow_add(lflows, od, S_ROUTER_OUT_UNDNAT, 50,
                       "ip", "flags.loopback = 1; ct_dnat;");
         ovn_lflow_add(lflows, od, S_ROUTER_OUT_POST_UNDNAT, 50,
