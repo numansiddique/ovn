@@ -2588,6 +2588,7 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
 
         case OVNACT_CT_COMMIT_V1:
         case OVNACT_CT_COMMIT_V2:
+        case OVNACT_CT_COMMIT_SZONE:
             /* Nothing to do. */
             break;
 

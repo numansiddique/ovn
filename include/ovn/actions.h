@@ -64,6 +64,7 @@ struct ovn_extend_table;
     OVNACT(CT_NEXT,           ovnact_ct_next)         \
     OVNACT(CT_COMMIT_V1,      ovnact_ct_commit_v1)    \
     OVNACT(CT_COMMIT_V2,      ovnact_nest)            \
+    OVNACT(CT_COMMIT_SZONE,   ovnact_nest)            \
     OVNACT(CT_DNAT,           ovnact_ct_nat)          \
     OVNACT(CT_SNAT,           ovnact_ct_nat)          \
     OVNACT(CT_LB,             ovnact_ct_lb)           \

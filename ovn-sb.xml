@@ -1342,6 +1342,18 @@
           </p>
         </dd>
 
+        <dt><code>ct_commit_szone { };</code></dt>
+        <dt><code>ct_commit_szone { ct_mark=<var>value[/mask]</var>; };</code></dt>
+        <dt><code>ct_commit_szone { ct_label=<var>value[/mask]</var>; };</code></dt>
+        <dt><code>ct_commit_szone { ct_mark=<var>value[/mask]</var>; ct_label=<var>value[/mask]</var>; };</code></dt>
+        <dd>
+          <p>
+            This action is similar to <code>ct_commit</code> with just one difference.
+            It commits the flow to the to the connection tracking entry
+            in the SNAT zone.
+          </p>
+        </dd>
+
         <dt><code>ct_dnat;</code></dt>
         <dt><code>ct_dnat(<var>IP</var>);</code></dt>
         <dd>

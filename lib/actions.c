@@ -798,16 +798,14 @@ format_CT_COMMIT_V2(const struct ovnact_nest *on, struct ds *s)
 }
 
 static void
-encode_CT_COMMIT_V2(const struct ovnact_nest *on,
-                    const struct ovnact_encode_params *ep OVS_UNUSED,
-                    struct ofpbuf *ofpacts)
+encode_ct_commit_nested(const struct ovnact_nest *on,
+                        const struct ovnact_encode_params *ep,
+                        struct ofpbuf *ofpacts, enum mf_field_id zone_field)
 {
     struct ofpact_conntrack *ct = ofpact_put_CT(ofpacts);
     ct->flags = NX_CT_F_COMMIT;
     ct->recirc_table = NX_CT_RECIRC_NONE;
-    ct->zone_src.field = ep->is_switch
-        ? mf_from_id(MFF_LOG_CT_ZONE)
-        : mf_from_id(MFF_LOG_DNAT_ZONE);
+    ct->zone_src.field = mf_from_id(zone_field);
     ct->zone_src.ofs = 0;
     ct->zone_src.n_bits = 16;
 
@@ -834,6 +832,52 @@ encode_CT_COMMIT_V2(const struct ovnact_nest *on,
     ct = ofpacts->header;
     ofpact_finish(ofpacts, &ct->ofpact);
 }
+
+static void
+encode_CT_COMMIT_V2(const struct ovnact_nest *on,
+                    const struct ovnact_encode_params *ep,
+                    struct ofpbuf *ofpacts)
+{
+    encode_ct_commit_nested(
+        on, ep, ofpacts,
+        ep->is_switch ? MFF_LOG_CT_ZONE : MFF_LOG_DNAT_ZONE);
+}
+
+static void
+parse_CT_COMMIT_SZONE(struct action_context *ctx)
+{
+    if (ctx->lexer->token.type == LEX_T_LCURLY) {
+        parse_nested_action(ctx, OVNACT_CT_COMMIT_SZONE, "ip",
+                            WR_CT_COMMIT);
+    } else {
+        /* Add an empty nested action to allow for "ct_commit_szone;" syntax */
+        add_prerequisite(ctx, "ip");
+        struct ovnact_nest *on = ovnact_put(ctx->ovnacts,
+                                            OVNACT_CT_COMMIT_SZONE,
+                                            OVNACT_ALIGN(sizeof *on));
+        on->nested_len = 0;
+        on->nested = NULL;
+    }
+}
+
+static void
+format_CT_COMMIT_SZONE(const struct ovnact_nest *on, struct ds *s)
+{
+    if (on->nested_len) {
+        format_nested_action(on, "ct_commit_szone", s);
+    } else {
+        ds_put_cstr(s, "ct_commit_szone;");
+    }
+}
+
+static void
+encode_CT_COMMIT_SZONE(const struct ovnact_nest *on,
+                       const struct ovnact_encode_params *ep,
+                       struct ofpbuf *ofpacts)
+{
+    encode_ct_commit_nested(on, ep, ofpacts, MFF_LOG_SNAT_ZONE);
+}
+
 
 static void
 parse_ct_nat(struct action_context *ctx, const char *name,
@@ -4013,6 +4057,8 @@ parse_action(struct action_context *ctx)
         parse_CT_NEXT(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_commit")) {
         parse_CT_COMMIT(ctx);
+    } else if (lexer_match_id(ctx->lexer, "ct_commit_szone")) {
+        parse_CT_COMMIT_SZONE(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_dnat")) {
         parse_CT_DNAT(ctx);
     } else if (lexer_match_id(ctx->lexer, "ct_snat")) {
