@@ -9507,7 +9507,8 @@ build_lrouter_nat_flows_for_lb(struct ovn_lb_vip *lb_vip,
                                     &lb->nlb->header_);
         } else {
             ovn_lflow_add_with_hint(lflows, od, S_ROUTER_OUT_UNDNAT, 120,
-                                    undnat_match_p, "ct_dnat;",
+                                    undnat_match_p,
+                                    REGBIT_UNNAT" = 1; ct_dnat;",
                                     &lb->nlb->header_);
         }
         free(undnat_match_p);
@@ -12395,7 +12396,7 @@ build_lrouter_out_undnat_flow(struct hmap *lflows, struct ovn_datapath *od,
         ds_put_format(actions, "ip%s.src=%s; next;",
                       is_v6 ? "6" : "4", nat->external_ip);
     } else {
-        ds_put_format(actions, "ct_dnat;");
+        ds_put_format(actions, REGBIT_UNNAT" = 1; ct_dnat;");
     }
 
     ovn_lflow_add_with_hint(lflows, od, S_ROUTER_OUT_UNDNAT, 100,
@@ -12669,10 +12670,14 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od, struct hmap *lflows,
                           "ct_commit_szone { } ; next; ");
         }
 
-        ovn_lflow_add(lflows, od, S_ROUTER_OUT_UNDNAT, 50,
-                      "ip", "flags.loopback = 1; ct_dnat;");
+        if (od->is_gw_router) {
+            ovn_lflow_add(lflows, od, S_ROUTER_OUT_UNDNAT, 50,
+                          "ip", "flags.loopback = 1; "
+                          REGBIT_UNNAT" = 1; ct_dnat;");
+        }
         ovn_lflow_add(lflows, od, S_ROUTER_OUT_POST_UNDNAT, 50,
-                      "ip && ct.new", "ct_commit { } ; next; ");
+                      "ip && ct.new && "REGBIT_UNNAT" == 1",
+                      "ct_commit { } ; next; ");
     }
 
     /* Send the IPv6 NS packets to next table. When ovn-controller
