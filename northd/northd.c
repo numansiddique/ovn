@@ -13039,7 +13039,6 @@ struct lflows_thread_pool {
     struct worker_pool *pool;
 };
 
-
 static void *
 build_lflows_thread(void *arg)
 {
@@ -14621,9 +14620,6 @@ ovnnb_db_run(struct northd_data *data,
     build_meter_groups(data, &data->meter_groups);
     build_bfd_table(data, ovnsb_txn, &data->bfd_connections, &data->ports);
     stopwatch_stop(BUILD_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
-    stopwatch_start(BUILD_LFLOWS_STOPWATCH_NAME, time_msec());
-    build_lflows(data, ovnsb_txn);
-    stopwatch_stop(BUILD_LFLOWS_STOPWATCH_NAME, time_msec());
     stopwatch_start(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
     ovn_update_ipv6_prefix(&data->ports);
 
@@ -14634,7 +14630,6 @@ ovnnb_db_run(struct northd_data *data,
     cleanup_stale_fdp_entries(data, &data->datapaths);
     bfd_cleanup_connections(data, &data->bfd_connections);
     stopwatch_stop(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
-
 }
 
 /* Stores the list of chassis which references an ha_chassis_group.
