@@ -1979,6 +1979,18 @@ lflow_add_flows_for_datapath(const struct sbrec_datapath_binding *dp,
             }
         }
     }
+
+    struct sbrec_fdb *fdb_index_row =
+        sbrec_fdb_index_init_row(l_ctx_in->sbrec_fdb_by_dp_key);
+    sbrec_fdb_index_set_dp_key(fdb_index_row, dp->tunnel_key);
+    const struct sbrec_fdb *fdb_row;
+    SBREC_FDB_FOR_EACH_EQUAL (fdb_row, fdb_index_row,
+                              l_ctx_in->sbrec_fdb_by_dp_key) {
+        consider_fdb_flows(fdb_row, l_ctx_in->local_datapaths,
+                           l_ctx_out->flow_table);
+    }
+    sbrec_fdb_index_destroy_row(fdb_index_row);
+
 lflow_processing_end:
     sbrec_logical_flow_index_destroy_row(lf_row);
 
