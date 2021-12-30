@@ -79,7 +79,7 @@ jobs:
     needs: [build]
     env:
       JOB_NAME: "${{ matrix.target.shard }}-${{ matrix.ipfamily.name }}"
-      OVN_HA: "true"
+      OVN_HA: "false"
       KIND_IPV4_SUPPORT: "${{ matrix.ipfamily.ipv4 }}"
       KIND_IPV6_SUPPORT: "${{ matrix.ipfamily.ipv6 }}"
       OVN_HYBRID_OVERLAY_ENABLE: "${{ matrix.target.hybrid-overlay }}"
@@ -100,8 +100,8 @@ jobs:
     - name: Check out ovn-kubernetes
       uses: actions/checkout@v2
       with:
-          path: src/github.com/ovn-org/ovn-kubernetes
-          repository: ovn-org/ovn-kubernetes
+          path: src/github.com/numansiddique/ovn-kubernetes
+          repository: numansiddique/ovn-kubernetes
 
     - name: Set up environment
       run: |
@@ -127,26 +127,26 @@ jobs:
       run: |
         export OVN_IMAGE="ovn-daemonset-f:dev"
         make -C test install-kind
-      working-directory: src/github.com/ovn-org/ovn-kubernetes
+      working-directory: src/github.com/numansiddique/ovn-kubernetes
 
     - name: Run Tests
       run: |
         make -C test ${{ matrix.target.shard }}
-      working-directory: src/github.com/ovn-org/ovn-kubernetes
+      working-directory: src/github.com/numansiddique/ovn-kubernetes
 
     - name: Upload Junit Reports
       if: always()
       uses: actions/upload-artifact@v2
       with:
         name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
-        path: 'src/github.com/ovn-org/ovn-kubernetes/test/_artifacts/*.xml'
+        path: 'src/github.com/numansiddique/ovn-kubernetes/test/_artifacts/*.xml'
 
     - name: Export logs
       if: always()
       run: |
         mkdir -p /tmp/kind/logs
         kind export logs --name ${KIND_CLUSTER_NAME} --loglevel=debug /tmp/kind/logs
-      working-directory: src/github.com/ovn-org/ovn-kubernetes
+      working-directory: src/github.com/numansiddique/ovn-kubernetes
 
     - name: Upload logs
       if: always()
