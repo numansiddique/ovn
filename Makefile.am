@@ -120,6 +120,7 @@ dist_pkgdata_SCRIPTS =
 dist_sbin_SCRIPTS =
 dist_scripts_SCRIPTS =
 dist_scripts_DATA =
+dist_bpf_DATA =
 EXTRA_PROGRAMS =
 INSTALL_DATA_LOCAL =
 UNINSTALL_LOCAL =
@@ -139,6 +140,7 @@ sbin_SCRIPTS =
 scripts_SCRIPTS =
 completion_SCRIPTS =
 scripts_DATA =
+bpf_DATA =
 SUFFIXES =
 check_DATA =
 check_SCRIPTS =
@@ -152,6 +154,7 @@ endif
 scriptsdir = $(pkgdatadir)/scripts
 completiondir = $(sysconfdir)/bash_completion.d
 pkgconfigdir = $(libdir)/pkgconfig
+bpfdir = $(pkgdatadir)/bpf
 
 # This ensures that files added to EXTRA_DIST are always distributed,
 # even if they are inside an Automake if...endif conditional block that is
@@ -255,7 +258,7 @@ config-h-check:
 	@cd $(srcdir); \
 	if test -e .git && (git --version) >/dev/null 2>&1 && \
 	  git --no-pager grep -L '#include <config\.h>' `git ls-files | grep -v $(submodules) | grep '\.c$$' | \
-	    grep -vE '^python'`; \
+	    grep -vE '^bpf|^python'`; \
 	then \
 	  echo "See above for list of violations of the rule that"; \
 	  echo "every C source file must #include <config.h>."; \
@@ -493,6 +496,7 @@ include debian/automake.mk
 include lib/ovsdb_automake.mk
 include rhel/automake.mk
 include tutorial/automake.mk
+include bpf/automake.mk
 include controller/automake.mk
 include controller-vtep/automake.mk
 include northd/automake.mk
