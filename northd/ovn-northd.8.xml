@@ -785,6 +785,12 @@
 
     <ul>
       <li>
+        A priority-2 flow that advances the packet to the next stage if the
+        packet was not sent to conntrack earlier, by matching on
+        <code>reg0[0] == 0 &amp;&amp; reg0[1] == 1</code>.
+      </li>
+
+      <li>
         A priority-1 flow that sets the hint to commit IP traffic to the
         connection tracker (with action <code>reg0[1] = 1; next;</code>).  This
         is needed for the default allow policy because, while the initiator's

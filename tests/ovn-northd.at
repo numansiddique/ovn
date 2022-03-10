@@ -2270,6 +2270,7 @@ AT_CHECK([ovn-sbctl lflow-list ls | grep -e ls_in_acl_hint -e ls_out_acl_hint -e
   table=4 (ls_out_acl         ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(next;)
   table=4 (ls_out_acl         ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=4 (ls_out_acl         ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=4 (ls_out_acl         ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
   table=8 (ls_in_acl_hint     ), priority=0    , match=(1), action=(next;)
   table=8 (ls_in_acl_hint     ), priority=1    , match=(ct.est && ct_label.blocked == 0), action=(reg0[[10]] = 1; next;)
   table=8 (ls_in_acl_hint     ), priority=2    , match=(ct.est && ct_label.blocked == 1), action=(reg0[[9]] = 1; next;)
@@ -2287,6 +2288,7 @@ AT_CHECK([ovn-sbctl lflow-list ls | grep -e ls_in_acl_hint -e ls_out_acl_hint -e
   table=9 (ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=9 (ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=9 (ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=9 (ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 ovn-nbctl --wait=sb clear logical_switch ls acls
@@ -4165,6 +4167,7 @@ AT_CHECK([grep -w "ls_in_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=9 (ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=9 (ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=9 (ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=9 (ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
@@ -4172,6 +4175,7 @@ AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=4 (ls_out_acl         ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(next;)
   table=4 (ls_out_acl         ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=4 (ls_out_acl         ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=4 (ls_out_acl         ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 # Disable ct.inv usage.
@@ -4185,6 +4189,7 @@ AT_CHECK([grep -w "ls_in_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=9 (ls_in_acl          ), priority=65532, match=((ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=9 (ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=9 (ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=9 (ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
@@ -4192,6 +4197,7 @@ AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=4 (ls_out_acl         ), priority=65532, match=((ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=4 (ls_out_acl         ), priority=65532, match=(ct.est && !ct.rel && !ct.new && ct.rpl && ct_label.blocked == 0), action=(next;)
   table=4 (ls_out_acl         ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=4 (ls_out_acl         ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 AT_CHECK([grep -c "ct.inv" sw0flows], [1], [dnl
@@ -4209,6 +4215,7 @@ AT_CHECK([grep -w "ls_in_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=9 (ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=9 (ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=9 (ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=9 (ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
@@ -4216,6 +4223,7 @@ AT_CHECK([grep -w "ls_out_acl" sw0flows | grep 6553 | sort], [0], [dnl
   table=4 (ls_out_acl         ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(next;)
   table=4 (ls_out_acl         ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=4 (ls_out_acl         ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=4 (ls_out_acl         ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
 ])
 
 AT_CHECK([grep -c "ct.inv" sw0flows], [0], [dnl
@@ -6341,6 +6349,7 @@ AT_CHECK([grep -e "ls_in_acl" lsflows | sed 's/table=../table=??/' | sort], [0],
   table=??(ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=??(ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=??(ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=??(ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
   table=??(ls_in_acl_after_lb ), priority=0    , match=(1), action=(next;)
   table=??(ls_in_acl_hint     ), priority=0    , match=(1), action=(next;)
   table=??(ls_in_acl_hint     ), priority=1    , match=(ct.est && ct_label.blocked == 0), action=(reg0[[10]] = 1; next;)
@@ -6385,6 +6394,7 @@ AT_CHECK([grep -e "ls_in_acl" lsflows | sed 's/table=../table=??/' | sort], [0],
   table=??(ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=??(ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=??(ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=??(ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
   table=??(ls_in_acl_after_lb ), priority=0    , match=(1), action=(next;)
   table=??(ls_in_acl_after_lb ), priority=2001 , match=(reg0[[10]] == 1 && (ip4)), action=(ct_commit { ct_label.blocked = 1; }; /* drop */)
   table=??(ls_in_acl_after_lb ), priority=2001 , match=(reg0[[9]] == 1 && (ip4)), action=(/* drop */)
@@ -6441,6 +6451,7 @@ AT_CHECK([grep -e "ls_in_acl" lsflows | sed 's/table=../table=??/' | sort], [0],
   table=??(ls_in_acl          ), priority=65532, match=(ct.est && !ct.rel && !ct.new && !ct.inv && ct.rpl && ct_label.blocked == 0), action=(reg0[[9]] = 0; reg0[[10]] = 0; next;)
   table=??(ls_in_acl          ), priority=65532, match=(ct.inv || (ct.est && ct.rpl && ct_label.blocked == 1)), action=(drop;)
   table=??(ls_in_acl          ), priority=65532, match=(nd || nd_ra || nd_rs || mldv1 || mldv2), action=(next;)
+  table=??(ls_in_acl          ), priority=65535, match=(reg0[[0]] == 0 && reg0[[2]] == 0), action=(next;)
   table=??(ls_in_acl_after_lb ), priority=0    , match=(1), action=(next;)
   table=??(ls_in_acl_after_lb ), priority=2001 , match=(reg0[[10]] == 1 && (ip4)), action=(ct_commit { ct_label.blocked = 1; }; /* drop */)
   table=??(ls_in_acl_after_lb ), priority=2001 , match=(reg0[[9]] == 1 && (ip4)), action=(/* drop */)

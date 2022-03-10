@@ -6529,7 +6529,7 @@ build_acls(struct ovn_datapath *od, struct hmap *lflows,
     ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL_AFTER_LB, 0, "1", "next;");
 
     if (has_stateful) {
-        /* Ingress and Egress ACL Table (Priority 1).
+        /* Ingress and Egress ACL Table (Priority 1 and 2).
          *
          * By default, traffic is allowed.  This is partially handled by
          * the Priority 0 ACL flows added earlier, but we also need to
@@ -6549,7 +6549,20 @@ build_acls(struct ovn_datapath *od, struct hmap *lflows,
          * We need to set ct_label.blocked=0 to let the connection continue,
          * which will be done by ct_commit() in the "stateful" stage.
          * Subsequent packets will hit the flow at priority 0 that just
-         * uses "next;". */
+         * uses "next;".
+         *
+         * However, we don't want to commit if the packet was not sent to
+         * conntrack in the first place.
+         * Eg. if inport or outport is a router peer port. */
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL, UINT16_MAX,
+                      REGBIT_CONNTRACK_DEFRAG" == 0 && "
+                      REGBIT_CONNTRACK_NAT" == 0",
+                      "next;");
+        ovn_lflow_add(lflows, od, S_SWITCH_OUT_ACL, UINT16_MAX,
+                      REGBIT_CONNTRACK_DEFRAG" == 0 && "
+                      REGBIT_CONNTRACK_NAT" == 0",
+                      "next;");
+
         ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL, 1,
                       "ip && (!ct.est || (ct.est && ct_label.blocked == 1))",
                        REGBIT_CONNTRACK_COMMIT" = 1; next;");
