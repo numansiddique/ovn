@@ -214,4 +214,11 @@ struct binding_lport {
     size_t n_port_security;
 };
 
+/* Returns the primary binding lport if present in lbinding's
+ * binding lports list.  A binding lport is considered primary
+ * if binding lport's type is LP_VIF and the name matches
+ * with the 'lbinding'.
+ */
+struct binding_lport *local_binding_get_primary_lport(struct local_binding *);
+
 #endif /* controller/binding.h */

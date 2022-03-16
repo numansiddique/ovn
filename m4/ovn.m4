@@ -592,3 +592,23 @@ AC_DEFUN([OVS_CHECK_DDLOG_FAST_BUILD],
    if $ddlog_fast_build; then
       DDLOG_EXTRA_RUSTFLAGS="-C opt-level=z"
    fi])
+
+dnl Checks for libbpf.
+AC_DEFUN([OVN_CHECK_BPF],
+  [AC_CHECK_LIB(bpf, bpf_load_program, [HAVE_BPF=yes], [HAVE_BPF=no])
+   if test "$HAVE_BPF" = yes; then
+     AC_DEFINE([HAVE_BPF], [1], [Define to 1 if bpf is detected.])
+     LIBS="$LIBS -lbpf"
+   fi
+   AM_CONDITIONAL([HAVE_BPF], [test "$HAVE_BPF" = yes])
+   AC_SUBST([HAVE_BPF])])
+
+dnl Checks for libxdp.
+AC_DEFUN([OVN_CHECK_XDP],
+  [AC_CHECK_LIB(xdp, xdp_program__attach, [HAVE_XDP=yes], [HAVE_XDP=no])
+   if test "$HAVE_XDP" = yes; then
+     AC_DEFINE([HAVE_XDP], [1], [Define to 1 if xdp is detected.])
+     LIBS="$LIBS -lxdp"
+   fi
+   AM_CONDITIONAL([HAVE_XDP], [test "$HAVE_XDP" = yes])
+   AC_SUBST([HAVE_XDP])])

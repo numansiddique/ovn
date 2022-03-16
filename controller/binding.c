@@ -36,6 +36,7 @@
 #include "lport.h"
 #include "ovn-controller.h"
 #include "patch.h"
+#include "xdp.h"
 
 VLOG_DEFINE_THIS_MODULE(binding);
 
@@ -77,6 +78,7 @@ binding_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_bfd);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_bfd_status);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_status);
+    ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_ifindex);
 
     ovsdb_idl_add_table(ovs_idl, &ovsrec_table_qos);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_qos_col_type);
@@ -539,8 +541,6 @@ static struct binding_lport *local_binding_add_lport(
     struct local_binding *,
     const struct sbrec_port_binding *,
     enum en_lport_type);
-static struct binding_lport *local_binding_get_primary_lport(
-    struct local_binding *);
 static struct binding_lport *local_binding_get_first_lport(
     struct local_binding *lbinding);
 static struct binding_lport *local_binding_get_primary_or_localport_lport(
@@ -805,6 +805,27 @@ binding_dump_local_bindings(struct local_binding_data *lbinding_data,
     }
 
     free(nodes);
+}
+
+/* Returns the primary binding lport if present in lbinding's
+ * binding lports list.  A binding lport is considered primary
+ * if binding lport's type is LP_VIF and the name matches
+ * with the 'lbinding'.
+ */
+struct binding_lport *
+local_binding_get_primary_lport(struct local_binding *lbinding)
+{
+    if (!lbinding) {
+        return NULL;
+    }
+
+    struct binding_lport *b_lport = local_binding_get_first_lport(lbinding);
+    if (b_lport && b_lport->type == LP_VIF &&
+            !strcmp(lbinding->name, b_lport->name)) {
+        return b_lport;
+    }
+
+    return NULL;
 }
 
 static bool
@@ -2636,26 +2657,6 @@ local_binding_get_first_lport(struct local_binding *lbinding)
     return NULL;
 }
 
-/* Returns the primary binding lport if present in lbinding's
- * binding lports list.  A binding lport is considered primary
- * if binding lport's type is LP_VIF and the name matches
- * with the 'lbinding'.
- */
-static struct binding_lport *
-local_binding_get_primary_lport(struct local_binding *lbinding)
-{
-    if (!lbinding) {
-        return NULL;
-    }
-
-    struct binding_lport *b_lport = local_binding_get_first_lport(lbinding);
-    if (b_lport && b_lport->type == LP_VIF &&
-            !strcmp(lbinding->name, b_lport->name)) {
-        return b_lport;
-    }
-
-    return NULL;
-}
 
 static struct binding_lport *
 local_binding_get_primary_or_localport_lport(struct local_binding *lbinding)

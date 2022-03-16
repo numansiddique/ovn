@@ -76,6 +76,7 @@
 #include "stopwatch.h"
 #include "lib/inc-proc-eng.h"
 #include "hmapx.h"
+#include "xdp.h"
 
 VLOG_DEFINE_THIS_MODULE(main);
 
@@ -1417,7 +1418,6 @@ en_runtime_data_run(struct engine_node *node, void *data)
     }
 
     binding_run(&b_ctx_in, &b_ctx_out);
-
     engine_set_node_state(node, EN_UPDATED);
 }
 
@@ -3207,6 +3207,77 @@ flow_output_lflow_output_handler(struct engine_node *node,
     return true;
 }
 
+struct ed_type_xdp {
+    struct shash xdp_lports;
+};
+
+static void *
+en_xdp_init(struct engine_node *node OVS_UNUSED,
+            struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_xdp *xdp = xzalloc(sizeof *xdp);
+    ovn_xdp_init(&xdp->xdp_lports);
+    return xdp;
+}
+
+static void
+en_xdp_cleanup(void *data)
+{
+    struct ed_type_xdp *xdp = data;
+    ovn_xdp_destroy(&xdp->xdp_lports);
+}
+
+static void
+en_xdp_run(struct engine_node *node, void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    struct ed_type_xdp *xdp_data = data;
+    ovn_xdp_run(&rt_data->lbinding_data.bindings, &rt_data->local_lports,
+                &xdp_data->xdp_lports);
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+static bool
+xdp_runtime_data_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_runtime_data *rt_data =
+        engine_get_input_data("runtime_data", node);
+
+    /* There is no tracked data. Fall back to full recompute of xdp. */
+    if (!rt_data->tracked) {
+        return false;
+    }
+
+    struct ed_type_xdp *xdp_data = data;
+
+    struct hmap *tracked_dp_bindings = &rt_data->tracked_dp_bindings;
+    struct tracked_datapath *tdp;
+    HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
+        if (tdp->tracked_type != TRACKED_RESOURCE_UPDATED) {
+            /* Fall back to full recompute when a local datapath
+             * is added or deleted. */
+            return false;
+        }
+
+        struct shash_node *shash_node;
+        SHASH_FOR_EACH (shash_node, &tdp->lports) {
+            struct tracked_lport *lport = shash_node->data;
+            bool removed =
+                lport->tracked_type == TRACKED_RESOURCE_REMOVED ? true: false;
+            if (!ovn_xdp_handle_lport(
+                    lport->pb, removed, &rt_data->lbinding_data.bindings,
+                    &xdp_data->xdp_lports)) {
+                return false;
+            }
+        }
+    }
+
+    engine_set_node_state(node, EN_UPDATED);
+    return true;
+}
+
 struct ovn_controller_exit_args {
     bool *exiting;
     bool *restart;
@@ -3459,6 +3530,7 @@ main(int argc, char *argv[])
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(addr_sets, "addr_sets");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(port_groups, "port_groups");
     ENGINE_NODE(northd_internal_version, "northd_internal_version");
+    ENGINE_NODE(xdp, "xdp");
 
 #define SB_NODE(NAME, NAME_STR) ENGINE_NODE_SB(NAME, NAME_STR);
     SB_NODES
@@ -3601,6 +3673,11 @@ main(int argc, char *argv[])
                      flow_output_lflow_output_handler);
     engine_add_input(&en_flow_output, &en_pflow_output,
                      flow_output_pflow_output_handler);
+    engine_add_input(&en_flow_output, &en_xdp,
+                     engine_noop_handler);
+
+    engine_add_input(&en_xdp, &en_runtime_data,
+                     xdp_runtime_data_handler);
 
     struct engine_arg engine_arg = {
         .sb_idl = ovnsb_idl_loop.idl,
