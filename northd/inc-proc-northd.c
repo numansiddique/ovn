@@ -109,7 +109,8 @@ VLOG_DEFINE_THIS_MODULE(inc_proc_northd);
     SB_NODE(service_monitor, "service_monitor") \
     SB_NODE(load_balancer, "load_balancer") \
     SB_NODE(bfd, "bfd") \
-    SB_NODE(fdb, "fdb")
+    SB_NODE(fdb, "fdb") \
+    SB_NODE(bpf, "bpf")
 
 enum sb_engine_node {
 #define SB_NODE(NAME, NAME_STR) SB_##NAME,
@@ -206,6 +207,7 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_northd, &en_sb_service_monitor, NULL);
     engine_add_input(&en_northd, &en_sb_load_balancer, NULL);
     engine_add_input(&en_northd, &en_sb_fdb, NULL);
+    engine_add_input(&en_northd, &en_sb_bpf, NULL);
     engine_add_input(&en_lflow, &en_nb_bfd, NULL);
     engine_add_input(&en_lflow, &en_sb_bfd, NULL);
     engine_add_input(&en_lflow, &en_sb_logical_flow, NULL);

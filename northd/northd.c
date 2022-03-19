@@ -15361,6 +15361,24 @@ handle_port_binding_changes(struct northd_input *input_data,
             build_ha_chassis_group_ref_chassis(input_data, sb, op,
                                                ha_ref_chassis_map);
         }
+
+        if (!op->nbsp->type[0] && ovnsb_txn) {
+            struct sbrec_bpf *sb_bpf = sb->bpf;
+            if (!sb_bpf) {
+                sb_bpf = sbrec_bpf_insert(ovnsb_txn);
+                sbrec_port_binding_set_bpf(sb, sb_bpf);
+                sbrec_bpf_set_logical_port(sb_bpf, op->nbsp->name);
+            }
+            if (op->n_ps_addrs) {
+                sbrec_bpf_set_port_security(
+                    sb_bpf, (const char **) op->nbsp->port_security,
+                    op->nbsp->n_port_security);
+            } else {
+                sbrec_bpf_set_port_security(sb_bpf, NULL, 0);
+            }
+        } else if (ovnsb_txn) {
+            sbrec_port_binding_set_bpf(op->sb, NULL);
+        }
     }
 }
 

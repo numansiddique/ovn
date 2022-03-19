@@ -2937,6 +2937,12 @@ tcp.flags = RST;
         follows the same format as that column.
       </column>
 
+      <column name="bpf">
+        <p>
+          BPF.
+        </p>
+      </column>
+
       <column name="type">
         <p>
           A type for this logical port.  Logical ports can be used to model other
@@ -4529,6 +4535,28 @@ tcp.flags = RST;
 
     <column name="port_key">
       The key of the port binding on which this FDB was learnt.
+    </column>
+  </table>
+
+  <table name="BPF" title="BPF">
+    <p>
+      BPF.
+    </p>
+
+    <column name="logical_port">
+      The learnt mac address.
+    </column>
+
+    <column name="port_security">
+      The key of the datapath on which this FDB was learnt.
+    </column>
+
+    <column name="options">
+        Reserved for future use.
+    </column>
+
+    <column name="external_ids">
+      See <em>External IDs</em> at the beginning of this document.
     </column>
   </table>
 </database>
