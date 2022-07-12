@@ -1175,6 +1175,42 @@ en_activated_ports_run(struct engine_node *node, void *data_)
     engine_set_node_state(node, state);
 }
 
+struct ed_type_postponed_ports {
+    struct sset *postponed_ports;
+};
+
+static void *
+en_postponed_ports_init(struct engine_node *node OVS_UNUSED,
+                        struct engine_arg *arg OVS_UNUSED)
+{
+    struct ed_type_postponed_ports *data = xzalloc(sizeof *data);
+    data->postponed_ports = get_postponed_ports();
+    return data;
+}
+
+static void
+en_postponed_ports_cleanup(void *data_)
+{
+    struct ed_type_postponed_ports *data = data_;
+    if (!data->postponed_ports) {
+        return;
+    }
+    data->postponed_ports = NULL;
+}
+
+static void
+en_postponed_ports_run(struct engine_node *node, void *data_)
+{
+    struct ed_type_postponed_ports *data = data_;
+    enum engine_node_state state = EN_UNCHANGED;
+    data->postponed_ports = get_postponed_ports();
+    if (!sset_is_empty(data->postponed_ports)) {
+        schedule_postponed_ports();
+        state = EN_UPDATED;
+    }
+    engine_set_node_state(node, state);
+}
+
 struct ed_type_runtime_data {
     /* Contains "struct local_datapath" nodes. */
     struct hmap local_datapaths;
@@ -1205,6 +1241,8 @@ struct ed_type_runtime_data {
 
     struct shash local_active_ports_ipv6_pd;
     struct shash local_active_ports_ras;
+
+    struct sset *postponed_ports;
 };
 
 /* struct ed_type_runtime_data has the below members for tracking the
@@ -1405,6 +1443,7 @@ init_binding_ctx(struct engine_node *node,
     b_ctx_out->egress_ifaces = &rt_data->egress_ifaces;
     b_ctx_out->lbinding_data = &rt_data->lbinding_data;
     b_ctx_out->local_iface_ids = &rt_data->local_iface_ids;
+    b_ctx_out->postponed_ports = rt_data->postponed_ports;
     b_ctx_out->tracked_dp_bindings = NULL;
     b_ctx_out->if_mgr = ctrl_ctx->if_mgr;
 }
@@ -1441,6 +1480,10 @@ en_runtime_data_run(struct engine_node *node, void *data)
         smap_init(&rt_data->local_iface_ids);
         local_binding_data_init(&rt_data->lbinding_data);
     }
+
+    struct ed_type_postponed_ports *pp_data =
+        engine_get_input_data("postponed_ports", node);
+    rt_data->postponed_ports = pp_data->postponed_ports;
 
     struct binding_ctx_in b_ctx_in;
     struct binding_ctx_out b_ctx_out;
@@ -3542,6 +3585,7 @@ main(int argc, char *argv[])
     ENGINE_NODE(mff_ovn_geneve, "mff_ovn_geneve");
     ENGINE_NODE(ofctrl_is_connected, "ofctrl_is_connected");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(activated_ports, "activated_ports");
+    ENGINE_NODE(postponed_ports, "postponed_ports");
     ENGINE_NODE(pflow_output, "physical_flow_output");
     ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lflow_output, "logical_flow_output");
     ENGINE_NODE(flow_output, "flow_output");
@@ -3680,6 +3724,9 @@ main(int argc, char *argv[])
     engine_add_input(&en_runtime_data, &en_sb_datapath_binding,
                      runtime_data_sb_datapath_binding_handler);
     engine_add_input(&en_runtime_data, &en_sb_port_binding,
+                     runtime_data_sb_port_binding_handler);
+    /* Reuse the same handler for any previously postponed ports. */
+    engine_add_input(&en_runtime_data, &en_postponed_ports,
                      runtime_data_sb_port_binding_handler);
 
     /* The OVS interface handler for runtime_data changes MUST be executed
@@ -4318,6 +4365,7 @@ loop_done:
     lflow_destroy();
     ofctrl_destroy();
     pinctrl_destroy();
+    binding_destroy();
     patch_destroy();
     if_status_mgr_destroy(if_mgr);
     shash_destroy(&vif_plug_deleted_iface_ids);
