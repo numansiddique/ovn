@@ -12857,11 +12857,8 @@ build_lrouter_in_unsnat_flow(struct hmap *lflows, struct ovn_datapath *od,
     * Undoing SNAT has to happen before DNAT processing.  This is
     * because when the packet was DNATed in ingress pipeline, it did
     * not know about the possibility of eventual additional SNAT in
-    * egress pipeline. */
-    if (strcmp(nat->type, "snat") && strcmp(nat->type, "dnat_and_snat")) {
-        return;
-    }
-
+    * egress pipeline.
+    */
     bool stateless = lrouter_nat_is_stateless(nat);
     if (od->is_gw_router) {
         ds_clear(match);
@@ -13026,8 +13023,7 @@ build_lrouter_out_undnat_flow(struct hmap *lflows, struct ovn_datapath *od,
     *
     * Note that this only applies for NAT on a distributed router.
     */
-    if (!od->n_l3dgw_ports ||
-        (strcmp(nat->type, "dnat") && strcmp(nat->type, "dnat_and_snat"))) {
+    if (!od->n_l3dgw_ports) {
         return;
     }
 
