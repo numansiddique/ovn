@@ -46,7 +46,7 @@ RUN GO111MODULE=on go install github.com/ovn-org/libovsdb/cmd/modelgen@${LIBOVSD
 
 # Clone OVN Kubernetes and build the binary based on the commit passed as argument
 WORKDIR /root
-RUN git clone https://github.com/ovn-org/ovn-kubernetes.git
+RUN git clone https://github.com/numansiddique/ovn-kubernetes.git
 WORKDIR /root/ovn-kubernetes/go-controller
 RUN git checkout ${OVNKUBE_COMMIT} && git log -n 1
 
