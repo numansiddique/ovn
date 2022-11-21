@@ -27,6 +27,7 @@ OVN v22.09.0 - 16 Sep 2022
     any of LR's LRP IP, there is no need to create SNAT entry.  Now such
     traffic destined to LRP IP is not dropped.
   - Bump python version required for building OVN to 3.6.
+  - Added Support for Remote Port Mirroring.
 
 OVN v22.06.0 - 03 Jun 2022
 --------------------------

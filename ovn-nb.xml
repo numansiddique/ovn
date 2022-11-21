@@ -1582,6 +1582,11 @@
       </column>
     </group>
 
+    <column name="mirror_rules">
+        Mirror rules that apply to logical switch port which is the source.
+        Please see the <ref table="Mirror"/> table.
+    </column>
+
     <column name="ha_chassis_group">
       References a row in the OVN Northbound database's
       <ref table="HA_Chassis_Group" db="OVN_Northbound"/> table.
@@ -2520,6 +2525,64 @@
           This is optional and needs to specify the <code>rate</code>.
         </li>
       </ul>
+    </column>
+
+    <column name="external_ids">
+      See <em>External IDs</em> at the beginning of this document.
+    </column>
+  </table>
+
+  <table name="Mirror" title="Mirror Entry">
+    <p>
+      Each row in this table represents one Mirror that can be used for
+      port mirroring. These Mirrors are referenced by the
+      <ref column="mirror_rules" table="Logical_Switch_Port"/> column in
+      the <ref table="Logical_Switch_Port"/> table.
+    </p>
+
+    <column name="name">
+      <p>
+        Represents the name of the mirror.
+      </p>
+    </column>
+
+    <column name="filter">
+      <p>
+        The value of this field represents selection criteria of the mirror.
+        Supported values for filter to-lport / from-lport / both
+        to-lport - to mirror packets coming into logical port
+        from-lport - to mirror packets going out of logical port
+        both - to mirror packets coming into and going out of logical port.
+      </p>
+    </column>
+
+    <column name="sink">
+      <p>
+        The value of this field represents the destination/sink of the mirror.
+        The value it takes is an IP address of the sink port.
+      </p>
+    </column>
+
+    <column name="type">
+      <p>
+        The value of this field represents the type of the tunnel used for
+        sending the mirrored packets. Supported Tunnel types gre and erspan
+      </p>
+    </column>
+
+    <column name="index">
+      <p>
+        The value of this field represents the tunnel ID. Depending on the
+        tunnel type configured, GRE key value if type GRE and erspan_idx value
+        if ERSPAN
+      </p>
+    </column>
+
+    <column name="src">
+      <p>
+        The value of this field represents a list of source ports for the
+        mirror. Please see the <ref table="Logical_Switch_Port"/> table.
+      </p>
     </column>
 
     <column name="external_ids">

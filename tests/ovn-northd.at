@@ -2320,6 +2320,108 @@ AT_CLEANUP
 ])
 
 OVN_FOR_EACH_NORTHD_NO_HV([
+AT_SETUP([Check NB-SB mirrors sync])
+AT_KEYWORDS([mirrors])
+ovn_start
+
+check ovn-nbctl --wait=sb mirror-add mirror1 erspan 0 both 10.10.10.2
+
+AT_CHECK([ovn-sbctl get Mirror . Sink], [0], [dnl
+"10.10.10.2"
+])
+
+AT_CHECK([ovn-sbctl get Mirror . type], [0], [dnl
+erspan
+])
+
+AT_CHECK([ovn-sbctl get Mirror . index], [0], [dnl
+0
+])
+
+AT_CHECK([ovn-sbctl get Mirror . filter], [0], [dnl
+both
+])
+
+check ovn-nbctl --wait=sb \
+    -- set mirror . sink=192.168.1.13
+
+AT_CHECK([ovn-sbctl get Mirror . Sink], [0], [dnl
+"192.168.1.13"
+])
+
+AT_CHECK([ovn-sbctl get Mirror . type], [0], [dnl
+erspan
+])
+
+AT_CHECK([ovn-sbctl get Mirror . index], [0], [dnl
+0
+])
+
+AT_CHECK([ovn-sbctl get Mirror . filter], [0], [dnl
+both
+])
+
+check ovn-nbctl --wait=sb \
+    -- set mirror . type=gre
+
+AT_CHECK([ovn-sbctl get Mirror . type], [0], [dnl
+gre
+])
+
+AT_CHECK([ovn-sbctl get Mirror . Sink], [0], [dnl
+"192.168.1.13"
+])
+
+AT_CHECK([ovn-sbctl get Mirror . index], [0], [dnl
+0
+])
+
+AT_CHECK([ovn-sbctl get Mirror . filter], [0], [dnl
+both
+])
+
+check ovn-nbctl --wait=sb \
+    -- set mirror . index=12
+
+AT_CHECK([ovn-sbctl get Mirror . index], [0], [dnl
+12
+])
+
+AT_CHECK([ovn-sbctl get Mirror . type], [0], [dnl
+gre
+])
+
+AT_CHECK([ovn-sbctl get Mirror . Sink], [0], [dnl
+"192.168.1.13"
+])
+
+AT_CHECK([ovn-sbctl get Mirror . filter], [0], [dnl
+both
+])
+
+check ovn-nbctl --wait=sb \
+    -- set mirror . filter=to-lport
+
+AT_CHECK([ovn-sbctl get Mirror . filter], [0], [dnl
+to-lport
+])
+
+AT_CHECK([ovn-sbctl get Mirror . index], [0], [dnl
+12
+])
+
+AT_CHECK([ovn-sbctl get Mirror . type], [0], [dnl
+gre
+])
+
+AT_CHECK([ovn-sbctl get Mirror . Sink], [0], [dnl
+"192.168.1.13"
+])
+
+AT_CLEANUP
+])
+
+OVN_FOR_EACH_NORTHD_NO_HV([
 AT_SETUP([ACL skip hints for stateless config])
 AT_KEYWORDS([acl])
 ovn_start

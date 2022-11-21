@@ -3240,6 +3240,89 @@ ovn_port_update_sbrec_chassis(
 }
 
 static void
+do_sb_mirror_addition(struct northd_input *input_data,
+                      const struct ovn_port *op)
+{
+    for (size_t i = 0; i < op->nbsp->n_mirror_rules; i++) {
+        const struct sbrec_mirror *sb_mirror;
+        SBREC_MIRROR_TABLE_FOR_EACH (sb_mirror,
+                                     input_data->sbrec_mirror_table) {
+            if (!strcmp(sb_mirror->name,
+                        op->nbsp->mirror_rules[i]->name)) {
+                /* Add the value to SB */
+                sbrec_port_binding_update_mirror_rules_addvalue(op->sb,
+                                                                sb_mirror);
+            }
+        }
+    }
+}
+
+static void
+sbrec_port_binding_update_mirror_rules(struct northd_input *input_data,
+                                       const struct ovn_port *op)
+{
+    size_t i = 0;
+    if (op->sb->n_mirror_rules > op->nbsp->n_mirror_rules) {
+        /* Needs deletion in SB */
+        struct shash nb_mirror_rules = SHASH_INITIALIZER(&nb_mirror_rules);
+        for (i = 0; i < op->nbsp->n_mirror_rules; i++) {
+            shash_add(&nb_mirror_rules,
+                                 op->nbsp->mirror_rules[i]->name,
+                                 op->nbsp->mirror_rules[i]);
+        }
+
+        for (i = 0; i < op->sb->n_mirror_rules; i++) {
+            if (!shash_find(&nb_mirror_rules,
+                           op->sb->mirror_rules[i]->name)) {
+                    sbrec_port_binding_update_mirror_rules_delvalue(op->sb,
+                                                 op->sb->mirror_rules[i]);
+            }
+        }
+
+        struct shash_node *node, *next;
+        SHASH_FOR_EACH_SAFE (node, next, &nb_mirror_rules) {
+            shash_delete(&nb_mirror_rules, node);
+        }
+        shash_destroy(&nb_mirror_rules);
+
+    } else if (op->sb->n_mirror_rules < op->nbsp->n_mirror_rules) {
+        /* Needs addition in SB */
+        do_sb_mirror_addition(input_data, op);
+    } else if (op->sb->n_mirror_rules == op->nbsp->n_mirror_rules) {
+        /*
+         * Check if its the same mirrors on both SB and NB DBs
+         * If not update accordingly.
+         */
+        bool needs_sb_addition = false;
+        struct shash nb_mirror_rules = SHASH_INITIALIZER(&nb_mirror_rules);
+        for (i = 0; i < op->nbsp->n_mirror_rules; i++) {
+            shash_add(&nb_mirror_rules,
+                                 op->nbsp->mirror_rules[i]->name,
+                                 op->nbsp->mirror_rules[i]);
+        }
+
+        for (i = 0; i < op->sb->n_mirror_rules; i++) {
+            if (!shash_find(&nb_mirror_rules,
+                           op->sb->mirror_rules[i]->name)) {
+                    sbrec_port_binding_update_mirror_rules_delvalue(op->sb,
+                                                 op->sb->mirror_rules[i]);
+                    needs_sb_addition = true;
+            }
+        }
+
+        struct shash_node *node, *next;
+        SHASH_FOR_EACH_SAFE (node, next, &nb_mirror_rules) {
+            shash_delete(&nb_mirror_rules, node);
+        }
+        shash_destroy(&nb_mirror_rules);
+
+        if (needs_sb_addition) {
+            do_sb_mirror_addition(input_data, op);
+        }
+    }
+}
+
+static void
 ovn_port_update_sbrec(struct northd_input *input_data,
                       struct ovsdb_idl_txn *ovnsb_txn,
                       struct ovsdb_idl_index *sbrec_chassis_by_name,
@@ -3598,6 +3681,15 @@ ovn_port_update_sbrec(struct northd_input *input_data,
         }
         sbrec_port_binding_set_external_ids(op->sb, &ids);
         smap_destroy(&ids);
+
+        if (!op->nbsp->n_mirror_rules) {
+            /* Nothing is set. Clear mirror_rules from pb. */
+            sbrec_port_binding_set_mirror_rules(op->sb, NULL, 0);
+        } else {
+            /* Check if SB DB update needed */
+            sbrec_port_binding_update_mirror_rules(input_data, op);
+        }
+
     }
     if (op->tunnel_key != op->sb->tunnel_key) {
         sbrec_port_binding_set_tunnel_key(op->sb, op->tunnel_key);
@@ -15161,6 +15253,85 @@ sync_meters(struct northd_input *input_data,
     shash_destroy(&sb_meters);
 }
 
+static bool
+mirror_needs_update(const struct nbrec_mirror *nb_mirror,
+                  const struct sbrec_mirror *sb_mirror)
+{
+
+    if (nb_mirror->index != sb_mirror->index) {
+        return true;
+    } else if (strcmp(nb_mirror->sink, sb_mirror->sink)) {
+        return true;
+    } else if (strcmp(nb_mirror->type, sb_mirror->type)) {
+        return true;
+    } else if (strcmp(nb_mirror->filter, sb_mirror->filter)) {
+        return true;
+    }
+
+    return false;
+}
+
+static void
+sync_mirrors_iterate_nb_mirror(struct ovsdb_idl_txn *ovnsb_txn,
+                             const char *mirror_name,
+                             const struct nbrec_mirror *nb_mirror,
+                             struct shash *sb_mirrors,
+                             struct sset *used_sb_mirrors)
+{
+    const struct sbrec_mirror *sb_mirror;
+    bool new_sb_mirror = false;
+
+    sb_mirror = shash_find_data(sb_mirrors, mirror_name);
+    if (!sb_mirror) {
+        sb_mirror = sbrec_mirror_insert(ovnsb_txn);
+        sbrec_mirror_set_name(sb_mirror, mirror_name);
+        shash_add(sb_mirrors, sb_mirror->name, sb_mirror);
+        new_sb_mirror = true;
+    }
+    sset_add(used_sb_mirrors, mirror_name);
+
+    if ((new_sb_mirror) || mirror_needs_update(nb_mirror, sb_mirror)) {
+        sbrec_mirror_set_filter(sb_mirror,nb_mirror->filter);
+        sbrec_mirror_set_index(sb_mirror, nb_mirror->index);
+        sbrec_mirror_set_sink(sb_mirror, nb_mirror->sink);
+        sbrec_mirror_set_type(sb_mirror, nb_mirror->type);
+    }
+}
+
+static void
+sync_mirrors(struct northd_input *input_data,
+            struct ovsdb_idl_txn *ovnsb_txn)
+{
+    struct shash sb_mirrors = SHASH_INITIALIZER(&sb_mirrors);
+    struct sset used_sb_mirrors = SSET_INITIALIZER(&used_sb_mirrors);
+
+    const struct sbrec_mirror *sb_mirror;
+    SBREC_MIRROR_TABLE_FOR_EACH (sb_mirror, input_data->sbrec_mirror_table) {
+        shash_add(&sb_mirrors, sb_mirror->name, sb_mirror);
+    }
+
+    const struct nbrec_mirror *nb_mirror;
+    NBREC_MIRROR_TABLE_FOR_EACH (nb_mirror, input_data->nbrec_mirror_table) {
+        sync_mirrors_iterate_nb_mirror(ovnsb_txn, nb_mirror->name, nb_mirror,
+                                     &sb_mirrors, &used_sb_mirrors);
+    }
+
+    const char *used_mirror;
+    const char *used_mirror_next;
+    SSET_FOR_EACH_SAFE (used_mirror, used_mirror_next, &used_sb_mirrors) {
+        shash_find_and_delete(&sb_mirrors, used_mirror);
+        sset_delete(&used_sb_mirrors, SSET_NODE_FROM_NAME(used_mirror));
+    }
+    sset_destroy(&used_sb_mirrors);
+
+    struct shash_node *node, *next;
+    SHASH_FOR_EACH_SAFE (node, next, &sb_mirrors) {
+        sbrec_mirror_delete(node->data);
+        shash_delete(&sb_mirrors, node);
+    }
+    shash_destroy(&sb_mirrors);
+}
+
 /*
  * struct 'dns_info' is used to sync the DNS records between OVN Northbound db
  * and Southbound db.
@@ -15794,6 +15965,7 @@ ovnnb_db_run(struct northd_input *input_data,
     sync_lbs(input_data, ovnsb_txn, &data->datapaths, &data->lbs);
     sync_port_groups(input_data, ovnsb_txn, &data->port_groups);
     sync_meters(input_data, ovnsb_txn, &data->meter_groups);
+    sync_mirrors(input_data, ovnsb_txn);
     sync_dns_entries(input_data, ovnsb_txn, &data->datapaths);
     cleanup_stale_fdb_entries(input_data, &data->datapaths);
     stopwatch_stop(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());

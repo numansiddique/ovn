@@ -35,6 +35,7 @@ struct northd_input {
     const struct nbrec_acl_table *nbrec_acl_table;
     const struct nbrec_static_mac_binding_table
         *nbrec_static_mac_binding_table;
+    const struct nbrec_mirror_table *nbrec_mirror_table;
 
     /* Southbound table references */
     const struct sbrec_sb_global_table *sbrec_sb_global_table;
@@ -53,6 +54,7 @@ struct northd_input {
     const struct sbrec_chassis_private_table *sbrec_chassis_private_table;
     const struct sbrec_static_mac_binding_table
         *sbrec_static_mac_binding_table;
+    const struct sbrec_mirror_table *sbrec_mirror_table;
 
     /* Indexes */
     struct ovsdb_idl_index *sbrec_chassis_by_name;
