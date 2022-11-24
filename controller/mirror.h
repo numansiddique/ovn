@@ -17,37 +17,17 @@
 #define OVN_MIRROR_H 1
 
 struct ovsdb_idl_txn;
-struct ovsrec_port_table;
-struct ovsrec_bridge;
-struct ovsrec_bridge_table;
-struct ovsrec_open_vswitch_table;
-struct sbrec_chassis;
-struct ovsrec_interface_table;
 struct ovsrec_mirror_table;
 struct sbrec_mirror_table;
-struct sbrec_port_binding_table;
-
-struct port_mirror_ctx {
-    struct shash *ovs_mirrors;
-    struct ovsdb_idl_txn *ovs_idl_txn;
-    const struct ovsrec_port_table *port_table;
-    const struct ovsrec_bridge *br_int;
-    const struct sbrec_chassis *chassis_rec;
-    const struct ovsrec_bridge_table *bridge_table;
-    const struct ovsrec_open_vswitch_table *ovs_table;
-    const struct ovsrec_interface_table *iface_table;
-    const struct ovsrec_mirror_table *mirror_table;
-    const struct sbrec_mirror_table *sb_mirror_table;
-    const struct sbrec_port_binding_table *port_binding_table;
-    struct shash *local_bindings;
-};
+struct ovsrec_bridge;
+struct shash;
 
 void mirror_register_ovs_idl(struct ovsdb_idl *);
-void ovn_port_mirror_init(struct shash *);
-void ovn_port_mirror_destroy(struct shash *);
-void ovn_port_mirror_run(struct port_mirror_ctx *pm_ctx);
-bool ovn_port_mirror_handle_lport(const struct sbrec_port_binding *pb,
-                                  bool removed,
-                                  struct port_mirror_ctx *pm_ctx);
-bool ovn_port_mirror_handle_update(struct port_mirror_ctx *pm_ctx);
+void mirror_init(void);
+void mirror_destroy(void);
+void mirror_run(struct ovsdb_idl_txn *ovs_idl_txn,
+                const struct ovsrec_mirror_table *,
+                const struct sbrec_mirror_table *,
+                const struct ovsrec_bridge *,
+                struct shash *local_bindings);
 #endif
