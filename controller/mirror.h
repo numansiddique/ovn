@@ -28,7 +28,6 @@ struct sbrec_mirror_table;
 struct sbrec_port_binding_table;
 
 struct port_mirror_ctx {
-    struct shash *ovs_mirrors;
     struct ovsdb_idl_txn *ovs_idl_txn;
     const struct ovsrec_port_table *port_table;
     const struct ovsrec_bridge *br_int;
@@ -45,7 +44,7 @@ struct port_mirror_ctx {
 void mirror_register_ovs_idl(struct ovsdb_idl *);
 void ovn_port_mirror_init(struct shash *);
 void ovn_port_mirror_destroy(struct shash *);
-void ovn_port_mirror_run(struct port_mirror_ctx *pm_ctx);
+void ovn_port_mirror_run(struct port_mirror_ctx *pm_ctx, struct shash *port_mirrors);
 bool ovn_port_mirror_handle_lport(const struct sbrec_port_binding *pb,
                                   bool removed,
                                   struct port_mirror_ctx *pm_ctx);
