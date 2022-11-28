@@ -93,6 +93,7 @@ EXTRA_DIST = \
 	.ci/ovn-kubernetes/Dockerfile \
 	.github/workflows/test.yml \
 	.github/workflows/ovn-kubernetes.yml \
+	.github/workflows/ovn-fake-multinode-tests.yml \
 	boot.sh \
 	$(MAN_FRAGMENTS) \
 	$(MAN_ROOTS) \
