@@ -92,12 +92,18 @@ jobs:
 
   multinode-tests:
     runs-on: ubuntu-20.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       RUNC_CMD: podman
       OS_IMAGE: "fedora:36"
       CENTRAL_IMAGE: ${{ matrix.cfg.central_image }}
       ENABLE_SSL: no
+      CC: gcc
+      OPTS: "--disable-ssl"
+      dependencies: |
+        automake libtool gcc bc libjemalloc2 libjemalloc-dev    \
+        libssl-dev llvm-dev libelf-dev libnuma-dev libpcap-dev  \
+        selinux-policy-dev ncat python3-scapy isc-dhcp-server
       # https://github.com/actions/runner-images/issues/6282
       XDG_RUNTIME_DIR: ''
 
@@ -156,6 +162,69 @@ jobs:
       run: |
         cd ovn-fake-multinode
         sudo ./.ci/test_basic.sh
+
+    - name: install required dependencies
+      run:  sudo apt install -y ${{ env.dependencies }}
+
+    - name: install libunbound libunwind
+      run:  sudo apt install -y libunbound-dev libunwind-dev
+
+    - name: update PATH
+      run:  |
+        echo "$HOME/bin"        >> $GITHUB_PATH
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: set up python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Check out ovn
+      uses: actions/checkout@v3
+      with:
+        path: 'ovn'
+        submodules: recursive
+
+    - name: Build OVN and trigger fake-multinode system tests
+      run: |
+        set -x
+        pwd
+        cd ovn
+        ./.ci/linux-prepare.sh
+        ./.ci/linux-build.sh
+        sudo make check-multinode  || :
+        sudo podman exec -it ovn-central ovn-nbctl show || :
+        sudo podman exec -it ovn-central ovn-sbctl show || :
+        sudo podman exec -it ovn-chassis-1 ovs-vsctl show || :
+        sudo podman exec -it ovn-chassis-1 ip netns || :
+        sudo podman exec -it ovn-chassis-1 cat /var/log/ovn/ovn-controller.log || :
+        sudo cat tests/multinode-testsuite.dir/1/multinode-testsuite.log || :
+
+    - name: copy logs on failure
+      if: failure() || cancelled()
+      run: |
+        # upload-artifact@v3 throws exceptions if it tries to upload socket
+        # files and we could have some socket files in testsuite.dir.
+        # Also, upload-artifact@v3 doesn't work well enough with wildcards.
+        # So, we're just archiving everything here to avoid any issues.
+        pwd
+        ls -l
+        mkdir logs
+        ls -l ovn/
+        ls -l ovn/tests/
+
+        cp ovn/config.log ./logs/
+        # multinode tests are run as root, need to adjust permissions.
+        sudo chmod -R +r ovn/tests/multinode-testsuite.dir.* || true
+        cp -r ovn/tests/multinode-testsuite.dir.* ./logs/ || true
+        tar -czvf logs.tgz logs/
+
+    - name: upload logs on failure
+      if: failure() || cancelled()
+      uses: actions/upload-artifact@v3
+      with:
+        name: logs-linux-${{ join(matrix.cfg.*, '-') }}
+        path: logs.tgz
 
     - name: Stop cluster
       run: |
