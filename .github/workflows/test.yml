@@ -1,19 +1,21 @@
-name: Build and Test
+name: test foo
 
 on:
   push:
   pull_request:
-  schedule:
-    # Run Sunday at midnight
-    - cron: '0 0 * * 0'
+
+
+env:
+  REGISTRY: ghcr.io
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  build-linux:
+  build:
     env:
+<<<<<<< HEAD
       dependencies: |
         automake libtool gcc bc libjemalloc2 libjemalloc-dev    \
         libssl-dev llvm-dev libelf-dev libnuma-dev libpcap-dev  \
@@ -26,9 +28,16 @@ jobs:
       TESTSUITE:   ${{ matrix.cfg.testsuite }}
       TEST_RANGE:  ${{ matrix.cfg.test_range }}
       SANITIZERS:  ${{ matrix.cfg.sanitizers }}
+=======
+      RUNC_CMD: podman
+      OS_IMAGE: "fedora:36"
+      # https://github.com/actions/runner-images/issues/6282
+      XDG_RUNTIME_DIR: ''
+>>>>>>> e47b26591b (For testing)
 
-    name: linux ${{ join(matrix.cfg.*, ' ') }}
+    name: Build ovn-fake-multinode image
     runs-on: ubuntu-20.04
+<<<<<<< HEAD
 
     strategy:
       fail-fast: false
@@ -58,11 +67,13 @@ jobs:
         - { compiler: clang, testsuite: system-test, sanitizers: sanitizers, test_range: "201-" }
         - { arch: x86, compiler: gcc, opts: --disable-ssl }
 
+=======
+>>>>>>> e47b26591b (For testing)
     steps:
-    - name: checkout
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
+    - name: Check out ovn-fake-multi-node
       uses: actions/checkout@v3
       with:
+<<<<<<< HEAD
         submodules: recursive
 
     # For weekly runs, don't update submodules
@@ -185,3 +196,8 @@ jobs:
       with:
         name: logs-osx-clang---disable-ssl
         path: config.log
+=======
+        repository: 'ovn-org/ovn-fake-multinode'
+        path: 'ovn-fake-multinode'
+        ref: 'v0.1'
+>>>>>>> e47b26591b (For testing)
