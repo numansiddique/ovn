@@ -62,6 +62,7 @@ jobs:
       run: |
         set -x
         cd ovn-fake-multinode
+        podman pull ghcr.io/ovn-org/ovn-fake-multinode/ovn-multinode-cinc:testing
         sudo podman pull ghcr.io/ovn-org/ovn-fake-multinode/ovn-multinode-cinc:testing
         sudo podman tag ghcr.io/ovn-org/ovn-fake-multinode/ovn-multinode-cinc:testing ovn/cinc:latest
         sudo podman build -t ovn/ovn-multi-node --build-arg OVS_SRC_PATH=ovs --build-arg OVN_SRC_PATH=ovn --build-arg USE_OVN_RPMS=no -f fedora/ovn/Dockerfile .
