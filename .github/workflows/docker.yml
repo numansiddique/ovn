@@ -1,0 +1,71 @@
+name: ovn-fake-multinode-docker-images
+on:
+  push:
+    branches:
+      - tst
+
+env:
+  REGISTRY: ghcr.io 
+  OWNER: numansiddique
+  REPOSITORY: ovn
+  FEDORA_IMAGE_NAME: ovn-multi-node
+  FEDORA_BASE_IMAGE_NAME: ovn-multinode-cinc
+
+jobs:
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out ovn-fake-multi-node
+      uses: actions/checkout@v3
+      with:
+        repository: 'ovn-org/ovn-fake-multinode'
+        path: 'ovn-fake-multinode'
+        ref: 'v0.1'
+
+    - name: Check out ovn
+      uses: actions/checkout@v3
+      with:
+        path: 'ovn-fake-multinode/ovn'
+        submodules: recursive
+
+    - name: Check out ovs master
+      uses: actions/checkout@v3
+      with:
+        path: 'ovn-fake-multinode/ovs'
+        repository: 'openvswitch/ovs'
+        ref: 'master'
+
+    - name: Log in to the GH Container registry
+      uses: docker/login-action@v1.12.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@master
+      with:
+        platforms: all
+
+    - name: Set up Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@master
+
+    - name: Extract metadata (tags, labels) for fedora ovn-multinode base image
+      id: meta-fedora-base
+      uses: docker/metadata-action@v3.6.2
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.REPOSITORY }}/${{ env.FEDORA_BASE_IMAGE_NAME }}
+
+    - name: Build and push Fedora based multinode base image
+      uses: docker/build-push-action@v2.9.0
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: ./ovn-fake-multinode
+        file: ./ovn-fake-multinode/fedora/cinc/Dockerfile
+        push: true
+        build-args: OS_IMAGE=fedora:36
+        platforms: linux/amd64
+        tags: ${{ steps.meta-fedora-base.outputs.tags }}
+        labels: ${{ steps.meta-fedora-base.outputs.labels }}
