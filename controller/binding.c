@@ -148,15 +148,15 @@ struct qos_queue {
     bool stale;
 
     uint32_t queue_id;
-    uint32_t min_rate;
-    uint32_t max_rate;
-    uint32_t burst;
+    unsigned long long min_rate;
+    unsigned long long max_rate;
+    unsigned long long burst;
 };
 
 static struct qos_queue *
 find_qos_queue(struct hmap *queue_map, uint32_t hash, const char *port,
-               uint32_t min_rate, uint32_t max_rate, uint32_t burst,
-               uint32_t queue_id)
+               unsigned long long min_rate, unsigned long long max_rate,
+               unsigned long long burst, uint32_t queue_id)
 {
     struct qos_queue *q;
     HMAP_FOR_EACH_WITH_HASH (q, node, hash, queue_map) {
@@ -182,17 +182,20 @@ qos_queue_is_changed(const struct sbrec_port_binding *pb,
         return true;
     }
 
-    uint32_t min_rate = smap_get_int(&pb->options, "qos_min_rate", 0);
+    unsigned long long min_rate = smap_get_ullong(
+            &pb->options, "qos_min_rate", 0);
     if (min_rate != q->min_rate) {
         return true;
     }
 
-    uint32_t max_rate = smap_get_int(&pb->options, "qos_max_rate", 0);
+    unsigned long long max_rate = smap_get_ullong(
+            &pb->options, "qos_max_rate", 0);
     if (max_rate != q->max_rate) {
         return true;
     }
 
-    uint32_t burst = smap_get_int(&pb->options, "qos_burst", 0);
+    unsigned long long burst = smap_get_ullong(
+            &pb->options, "qos_burst", 0);
     return burst != q->burst;
 }
 
@@ -234,9 +237,12 @@ destroy_qos_map(struct hmap *qos_map)
 static void
 get_qos_queue(const struct sbrec_port_binding *pb, struct hmap *queue_map)
 {
-    uint32_t min_rate = smap_get_int(&pb->options, "qos_min_rate", 0);
-    uint32_t max_rate = smap_get_int(&pb->options, "qos_max_rate", 0);
-    uint32_t burst = smap_get_int(&pb->options, "qos_burst", 0);
+    unsigned long long min_rate = smap_get_ullong(
+            &pb->options, "qos_min_rate", 0);
+    unsigned long long max_rate = smap_get_ullong(
+            &pb->options, "qos_max_rate", 0);
+    unsigned long long burst = smap_get_ullong(
+            &pb->options, "qos_burst", 0);
     uint32_t queue_id = smap_get_int(&pb->options, "qdisc_queue_id", 0);
     const char *network = smap_get(&pb->options, "qos_physical_network");
 
@@ -323,9 +329,12 @@ add_ovs_qos_table_entry(struct ovsdb_idl_txn *ovs_idl_txn,
             continue;
         }
 
-        uint32_t max_rate = smap_get_int(&queue->other_config, "max-rate", 0);
-        uint32_t min_rate = smap_get_int(&queue->other_config, "min-rate", 0);
-        uint32_t burst = smap_get_int(&queue->other_config, "burst", 0);
+        unsigned long long max_rate =
+            smap_get_ullong(&queue->other_config, "max-rate", 0);
+        unsigned long long min_rate =
+            smap_get_ullong(&queue->other_config, "min-rate", 0);
+        unsigned long long burst =
+            smap_get_ullong(&queue->other_config, "burst", 0);
 
         if (max_rate != q->max_rate || min_rate != q->min_rate ||
             burst != q->burst) {
@@ -340,9 +349,9 @@ add_ovs_qos_table_entry(struct ovsdb_idl_txn *ovs_idl_txn,
         ovsrec_qos_update_queues_setkey(qos, q->queue_id, queue);
     }
 
-    smap_add_format(&other_config, "max-rate", "%d", q->max_rate);
-    smap_add_format(&other_config, "min-rate", "%d", q->min_rate);
-    smap_add_format(&other_config, "burst", "%d", q->burst);
+    smap_add_format(&other_config, "max-rate", "%lld", q->max_rate);
+    smap_add_format(&other_config, "min-rate", "%lld", q->min_rate);
+    smap_add_format(&other_config, "burst", "%lld", q->burst);
     ovsrec_queue_verify_other_config(queue);
     ovsrec_queue_set_other_config(queue, &other_config);
     smap_destroy(&other_config);
