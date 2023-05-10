@@ -35659,3 +35659,104 @@ check test "$current_id2" = "$prev_id2"
 OVN_CLEANUP([hv1])
 AT_CLEANUP
 ])
+
+OVN_FOR_EACH_NORTHD([
+AT_SETUP([OVN QoS])
+ovn_start
+
+check ovn-nbctl ls-add ls
+check ovn-nbctl lsp-add ls public
+check ovn-nbctl lsp-set-addresses public unknown
+check ovn-nbctl lsp-set-type public localnet
+check ovn-nbctl lsp-set-options public network_name=phys
+net_add n
+
+# two hypervisors, each connected to the same network
+for i in 1 2; do
+    sim_add hv-$i
+    as hv-$i
+    ovs-vsctl add-br br-phys
+    ovs-vsctl set open . external-ids:ovn-bridge-mappings=phys:br-phys
+    ovn_attach n br-phys 192.168.0.$i
+done
+
+for i in 1 2; do
+    check ovn-nbctl lsp-add ls lsp$i
+    check ovn-nbctl lsp-set-addresses lsp$i f0:00:00:00:00:0$i
+done
+
+for i in 1 2; do
+    as hv-$i
+    ovs-vsctl add-port br-int vif$i -- set Interface vif$i external-ids:iface-id=lsp$i \
+                                  ofport-request=$i
+    OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up lsp$i` = xup])
+
+    # Patch port might be created after ports are reported up
+    # Wait for a flow outputing to patch port
+    OVN_WAIT_PATCH_PORT_FLOWS(["public"], ["hv-$i"])
+done
+
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp1 options:qos_min_rate=200000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp1 options:qos_max_rate=350000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp1 options:qos_burst=3000000
+
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list qos | grep -c linux-htb) -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'min-rate="200000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'max-rate="350000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'burst="3000000"') -eq 1])
+
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp2 options:qos_min_rate=400000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp2 options:qos_max_rate=500000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp2 options:qos_burst=3000000
+
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list qos | grep -c linux-htb) -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'min-rate="400000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'max-rate="500000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'burst="3000000"') -eq 1])
+
+check ovn-nbctl lsp-add ls lsp3
+check ovn-nbctl lsp-set-addresses lsp3 f0:00:00:00:00:03
+as hv-1
+ovs-vsctl add-port br-int vif3 -- \
+    set Interface vif3 external-ids:iface-id=lsp3 \
+    ofport-request=3
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up lsp3` = xup])
+
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp3 options:qos_min_rate=700000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp3 options:qos_max_rate=800000
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp3 options:qos_burst=9000000
+
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list qos | grep -c linux-htb) -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'min-rate="200000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'max-rate="350000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'burst="3000000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'min-rate="700000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'max-rate="800000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'burst="9000000"') -eq 1])
+
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp3 options qos_min_rate=700000
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp3 options qos_max_rate=800000
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp3 options qos_burst=9000000
+
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list qos | grep -c linux-htb) -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'min-rate="200000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'max-rate="350000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'burst="3000000"') -eq 1])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'min-rate="700000"') -eq 0])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'max-rate="800000"') -eq 0])
+OVS_WAIT_UNTIL([test $(as hv-1 ovs-vsctl list queue | grep -c 'burst="9000000"') -eq 0])
+
+check ovn-nbctl --wait=hv set Logical_Switch_Port lsp2 options:qos_min_rate=410000
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'min-rate="410000"') -eq 1])
+
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp2 options qos_min_rate=410000
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp2 options qos_max_rate=500000
+check ovn-nbctl --wait=hv remove Logical_Switch_Port lsp2 options qos_burst=3000000
+
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list qos | grep -c linux-htb) -eq 0])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'min-rate="410000"') -eq 0])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'max-rate="500000"') -eq 0])
+OVS_WAIT_UNTIL([test $(as hv-2 ovs-vsctl list queue | grep -c 'burst="3000000"') -eq 0])
+
+AT_CLEANUP
+])
