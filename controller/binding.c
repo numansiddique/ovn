@@ -259,190 +259,198 @@ get_qos_queue(const struct sbrec_port_binding *pb, struct hmap *queue_map)
     }
 }
 
-static const struct ovsrec_qos *
-get_noop_qos(struct ovsdb_idl_txn *ovs_idl_txn,
-             const struct ovsrec_qos_table *qos_table)
+static const struct ovsrec_interface *
+get_qos_egress_port_interface(struct shash *bridge_mappings,
+                              const struct ovsrec_port **pport,
+                              const char *network)
 {
-    const struct ovsrec_qos *qos;
-    OVSREC_QOS_TABLE_FOR_EACH (qos, qos_table) {
-        if (!strcmp(qos->type, "linux-noop")) {
-            return qos;
-        }
-    }
-
-    if (!ovs_idl_txn) {
+    struct ovsrec_bridge *br_ln = shash_find_data(bridge_mappings, network);
+    if (!br_ln) {
         return NULL;
     }
-    qos = ovsrec_qos_insert(ovs_idl_txn);
-    ovsrec_qos_set_type(qos, "linux-noop");
-    return qos;
-}
 
-static bool
-set_noop_qos(struct ovsdb_idl_txn *ovs_idl_txn,
-             const struct ovsrec_port_table *port_table,
-             const struct ovsrec_qos_table *qos_table,
-             struct sset *egress_ifaces)
-{
-    if (!ovs_idl_txn) {
-        return false;
-    }
+    /* Add egress-ifaces from the connected bridge */
+    for (size_t i = 0; i < br_ln->n_ports; i++) {
+        const struct ovsrec_port *port = br_ln->ports[i];
+        for (size_t j = 0; j < port->n_interfaces; j++) {
+            const struct ovsrec_interface *iface = port->interfaces[j];
 
-    const struct ovsrec_qos *noop_qos = get_noop_qos(ovs_idl_txn, qos_table);
-    if (!noop_qos) {
-        return false;
-    }
-
-    const struct ovsrec_port *port;
-    size_t count = 0;
-
-    OVSREC_PORT_TABLE_FOR_EACH (port, port_table) {
-        if (sset_contains(egress_ifaces, port->name)) {
-            ovsrec_port_set_qos(port, noop_qos);
-            count++;
-        }
-        if (sset_count(egress_ifaces) == count) {
-            break;
-        }
-    }
-    return true;
-}
-
-static void
-set_qos_type(struct netdev *netdev, const char *type)
-{
-    /* 34359738360 == (2^32 - 1) * 8.  netdev_set_qos() doesn't support
-     * 64-bit rate netlink attributes, so the maximum value is 2^32 - 1 bytes.
-     * The 'max-rate' config option is in bits, so multiplying by 8.
-     * Without setting max-rate the reported link speed will be used, which
-     * can be unrecognized for certain NICs or reported too low for virtual
-     * interfaces. */
-    const struct smap conf = SMAP_CONST1(&conf, "max-rate", "34359738360");
-    int error = netdev_set_qos(netdev, type, &conf);
-    if (error) {
-        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
-        VLOG_WARN_RL(&rl, "%s: could not set qdisc type \"%s\" (%s)",
-                     netdev_get_name(netdev), type, ovs_strerror(error));
-    }
-}
-
-static void
-setup_qos(const char *egress_iface, struct hmap *queue_map)
-{
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
-    struct netdev *netdev_phy;
-
-    if (!egress_iface) {
-        /* Queues cannot be configured. */
-        return;
-    }
-
-    int error = netdev_open(egress_iface, NULL, &netdev_phy);
-    if (error) {
-        VLOG_WARN_RL(&rl, "%s: could not open netdev (%s)",
-                     egress_iface, ovs_strerror(error));
-        return;
-    }
-
-    /* Check current qdisc. */
-    const char *qdisc_type;
-    struct smap qdisc_details;
-
-    smap_init(&qdisc_details);
-    if (netdev_get_qos(netdev_phy, &qdisc_type, &qdisc_details) != 0 ||
-        qdisc_type[0] == '\0') {
-        smap_destroy(&qdisc_details);
-        netdev_close(netdev_phy);
-        /* Qos is not supported. */
-        return;
-    }
-    smap_destroy(&qdisc_details);
-
-    /* If we're not actually being requested to do any QoS:
-     *
-     *     - If the current qdisc type is OVN_QOS_TYPE, then we clear the qdisc
-     *       type to "".  Otherwise, it's possible that our own leftover qdisc
-     *       settings could cause strange behavior on egress.  Also, QoS is
-     *       expensive and may waste CPU time even if it's not really in use.
-     *
-     *       OVN isn't the only software that can configure qdiscs, and
-     *       physical interfaces are shared resources, so there is some risk in
-     *       this strategy: we could disrupt some other program's QoS.
-     *       Probably, to entirely avoid this possibility we would need to add
-     *       a configuration setting.
-     *
-     *     - Otherwise leave the qdisc alone. */
-    if (hmap_is_empty(queue_map)) {
-        if (!strcmp(qdisc_type, OVN_QOS_TYPE)) {
-            set_qos_type(netdev_phy, "");
-        }
-        netdev_close(netdev_phy);
-        return;
-    }
-
-    /* Configure qdisc. */
-    if (strcmp(qdisc_type, OVN_QOS_TYPE)) {
-        set_qos_type(netdev_phy, OVN_QOS_TYPE);
-    }
-
-    /* Check and delete if needed. */
-    struct netdev_queue_dump dump;
-    unsigned int queue_id;
-    struct smap queue_details;
-    struct qos_queue *sb_info;
-    struct hmap consistent_queues;
-
-    smap_init(&queue_details);
-    hmap_init(&consistent_queues);
-    NETDEV_QUEUE_FOR_EACH (&queue_id, &queue_details, &dump, netdev_phy) {
-        bool is_queue_needed = false;
-
-        HMAP_FOR_EACH_WITH_HASH (sb_info, node, hash_int(queue_id, 0),
-                                 queue_map) {
-            is_queue_needed = true;
-            if (sb_info->min_rate ==
-                smap_get_int(&queue_details, "min-rate", 0)
-                && sb_info->max_rate ==
-                smap_get_int(&queue_details, "max-rate", 0)
-                && sb_info->burst ==
-                smap_get_int(&queue_details, "burst", 0)) {
-                /* This queue is consistent. */
-                hmap_insert(&consistent_queues, &sb_info->node,
-                            hash_int(queue_id, 0));
-                break;
+            if (smap_get(&iface->external_ids, "iface-id")) {
+                continue;
             }
-        }
 
-        if (!is_queue_needed) {
-            error = netdev_delete_queue(netdev_phy, queue_id);
-            if (error) {
-                VLOG_WARN_RL(&rl, "%s: could not delete queue %u (%s)",
-                             egress_iface, queue_id, ovs_strerror(error));
+            bool is_egress_iface = smap_get_bool(&iface->external_ids,
+                                                 "ovn-egress-iface", false);
+            if (is_egress_iface) {
+                *pport = port;
+                return iface;
             }
         }
     }
 
-    /* Create/Update queues. */
-    HMAP_FOR_EACH (sb_info, node, queue_map) {
-        if (hmap_contains(&consistent_queues, &sb_info->node)) {
-            hmap_remove(&consistent_queues, &sb_info->node);
+    return NULL;
+}
+
+/* 34359738360 == (2^32 - 1) * 8.  netdev_set_qos() doesn't support
+ * 64-bit rate netlink attributes, so the maximum value is 2^32 - 1
+ * bytes. The 'max-rate' config option is in bits, so multiplying by 8.
+ * Without setting max-rate the reported link speed will be used, which
+ * can be unrecognized for certain NICs or reported too low for virtual
+ * interfaces. */
+#define OVN_QOS_MAX_RATE    34359738360ULL
+static void
+add_ovs_qos_table_entry(struct ovsdb_idl_txn *ovs_idl_txn,
+                        const struct ovsrec_port *port,
+                        struct qos_queue *q)
+{
+    struct smap other_config = SMAP_INITIALIZER(&other_config);
+    const struct ovsrec_qos *qos = port->qos;
+    if (!qos) {
+        qos = ovsrec_qos_insert(ovs_idl_txn);
+        ovsrec_qos_set_type(qos, OVN_QOS_TYPE);
+        ovsrec_port_set_qos(port, qos);
+        smap_add_format(&other_config, "max-rate", "%lld", OVN_QOS_MAX_RATE);
+        ovsrec_qos_set_other_config(qos, &other_config);
+        smap_clear(&other_config);
+    }
+
+    struct ovsrec_queue *queue;
+    size_t i;
+    for (i = 0; i < qos->n_queues; i++) {
+        queue = qos->value_queues[i];
+        if (qos->key_queues[i] != q->queue_id) {
             continue;
         }
 
-        smap_clear(&queue_details);
-        smap_add_format(&queue_details, "min-rate", "%d", sb_info->min_rate);
-        smap_add_format(&queue_details, "max-rate", "%d", sb_info->max_rate);
-        smap_add_format(&queue_details, "burst", "%d", sb_info->burst);
-        error = netdev_set_queue(netdev_phy, sb_info->queue_id,
-                                 &queue_details);
-        if (error) {
-            VLOG_WARN_RL(&rl, "%s: could not configure queue %u (%s)",
-                         egress_iface, sb_info->queue_id, ovs_strerror(error));
+        uint32_t max_rate = smap_get_int(&queue->other_config, "max-rate", 0);
+        uint32_t min_rate = smap_get_int(&queue->other_config, "min-rate", 0);
+        uint32_t burst = smap_get_int(&queue->other_config, "burst", 0);
+
+        if (max_rate != q->max_rate || min_rate != q->min_rate ||
+            burst != q->burst) {
+            break;
+        }
+        /* queue already configured. */
+        return;
+    }
+
+    if (i == qos->n_queues) {
+        queue = ovsrec_queue_insert(ovs_idl_txn);
+        ovsrec_qos_update_queues_setkey(qos, q->queue_id, queue);
+    }
+
+    smap_add_format(&other_config, "max-rate", "%d", q->max_rate);
+    smap_add_format(&other_config, "min-rate", "%d", q->min_rate);
+    smap_add_format(&other_config, "burst", "%d", q->burst);
+    ovsrec_queue_verify_other_config(queue);
+    ovsrec_queue_set_other_config(queue, &other_config);
+    smap_destroy(&other_config);
+}
+
+struct port_queud_id_entry {
+    struct hmap_node key_node;
+    const struct ovsrec_port *port;
+    uint32_t queue_id;
+};
+
+static struct port_queud_id_entry *
+port_queue_id_find(const struct ovsrec_port *port, uint32_t queue_id,
+                   struct hmap *port_queud_map)
+{
+    struct port_queud_id_entry *n;
+    HMAP_FOR_EACH (n, key_node, port_queud_map) {
+        if (n->port == port && n->queue_id == queue_id) {
+            return n;
         }
     }
-    smap_destroy(&queue_details);
-    hmap_destroy(&consistent_queues);
-    netdev_close(netdev_phy);
+    return NULL;
+}
+
+static void
+remove_stale_ovs_qos_entries(const struct ovsrec_port_table *port_table,
+                             const struct ovsrec_qos_table *qos_table,
+                             struct hmap *port_queud_map)
+{
+    const struct ovsrec_qos *qos, *qos_next;
+    OVSREC_QOS_TABLE_FOR_EACH_SAFE (qos, qos_next, qos_table) {
+        const struct ovsrec_port *port = NULL, *iter;
+        OVSREC_PORT_TABLE_FOR_EACH (iter, port_table) {
+            if (iter->qos == qos) {
+                port = iter;
+                break;
+            }
+        }
+        if (!port) {
+            continue;
+        }
+
+        int n_queue_deleted = 0, n_queues = qos->n_queues;
+        for (size_t i = 0; i < n_queues; i++) {
+            struct ovsrec_queue *queue = qos->value_queues[i];
+            if (!queue) {
+                continue;
+            }
+            if (!port_queue_id_find(port, qos->key_queues[i],
+                                    port_queud_map)) {
+                ovsrec_qos_update_queues_delkey(qos, qos->key_queues[i]);
+                ovsrec_queue_delete(queue);
+                n_queue_deleted++;
+            }
+        }
+
+        if (n_queue_deleted && n_queue_deleted == n_queues) {
+            if (port) {
+                ovsrec_port_set_qos(port, NULL);
+            }
+            ovsrec_qos_delete(qos);
+        }
+    }
+}
+
+static void
+configure_ovs_qos(struct hmap *queue_map,
+                  struct ovsdb_idl_txn *ovs_idl_txn,
+                  const struct ovsrec_port_table *port_table,
+                  const struct ovsrec_qos_table *qos_table,
+                  struct shash *bridge_mappings)
+
+{
+    if (!ovs_idl_txn) {
+        return;
+    }
+
+    struct hmap port_queud_map = HMAP_INITIALIZER(&port_queud_map);
+    struct qos_queue *q;
+    HMAP_FOR_EACH (q, node, queue_map) {
+        if (!q->network) {
+            continue;
+        }
+
+        const struct ovsrec_port *port = NULL;
+        const struct ovsrec_interface *iface =
+            get_qos_egress_port_interface(bridge_mappings, &port,
+                                          q->network);
+        if (iface && port->qos &&
+            !port_queue_id_find(port, q->queue_id, &port_queud_map)) {
+            struct port_queud_id_entry *n = xmalloc(sizeof *n);
+            n->queue_id = q->queue_id;
+            n->port = port;
+            hmap_insert(&port_queud_map, &n->key_node,
+                        hash_int(q->queue_id, 0));
+        }
+        if (port) {
+            /* Add new QoS entries. */
+            add_ovs_qos_table_entry(ovs_idl_txn, port, q);
+        }
+    }
+    /* Remove stale QoS entries. */
+    remove_stale_ovs_qos_entries(port_table, qos_table, &port_queud_map);
+
+    struct port_queud_id_entry *n;
+    HMAP_FOR_EACH_POP (n, key_node, &port_queud_map) {
+        free(n);
+    }
+    hmap_destroy(&port_queud_map);
 }
 
 /*
@@ -2158,16 +2166,11 @@ binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
         free(multichassis_lport);
     }
 
-    shash_destroy(&bridge_mappings);
+    configure_ovs_qos(b_ctx_out->qos_map, b_ctx_in->ovs_idl_txn,
+                      b_ctx_in->port_table, b_ctx_in->qos_table,
+                      &bridge_mappings);
 
-    if (!sset_is_empty(b_ctx_out->egress_ifaces)
-        && set_noop_qos(b_ctx_in->ovs_idl_txn, b_ctx_in->port_table,
-                        b_ctx_in->qos_table, b_ctx_out->egress_ifaces)) {
-        const char *entry;
-        SSET_FOR_EACH (entry, b_ctx_out->egress_ifaces) {
-            setup_qos(entry, b_ctx_out->qos_map);
-        }
-    }
+    shash_destroy(&bridge_mappings);
 
     cleanup_claimed_port_timestamps();
 }
@@ -2556,12 +2559,6 @@ binding_handle_ovs_interface_changes(struct binding_ctx_in *b_ctx_in,
             break;
         }
 
-        if (smap_get(&iface_rec->external_ids, "ovn-egress-iface") ||
-            sset_contains(b_ctx_out->egress_ifaces, iface_rec->name)) {
-            handled = false;
-            break;
-        }
-
         const char *iface_id = smap_get(&iface_rec->external_ids, "iface-id");
         const char *old_iface_id = smap_get(b_ctx_out->local_iface_ids,
                                             iface_rec->name);
@@ -2638,13 +2635,14 @@ binding_handle_ovs_interface_changes(struct binding_ctx_in *b_ctx_in,
         }
     }
 
-    if (handled && set_noop_qos(b_ctx_in->ovs_idl_txn, b_ctx_in->port_table,
-                                b_ctx_in->qos_table,
-                                b_ctx_out->egress_ifaces)) {
-        const char *entry;
-        SSET_FOR_EACH (entry, b_ctx_out->egress_ifaces) {
-            setup_qos(entry, b_ctx_out->qos_map);
-        }
+    if (handled) {
+        struct shash bridge_mappings = SHASH_INITIALIZER(&bridge_mappings);
+        add_ovs_bridge_mappings(b_ctx_in->ovs_table, b_ctx_in->bridge_table,
+                                &bridge_mappings);
+        configure_ovs_qos(b_ctx_out->qos_map, b_ctx_in->ovs_idl_txn,
+                          b_ctx_in->port_table, b_ctx_in->qos_table,
+                          &bridge_mappings);
+        shash_destroy(&bridge_mappings);
     }
 
     return handled;
@@ -3161,16 +3159,12 @@ delete_done:
             }
             sbrec_port_binding_index_destroy_row(target);
         }
-        shash_destroy(&bridge_mappings);
-    }
 
-    if (handled && set_noop_qos(b_ctx_in->ovs_idl_txn, b_ctx_in->port_table,
-                                b_ctx_in->qos_table,
-                                b_ctx_out->egress_ifaces)) {
-        const char *entry;
-        SSET_FOR_EACH (entry, b_ctx_out->egress_ifaces) {
-            setup_qos(entry, b_ctx_out->qos_map);
-        }
+        configure_ovs_qos(b_ctx_out->qos_map, b_ctx_in->ovs_idl_txn,
+                          b_ctx_in->port_table, b_ctx_in->qos_table,
+                          &bridge_mappings);
+
+        shash_destroy(&bridge_mappings);
     }
 
     return handled;
