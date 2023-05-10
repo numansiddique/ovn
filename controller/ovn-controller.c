@@ -1346,7 +1346,6 @@ struct ed_type_runtime_data {
     struct sset active_tunnels;
 
     /* runtime data engine private data. */
-    struct sset egress_ifaces;
     struct hmap qos_map;
     struct smap local_iface_ids;
 
@@ -1406,8 +1405,8 @@ struct ed_type_runtime_data {
  * | local_lport_ids  | is not tracked explicitly.                       |
  *  ---------------------------------------------------------------------
  * | local_iface_ids  | This is used internally within the runtime data  |
- * | egress_ifaces    | engine (used only in binding.c) and hence there  |
- * | qos_map          | there is no need to track.                       |
+ * | qos_map          | engine (used only in binding.c) and hence there  |
+ * |                  | there is no need to track.                       |
  *  ---------------------------------------------------------------------
  * |                  | Active tunnels is built in the                   |
  * |                  | bfd_calculate_active_tunnels() for the tunnel    |
@@ -1443,7 +1442,6 @@ en_runtime_data_init(struct engine_node *node OVS_UNUSED,
     sset_init(&data->local_lports);
     related_lports_init(&data->related_lports);
     sset_init(&data->active_tunnels);
-    sset_init(&data->egress_ifaces);
     hmap_init(&data->qos_map);
     smap_init(&data->local_iface_ids);
     local_binding_data_init(&data->lbinding_data);
@@ -1464,7 +1462,6 @@ en_runtime_data_cleanup(void *data)
     sset_destroy(&rt_data->local_lports);
     related_lports_destroy(&rt_data->related_lports);
     sset_destroy(&rt_data->active_tunnels);
-    sset_destroy(&rt_data->egress_ifaces);
     destroy_qos_map(&rt_data->qos_map);
     smap_destroy(&rt_data->local_iface_ids);
     local_datapaths_destroy(&rt_data->local_datapaths);
@@ -1554,7 +1551,6 @@ init_binding_ctx(struct engine_node *node,
     b_ctx_out->related_lports = &rt_data->related_lports;
     b_ctx_out->related_lports_changed = false;
     b_ctx_out->non_vif_ports_changed = false;
-    b_ctx_out->egress_ifaces = &rt_data->egress_ifaces;
     b_ctx_out->qos_map = &rt_data->qos_map;
     b_ctx_out->lbinding_data = &rt_data->lbinding_data;
     b_ctx_out->local_iface_ids = &rt_data->local_iface_ids;
@@ -1585,14 +1581,12 @@ en_runtime_data_run(struct engine_node *node, void *data)
         sset_destroy(local_lports);
         related_lports_destroy(&rt_data->related_lports);
         sset_destroy(active_tunnels);
-        sset_destroy(&rt_data->egress_ifaces);
         destroy_qos_map(&rt_data->qos_map);
         smap_destroy(&rt_data->local_iface_ids);
         hmap_init(local_datapaths);
         sset_init(local_lports);
         related_lports_init(&rt_data->related_lports);
         sset_init(active_tunnels);
-        sset_init(&rt_data->egress_ifaces);
         hmap_init(&rt_data->qos_map);
         smap_init(&rt_data->local_iface_ids);
         local_binding_data_init(&rt_data->lbinding_data);
