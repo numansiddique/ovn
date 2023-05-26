@@ -4538,7 +4538,7 @@ ovn_dp_group_get_or_create(struct ovsdb_idl_txn *ovnsb_txn,
 /* Syncs relevant load balancers (applied to logical switches) to the
  * Southbound database.
  */
-static void
+void
 sync_lbs(struct ovsdb_idl_txn *ovnsb_txn,
          const struct sbrec_load_balancer_table *sbrec_load_balancer_table,
          struct ovn_datapaths *ls_datapaths, struct hmap *lbs)
@@ -17580,8 +17580,6 @@ ovnnb_db_run(struct northd_input *input_data,
     ovn_update_ipv6_options(&data->lr_ports);
     ovn_update_ipv6_prefix(&data->lr_ports);
 
-    sync_lbs(ovnsb_txn, input_data->sbrec_load_balancer_table,
-             &data->ls_datapaths, &data->lbs);
     sync_port_groups(ovnsb_txn, input_data->sbrec_port_group_table,
                      &data->port_groups);
     sync_meters(ovnsb_txn, input_data->nbrec_meter_table,

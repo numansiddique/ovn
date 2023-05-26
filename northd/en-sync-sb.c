@@ -211,6 +211,35 @@ sync_to_sb_addr_set_nb_port_group_handler(struct engine_node *node,
     return true;
 }
 
+/* sync_to_sb_lb engine node functions.
+ * This engine node syncs the SB load balancers.
+ */
+void *
+en_sync_to_sb_lb_init(struct engine_node *node OVS_UNUSED,
+                      struct engine_arg *arg OVS_UNUSED)
+{
+    return NULL;
+}
+
+void
+en_sync_to_sb_lb_run(struct engine_node *node, void *data OVS_UNUSED)
+{
+    const struct sbrec_load_balancer_table *sb_load_balancer_table =
+        EN_OVSDB_GET(engine_get_input("SB_load_balancer", node));
+    const struct engine_context *eng_ctx = engine_get_context();
+    struct northd_data *northd_data = engine_get_input_data("northd", node);
+
+    sync_lbs(eng_ctx->ovnsb_idl_txn, sb_load_balancer_table,
+             &northd_data->ls_datapaths, &northd_data->lbs);
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+void
+en_sync_to_sb_lb_cleanup(void *data OVS_UNUSED)
+{
+
+}
+
 /* static functions. */
 static void
 sync_addr_set(struct ovsdb_idl_txn *ovnsb_txn, const char *name,
