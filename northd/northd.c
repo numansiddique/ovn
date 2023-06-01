@@ -4043,6 +4043,8 @@ build_lbs(const struct nbrec_load_balancer_table *nbrec_load_balancer_table,
           struct ovn_datapaths *lr_datapaths,
           struct hmap *lbs, struct hmap *lb_groups)
 {
+    VLOG_INFO("NUMAN : %s : %d entered", __FUNCTION__, __LINE__);
+
     const struct nbrec_load_balancer_group *nbrec_lb_group;
     struct ovn_lb_group *lb_group;
     struct ovn_northd_lb *lb;
@@ -4961,6 +4963,7 @@ check_ls_changes_other_than_lsp(const struct nbrec_logical_switch *ls)
     for (size_t i = 0; i < ls->n_load_balancer; i++) {
         if (nbrec_load_balancer_row_get_seqno(ls->load_balancer[i],
                                 OVSDB_IDL_CHANGE_MODIFY) > 0) {
+            VLOG_INFO("NUMAN : %s : %d : tracked ls - [%s] : lb [%s] changed dude", __FUNCTION__, __LINE__, ls->name, ls->load_balancer[i]->name);
             return true;
         }
     }
@@ -5029,8 +5032,11 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     const struct nbrec_logical_switch *changed_ls;
     struct ls_change *ls_change = NULL;
 
+    VLOG_INFO("NUMAN : %s : %d entered", __FUNCTION__, __LINE__);
+
     NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
                                              ni->nbrec_logical_switch_table) {
+        VLOG_INFO("NUMAN : %s : %d : tracked ls - [%s]", __FUNCTION__, __LINE__, changed_ls->name);
         ls_change = NULL;
         if (nbrec_logical_switch_is_new(changed_ls) ||
             nbrec_logical_switch_is_deleted(changed_ls)) {
@@ -5211,6 +5217,33 @@ northd_handle_sb_port_binding_changes(
             }
         }
     }
+    return true;
+}
+
+bool
+northd_handle_lb_changes(struct ovsdb_idl_txn *ovnsb_idl_txn OVS_UNUSED,
+                         const struct northd_input *ni ,
+                         struct northd_data *nd)
+{
+    const struct nbrec_load_balancer *tracked_lb;
+
+    NBREC_LOAD_BALANCER_TABLE_FOR_EACH_TRACKED (tracked_lb,
+                                                ni->nbrec_load_balancer_table) {
+        if (!nbrec_load_balancer_is_new(tracked_lb)) {
+            ovn_northd_lb_find_and_destroy(&nd->lbs, &tracked_lb->header_.uuid);
+        }
+
+        if (nbrec_load_balancer_is_deleted(tracked_lb)) {
+            continue;
+        }
+
+        struct ovn_northd_lb *lb_nb =
+            ovn_northd_lb_create(tracked_lb, ods_size(&nd->ls_datapaths),
+                                 ods_size(&nd->lr_datapaths));
+        hmap_insert(&nd->lbs, &lb_nb->hmap_node,
+        uuid_hash(&tracked_lb->header_.uuid));
+    }
+
     return true;
 }
 
@@ -15657,6 +15690,7 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
 
     char *svc_check_match = xasprintf("eth.dst == %s", svc_monitor_mac);
 
+    VLOG_INFO("NUMAN : %s : %d entered", __FUNCTION__, __LINE__);
     if (parallelization_state == STATE_USE_PARALLELIZATION) {
         struct lswitch_flow_build_info *lsiv;
         int index;
@@ -15744,6 +15778,7 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
         stopwatch_stop(LFLOWS_PORTS_STOPWATCH_NAME, time_msec());
         stopwatch_start(LFLOWS_LBS_STOPWATCH_NAME, time_msec());
         HMAP_FOR_EACH (lb, hmap_node, lbs) {
+            VLOG_INFO("NUMAN : %s : %d : looping lbs - lb - %s", __FUNCTION__, __LINE__, lb->nlb->name);
             build_lswitch_arp_nd_service_monitor(lb, lsi.lflows,
                                                  &lsi.actions,
                                                  &lsi.match);

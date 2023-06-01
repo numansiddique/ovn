@@ -142,6 +142,7 @@ struct ovn_northd_lb *ovn_northd_lb_find(const struct hmap *,
                                          const struct uuid *);
 const struct smap *ovn_northd_lb_get_vips(const struct ovn_northd_lb *);
 void ovn_northd_lb_destroy(struct ovn_northd_lb *);
+void ovn_northd_lb_find_and_destroy(struct hmap *, const struct uuid *);
 void ovn_northd_lb_add_lr(struct ovn_northd_lb *lb, size_t n,
                           struct ovn_datapath **ods);
 void ovn_northd_lb_add_ls(struct ovn_northd_lb *lb, size_t n,

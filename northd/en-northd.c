@@ -205,6 +205,28 @@ northd_sb_port_binding_handler(struct engine_node *node,
     return true;
 }
 
+bool
+northd_nb_load_balancer_handler(struct engine_node *node OVS_UNUSED,
+                                void *data OVS_UNUSED)
+{
+    const struct engine_context *eng_ctx = engine_get_context();
+    struct northd_data *nd = data;
+
+    struct northd_input input_data;
+
+    northd_get_input_data(node, &input_data);
+
+    if (!northd_handle_lb_changes(eng_ctx->ovnsb_idl_txn, &input_data, nd)) {
+        return false;
+    }
+
+    if (nd->change_tracked) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
 void
 *en_northd_init(struct engine_node *node OVS_UNUSED,
                 struct engine_arg *arg OVS_UNUSED)

@@ -720,6 +720,16 @@ ovn_northd_lb_destroy(struct ovn_northd_lb *lb)
     free(lb);
 }
 
+void
+ovn_northd_lb_find_and_destroy(struct hmap *lbs, const struct uuid *uuid)
+{
+    struct ovn_northd_lb *lb = ovn_northd_lb_find(lbs, uuid);
+    if (lb) {
+        hmap_remove(lbs, &lb->hmap_node);
+        ovn_northd_lb_destroy(lb);
+    }
+}
+
 /* Constructs a new 'struct ovn_lb_group' object from the Nb LB Group record
  * and a hash map of all existing 'struct ovn_northd_lb' objects.  Space will
  * be allocated for 'max_ls_datapaths' logical switches and 'max_lr_datapaths'

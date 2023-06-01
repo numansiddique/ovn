@@ -9541,3 +9541,64 @@ AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recom
 OVN_CLEANUP([hv1])
 AT_CLEANUP
 ])
+
+OVN_FOR_EACH_NORTHD_NO_HV([
+AT_SETUP([Load balancer incremental processing])
+ovn_start
+
+# Test I-P for load balancers.
+# Presently ovn-northd handles I-P for NB LBs in northd engine node only
+# if the LBs are not associated to any logical switch or router.
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb lb-add lb1 10.0.0.10:80 10.0.0.3:80
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+check ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:10.0.0.3=sw0-p1:10.0.0.2
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+check ovn-nbctl --wait=sb set load_balancer . options:foo=bar
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+check ovn-nbctl --wait=sb -- lb-add lb2 20.0.0.10:80 20.0.0.20:80 -- lb-add lb3 30.0.0.10:80 30.0.0.20:80
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+check ovn-nbctl --wait=sb -- lb-del lb2 -- lb-del lb3
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+AT_CHECK([ovn-nbctl --wait=sb \
+          -- --id=@hc create Load_Balancer_Health_Check vip="10.0.0.10\:80" \
+             options:failure_count=100 \
+          -- add Load_Balancer . health_check @hc | uuidfilt], [0], [<0>
+])
+
+AT_CHECK([as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute], [0], [0
+])
+
+check ovn-nbctl --wait=sb ls-add sw0
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+
+# Associate lb1 to sw0. There should be a full recompute of northd engine node
+check ovn-nbctl --wait=sb ls-lb-add sw0 lb1
+northd_recompute_count=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$northd_recompute_count" -ne "0"
+
+ovn-nbctl list load_balancer_health_check
+
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb set load_balancer . options:foo=bar1
+northd_recompute_count=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$northd_recompute_count" -ne "0"
+
+# Any change to load balancer health check should also result in full recompute
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb set load_balancer_health_check . options:foo=bar1
+northd_recompute_count=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$northd_recompute_count" -ne "0"
+
+AT_CLEANUP
+])
