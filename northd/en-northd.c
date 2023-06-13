@@ -206,6 +206,47 @@ northd_sb_port_binding_handler(struct engine_node *node,
     return true;
 }
 
+bool
+northd_lb_data_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_lb_data *lb_data = engine_get_input_data("lb_data", node);
+
+    if (!lb_data->tracked) {
+        return false;
+    }
+
+    if (lb_data->tracked_lb_data.has_health_checks) {
+        /* Fall back to recompute since a tracked load balancer
+         * has health checks configured as I-P is not yet supported
+         * for such load balancers. */
+        return false;
+    }
+
+    /* Fall back to recompute if any load balancer was dissociated from
+     * a load balancer group (but not deleted). */
+    if (lb_data->tracked_lb_data.has_dissassoc_lbs_from_lb_grops) {
+        return false;
+    }
+
+    /* Fall back to recompute if load balancer groups are deleted. */
+    if (!hmapx_is_empty(&lb_data->tracked_lb_data.deleted_lb_groups)) {
+        return false;
+    }
+
+    struct northd_data *nd = data;
+
+    if (!northd_handle_lb_data_changes(&lb_data->tracked_lb_data,
+                                       &nd->ls_datapaths,
+                                       &nd->lr_datapaths,
+                                       &nd->lb_datapaths_map,
+                                       &nd->lb_group_datapaths_map)) {
+        return false;
+    }
+
+    engine_set_node_state(node, EN_UPDATED);
+    return true;
+}
+
 void
 *en_northd_init(struct engine_node *node OVS_UNUSED,
                 struct engine_arg *arg OVS_UNUSED)
