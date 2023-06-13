@@ -141,13 +141,18 @@ static ENGINE_NODE(sync_to_sb_addr_set, "sync_to_sb_addr_set");
 static ENGINE_NODE(fdb_aging, "fdb_aging");
 static ENGINE_NODE(fdb_aging_waker, "fdb_aging_waker");
 static ENGINE_NODE(sync_to_sb_lb, "sync_to_sb_lb");
-static ENGINE_NODE(northd_lb_data, "northd_lb_data");
+static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(northd_lb_data, "northd_lb_data");
 
 void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
                           struct ovsdb_idl_loop *sb)
 {
     /* Define relationships between nodes where first argument is dependent
      * on the second argument */
+    engine_add_input(&en_northd_lb_data, &en_nb_load_balancer,
+                     northd_lb_data_load_balancer_handler);
+    engine_add_input(&en_northd_lb_data, &en_nb_load_balancer_group,
+                     northd_lb_data_load_balancer_group_handler);
+
     engine_add_input(&en_northd, &en_nb_port_group, NULL);
     engine_add_input(&en_northd, &en_nb_acl, NULL);
     engine_add_input(&en_northd, &en_nb_logical_router, NULL);
@@ -171,16 +176,14 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_northd, &en_sb_static_mac_binding, NULL);
     engine_add_input(&en_northd, &en_sb_chassis_template_var, NULL);
 
+    engine_add_input(&en_northd, &en_northd_lb_data,
+                     northd_northd_lb_data_handler);
     engine_add_input(&en_northd, &en_sb_port_binding,
                      northd_sb_port_binding_handler);
     engine_add_input(&en_northd, &en_nb_nb_global,
                      northd_nb_nb_global_handler);
     engine_add_input(&en_northd, &en_nb_logical_switch,
                      northd_nb_logical_switch_handler);
-
-    engine_add_input(&en_northd_lb_data, &en_nb_load_balancer, NULL);
-    engine_add_input(&en_northd_lb_data, &en_nb_load_balancer_group, NULL);
-    engine_add_input(&en_northd, &en_northd_lb_data, NULL);
 
     engine_add_input(&en_mac_binding_aging, &en_nb_nb_global, NULL);
     engine_add_input(&en_mac_binding_aging, &en_sb_mac_binding, NULL);
