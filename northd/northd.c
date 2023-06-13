@@ -40,6 +40,7 @@
 #include "lib/lb.h"
 #include "memory.h"
 #include "northd.h"
+#include "en-lb-data.h"
 #include "lib/ovn-parallel-hmap.h"
 #include "ovn/actions.h"
 #include "ovn/features.h"
@@ -5320,6 +5321,69 @@ northd_handle_sb_port_binding_changes(
             }
         }
     }
+    return true;
+}
+
+bool
+northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
+                              struct ovn_datapaths *ls_datapaths,
+                              struct ovn_datapaths *lr_datapaths,
+                              struct hmap *lb_datapaths_map,
+                              struct hmap *lb_group_datapaths_map)
+{
+    if (trk_lb_data->has_health_checks) {
+        /* Fall back to recompute if the tracked load balancer has
+         * health checks configured. */
+        return false;
+    }
+
+    /* Fall back to recompute if load balancer groups are deleted. */
+    if (!hmapx_is_empty(&trk_lb_data->deleted_lb_groups)) {
+        return false;
+    }
+
+    struct ovn_lb_datapaths *lb_dps;
+    struct ovn_northd_lb *lb;
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH (hmapx_node, &trk_lb_data->deleted_lbs) {
+        lb = hmapx_node->data;
+        const struct uuid *lb_uuid = &lb->nlb->header_.uuid;
+
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+        ovs_assert(lb_dps);
+        hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
+        ovn_lb_datapaths_destroy(lb_dps);
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_lb_data->crupdated_lbs) {
+        lb = hmapx_node->data;
+        const struct uuid *lb_uuid = &lb->nlb->header_.uuid;
+
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+        if (!lb_dps) {
+            lb_dps = ovn_lb_datapaths_create(lb, ods_size(ls_datapaths),
+                                             ods_size(lr_datapaths));
+            hmap_insert(lb_datapaths_map, &lb_dps->hmap_node,
+                        uuid_hash(lb_uuid));
+        }
+    }
+
+    struct ovn_lb_group_datapaths *lb_group_dps;
+    struct ovn_lb_group *lbg;
+    HMAPX_FOR_EACH (hmapx_node, &trk_lb_data->crupdated_lb_groups) {
+        lbg = hmapx_node->data;
+        const struct uuid *lb_uuid = &lbg->uuid;
+
+        lb_group_dps = ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                                   lb_uuid);
+        if (!lb_group_dps) {
+            lb_group_dps = ovn_lb_group_datapaths_create(
+                lbg, ods_size(ls_datapaths), ods_size(lr_datapaths));
+            hmap_insert(lb_group_datapaths_map, &lb_group_dps->hmap_node,
+                        uuid_hash(lb_uuid));
+        }
+    }
+
     return true;
 }
 
