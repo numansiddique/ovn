@@ -40,6 +40,7 @@
 #include "lib/lb.h"
 #include "memory.h"
 #include "northd.h"
+#include "en-northd-lb-data.h"
 #include "lib/ovn-parallel-hmap.h"
 #include "ovn/actions.h"
 #include "ovn/features.h"
@@ -5320,6 +5321,82 @@ northd_handle_sb_port_binding_changes(
             }
         }
     }
+    return true;
+}
+
+bool
+northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
+                              struct ovn_datapaths *ls_datapaths,
+                              struct ovn_datapaths *lr_datapaths,
+                              struct hmap *lb_datapaths_map,
+                              struct hmap *lb_group_datapaths_map)
+{
+    struct tracked_lb *trk_lb;
+
+    struct ovn_lb_datapaths *lb_dps;
+    LIST_FOR_EACH (trk_lb, list_node,
+                   &trk_lb_data->tracked_deleted_lbs.updated) {
+        if (trk_lb->health_checks) {
+            /* Fall back to recompute if the deleted load balancer has
+             * health checks configured. */
+            return false;
+        }
+
+        const struct uuid *lb_uuid =
+                &trk_lb->lb->nlb->header_.uuid;
+
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+        ovs_assert(lb_dps);
+        hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
+        ovn_lb_datapaths_destroy(lb_dps);
+    }
+
+    LIST_FOR_EACH (trk_lb, list_node,
+                   &trk_lb_data->tracked_updated_lbs.updated) {
+        if (trk_lb->health_checks) {
+            /* Fall back to recompute if the created/updated load balancer has
+             * health checks configured. */
+            return false;
+        }
+
+        const struct uuid *lb_uuid =
+                &trk_lb->lb->nlb->header_.uuid;
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+        if (!lb_dps) {
+            lb_dps = ovn_lb_datapaths_create(trk_lb->lb,
+                                             ods_size(ls_datapaths),
+                                             ods_size(lr_datapaths));
+            hmap_insert(lb_datapaths_map, &lb_dps->hmap_node,
+                        uuid_hash(lb_uuid));
+        }
+    }
+
+    struct ovn_lb_group_datapaths *lb_group_dps;
+    struct tracked_lb_group *trk_lb_group;
+    LIST_FOR_EACH_SAFE (trk_lb_group, list_node,
+                        &trk_lb_data->tracked_deleted_lb_groups.updated) {
+        const struct uuid *lb_uuid = &trk_lb_group->lb_group->uuid;
+        lb_group_dps = ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                                   lb_uuid);
+        ovs_assert(lb_group_dps);
+        hmap_remove(lb_group_datapaths_map, &lb_group_dps->hmap_node);
+        ovn_lb_group_datapaths_destroy(lb_group_dps);
+    }
+
+    LIST_FOR_EACH_SAFE (trk_lb_group, list_node,
+                        &trk_lb_data->tracked_updated_lb_groups.updated) {
+        const struct uuid *lb_uuid = &trk_lb_group->lb_group->uuid;
+        lb_group_dps = ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                                   lb_uuid);
+        if (!lb_group_dps) {
+            lb_group_dps = ovn_lb_group_datapaths_create(
+                trk_lb_group->lb_group, ods_size(ls_datapaths),
+                ods_size(lr_datapaths));
+            hmap_insert(lb_group_datapaths_map, &lb_group_dps->hmap_node,
+                        uuid_hash(lb_uuid));
+        }
+    }
+
     return true;
 }
 

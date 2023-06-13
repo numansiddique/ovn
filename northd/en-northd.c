@@ -206,6 +206,30 @@ northd_sb_port_binding_handler(struct engine_node *node,
     return true;
 }
 
+bool
+northd_northd_lb_data_handler(struct engine_node *node, void *data)
+{
+    struct northd_lb_data *lb_data =
+        engine_get_input_data("northd_lb_data", node);
+
+    if (!lb_data->tracked) {
+        return false;
+    }
+
+    struct northd_data *nd = data;
+
+    if (!northd_handle_lb_data_changes(&lb_data->tracked_lb_data,
+                                       &nd->ls_datapaths,
+                                       &nd->lr_datapaths,
+                                       &nd->lb_datapaths_map,
+                                       &nd->lb_group_datapaths_map)) {
+        return false;
+    }
+
+    engine_set_node_state(node, EN_UPDATED);
+    return true;
+}
+
 void
 *en_northd_init(struct engine_node *node OVS_UNUSED,
                 struct engine_arg *arg OVS_UNUSED)
