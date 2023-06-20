@@ -207,7 +207,7 @@ northd_sb_port_binding_handler(struct engine_node *node,
 }
 
 bool
-northd_lb_data_handler(struct engine_node *node, void *data)
+northd_lb_data_handler_pre_od(struct engine_node *node, void *data)
 {
     struct ed_type_lb_data *lb_data = engine_get_input_data("lb_data", node);
 
@@ -230,19 +230,47 @@ northd_lb_data_handler(struct engine_node *node, void *data)
 
     /* Fall back to recompute if load balancer groups are deleted. */
     if (!hmapx_is_empty(&lb_data->tracked_lb_data.deleted_lb_groups)) {
+    }
+
+    if (lb_data->tracked_lb_data.has_dissassoc_lbs_from_od) {
         return false;
     }
 
     struct northd_data *nd = data;
 
-    if (!northd_handle_lb_data_changes(&lb_data->tracked_lb_data,
-                                       &nd->ls_datapaths,
-                                       &nd->lr_datapaths,
-                                       &nd->lb_datapaths_map,
-                                       &nd->lb_group_datapaths_map)) {
+    if (!northd_handle_lb_data_changes_pre_od(&lb_data->tracked_lb_data,
+                                              &nd->ls_datapaths,
+                                              &nd->lr_datapaths,
+                                              &nd->lb_datapaths_map,
+                                              &nd->lb_group_datapaths_map)) {
         return false;
     }
 
+    engine_set_node_state(node, EN_UPDATED);
+    return true;
+}
+
+bool
+northd_lb_data_handler_post_od(struct engine_node *node, void *data)
+{
+    struct ed_type_lb_data *lb_data =
+        engine_get_input_data("lb_data", node);
+
+    ovs_assert(lb_data->tracked);
+    ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbs_from_od);
+
+    struct northd_data *nd = data;
+
+    if (!northd_handle_lb_data_changes_post_od(&lb_data->tracked_lb_data,
+                                               &nd->ls_datapaths,
+                                               &nd->lb_datapaths_map)) {
+        return false;
+    }
+
+    /* Indicate the depedendant engine nodes that load balancer/group
+     * related data has changed (including association to logical
+     * switch/router). */
+    nd->lb_changed = true;
     engine_set_node_state(node, EN_UPDATED);
     return true;
 }
