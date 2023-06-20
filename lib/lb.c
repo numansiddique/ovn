@@ -1094,6 +1094,15 @@ ovn_lb_datapaths_add_ls(struct ovn_lb_datapaths *lb_dps, size_t n,
     }
 }
 
+void
+ovn_lb_datapaths_remove_ls(struct ovn_lb_datapaths *lb_dps, size_t n,
+                        struct ovn_datapath **ods)
+{
+    for (size_t i = 0; i < n; i++) {
+        bitmap_set0(lb_dps->nb_ls_map, ods[i]->index);
+    }
+}
+
 struct ovn_lb_group_datapaths *
 ovn_lb_group_datapaths_create(const struct ovn_lb_group *lb_group,
                               size_t max_ls_datapaths,
