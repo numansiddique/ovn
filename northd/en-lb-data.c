@@ -57,7 +57,7 @@ static inline void add_deleted_lb_group_to_tracked_data(
 /* 'lb_data' engine node manages the NB load balancers and load balancer
  * groups.  For each NB LB, it creates 'struct ovn_northd_lb' and
  * for each NB LB group, it creates 'struct ovn_lb_group' and stores in
- * the respective hmaps in it data (ed_type_lb_data).
+ * the respective hmaps in it's data (ed_type_lb_data).
  */
 void *
 en_lb_data_init(struct engine_node *node OVS_UNUSED,
