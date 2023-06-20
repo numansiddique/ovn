@@ -179,6 +179,8 @@ void ovn_lb_datapaths_add_lr(struct ovn_lb_datapaths *, size_t n,
                              struct ovn_datapath **);
 void ovn_lb_datapaths_add_ls(struct ovn_lb_datapaths *, size_t n,
                              struct ovn_datapath **);
+void ovn_lb_datapaths_remove_ls(struct ovn_lb_datapaths *, size_t n,
+                                struct ovn_datapath **);
 
 struct ovn_lb_group_datapaths {
     struct hmap_node hmap_node;

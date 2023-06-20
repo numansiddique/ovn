@@ -94,6 +94,7 @@ struct ls_change {
     struct ovs_list added_ports;
     struct ovs_list deleted_ports;
     struct ovs_list updated_ports;
+    bool lbs_changed;
 };
 
 /* Track what's changed for logical switches.
@@ -318,6 +319,14 @@ struct ovn_datapath {
     /* Map of ovn_port objects belonging to this datapath.
      * This map doesn't include derived ports. */
     struct hmap ports;
+
+    /* LB uuids associated with this datapath. */
+    struct uuid *lb_uuids;
+    size_t n_lb_uuids;
+
+    /* LB group uuids associated with this datapath. */
+    struct uuid *lb_group_uuids;
+    size_t n_lb_group_uuids;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
