@@ -5024,8 +5024,14 @@ ls_port_create(struct ovsdb_idl_txn *ovnsb_txn, struct hmap *ls_ports,
     return op;
 }
 
+/* Returns true if the logical switch has changes which are not
+ * incrementally handled.
+ * Presently supports i-p for the below changes:
+ *    - logical switch ports.
+ */
 static bool
-check_ls_changes_other_than_lsp(const struct nbrec_logical_switch *ls)
+check_unsupported_inc_proc_for_ls_changes(
+    const struct nbrec_logical_switch *ls)
 {
     /* Check if the columns are changed in this row. */
     enum nbrec_logical_switch_column_id col;
@@ -5119,6 +5125,146 @@ check_lsp_changes_other_than_up(const struct nbrec_logical_switch_port *nbsp)
     return false;
 }
 
+static bool
+ls_check_and_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
+                                const struct nbrec_logical_switch *changed_ls,
+                                const struct northd_input *ni,
+                                struct northd_data *nd,
+                                struct ovn_datapath *od)
+{
+    bool ls_ports_changed = false;
+    if (!nbrec_logical_switch_is_updated(changed_ls,
+                                         NBREC_LOGICAL_SWITCH_COL_PORTS)) {
+
+        for (size_t i = 0; i < changed_ls->n_ports; i++) {
+            if (nbrec_logical_switch_port_row_get_seqno(
+                changed_ls->ports[i], OVSDB_IDL_CHANGE_MODIFY) > 0) {
+                ls_ports_changed = true;
+                break;
+            }
+        }
+    } else {
+        ls_ports_changed = true;
+    }
+
+    if (!ls_ports_changed) {
+        return true;
+    }
+
+    struct ls_change *ls_change = xzalloc(sizeof *ls_change);
+    ls_change->od = od;
+    ovs_list_init(&ls_change->added_ports);
+    ovs_list_init(&ls_change->deleted_ports);
+    ovs_list_init(&ls_change->updated_ports);
+
+    struct ovn_port *op;
+    HMAP_FOR_EACH (op, dp_node, &od->ports) {
+        op->visited = false;
+    }
+
+    /* Compare the individual ports in the old and new Logical Switches */
+    for (size_t j = 0; j < changed_ls->n_ports; ++j) {
+        struct nbrec_logical_switch_port *new_nbsp = changed_ls->ports[j];
+        op = ovn_port_find_in_datapath(od, new_nbsp->name);
+
+        if (!op) {
+            if (!lsp_can_be_inc_processed(new_nbsp)) {
+                goto fail;
+            }
+            op = ls_port_create(ovnsb_idl_txn, &nd->ls_ports,
+                                new_nbsp->name, new_nbsp, od, NULL, NULL,
+                                ni->sbrec_mirror_table,
+                                ni->sbrec_chassis_table,
+                                ni->sbrec_chassis_by_name,
+                                ni->sbrec_chassis_by_hostname);
+            if (!op) {
+                goto fail;
+            }
+            ovs_list_push_back(&ls_change->added_ports,
+                                &op->list);
+        } else if (ls_port_has_changed(op->nbsp, new_nbsp)) {
+            /* Existing port updated */
+            bool temp = false;
+            if (lsp_is_type_changed(op->sb, new_nbsp, &temp) ||
+                !op->lsp_can_be_inc_processed ||
+                !lsp_can_be_inc_processed(new_nbsp)) {
+                goto fail;
+            }
+            const struct sbrec_port_binding *sb = op->sb;
+            if (sset_contains(&nd->svc_monitor_lsps, new_nbsp->name)) {
+                /* This port is used for svc monitor, which may be impacted
+                 * by this change. Fallback to recompute. */
+                goto fail;
+            }
+            if (!check_lsp_is_up &&
+                !check_lsp_changes_other_than_up(new_nbsp)) {
+                /* If the only change is the "up" column while the
+                 * "ignore_lsp_down" is set to true, just ignore this
+                 * change. */
+                op->visited = true;
+                continue;
+            }
+            struct ovs_list lflows = OVS_LIST_INITIALIZER(&lflows);
+            ovs_list_splice(&lflows, op->lflows.next, &op->lflows);
+            ovn_port_destroy(&nd->ls_ports, op);
+            op = ls_port_create(ovnsb_idl_txn, &nd->ls_ports,
+                                new_nbsp->name, new_nbsp, od, sb, &lflows,
+                                ni->sbrec_mirror_table,
+                                ni->sbrec_chassis_table,
+                                ni->sbrec_chassis_by_name,
+                                ni->sbrec_chassis_by_hostname);
+            ovs_assert(ovs_list_is_empty(&lflows));
+            if (!op) {
+                goto fail;
+            }
+            ovs_list_push_back(&ls_change->updated_ports, &op->list);
+        }
+        op->visited = true;
+    }
+
+    /* Check for deleted ports */
+    HMAP_FOR_EACH_SAFE (op, dp_node, &od->ports) {
+        if (!op->visited) {
+            if (!op->lsp_can_be_inc_processed) {
+                goto fail_clean_deleted;
+            }
+            if (sset_contains(&nd->svc_monitor_lsps, op->key)) {
+                /* This port was used for svc monitor, which may be
+                 * impacted by this deletion. Fallback to recompute. */
+                goto fail_clean_deleted;
+            }
+            ovs_list_push_back(&ls_change->deleted_ports,
+                                &op->list);
+            hmap_remove(&nd->ls_ports, &op->key_node);
+            hmap_remove(&od->ports, &op->dp_node);
+            sbrec_port_binding_delete(op->sb);
+            delete_fdb_entry(ni->sbrec_fdb_by_dp_and_port, od->tunnel_key,
+                                op->tunnel_key);
+        }
+    }
+
+    if (!ovs_list_is_empty(&ls_change->added_ports) ||
+        !ovs_list_is_empty(&ls_change->updated_ports) ||
+        !ovs_list_is_empty(&ls_change->deleted_ports)) {
+        ovs_list_push_back(&nd->tracked_ls_changes.updated,
+                            &ls_change->list_node);
+    } else {
+        free(ls_change);
+    }
+
+    return true;
+
+fail_clean_deleted:
+    LIST_FOR_EACH_POP (op, list, &ls_change->deleted_ports) {
+        ovn_port_destroy_orphan(op);
+    }
+
+fail:
+    free(ls_change);
+    return false;
+}
+
+
 /* Return true if changes are handled incrementally, false otherwise.
  * When there are any changes, try to track what's exactly changed and set
  * northd_data->change_tracked accordingly: change tracked - true, otherwise,
@@ -5129,12 +5275,9 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                          struct northd_data *nd)
 {
     const struct nbrec_logical_switch *changed_ls;
-    struct ls_change *ls_change = NULL;
-    struct ovn_port *op;
 
     NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
                                              ni->nbrec_logical_switch_table) {
-        ls_change = NULL;
         if (nbrec_logical_switch_is_new(changed_ls) ||
             nbrec_logical_switch_is_deleted(changed_ls)) {
             goto fail;
@@ -5151,108 +5294,13 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
         }
 
         /* Now only able to handle lsp changes. */
-        if (check_ls_changes_other_than_lsp(changed_ls)) {
+        if (check_unsupported_inc_proc_for_ls_changes(changed_ls)) {
             goto fail;
         }
 
-        ls_change = xzalloc(sizeof *ls_change);
-        ls_change->od = od;
-        ovs_list_init(&ls_change->added_ports);
-        ovs_list_init(&ls_change->deleted_ports);
-        ovs_list_init(&ls_change->updated_ports);
-
-        HMAP_FOR_EACH (op, dp_node, &od->ports) {
-            op->visited = false;
-        }
-
-        /* Compare the individual ports in the old and new Logical Switches */
-        for (size_t j = 0; j < changed_ls->n_ports; ++j) {
-            struct nbrec_logical_switch_port *new_nbsp = changed_ls->ports[j];
-            op = ovn_port_find_in_datapath(od, new_nbsp->name);
-
-            if (!op) {
-                if (!lsp_can_be_inc_processed(new_nbsp)) {
-                    goto fail;
-                }
-                op = ls_port_create(ovnsb_idl_txn, &nd->ls_ports,
-                                    new_nbsp->name, new_nbsp, od, NULL, NULL,
-                                    ni->sbrec_mirror_table,
-                                    ni->sbrec_chassis_table,
-                                    ni->sbrec_chassis_by_name,
-                                    ni->sbrec_chassis_by_hostname);
-                if (!op) {
-                    goto fail;
-                }
-                ovs_list_push_back(&ls_change->added_ports,
-                                   &op->list);
-            } else if (ls_port_has_changed(op->nbsp, new_nbsp)) {
-                /* Existing port updated */
-                bool temp = false;
-                if (lsp_is_type_changed(op->sb, new_nbsp, &temp) ||
-                    !op->lsp_can_be_inc_processed ||
-                    !lsp_can_be_inc_processed(new_nbsp)) {
-                    goto fail;
-                }
-                const struct sbrec_port_binding *sb = op->sb;
-                if (sset_contains(&nd->svc_monitor_lsps, new_nbsp->name)) {
-                    /* This port is used for svc monitor, which may be impacted
-                     * by this change. Fallback to recompute. */
-                    goto fail;
-                }
-                if (!check_lsp_is_up &&
-                    !check_lsp_changes_other_than_up(new_nbsp)) {
-                    /* If the only change is the "up" column while the
-                     * "ignore_lsp_down" is set to true, just ignore this
-                     * change. */
-                    op->visited = true;
-                    continue;
-                }
-                struct ovs_list lflows = OVS_LIST_INITIALIZER(&lflows);
-                ovs_list_splice(&lflows, op->lflows.next, &op->lflows);
-                ovn_port_destroy(&nd->ls_ports, op);
-                op = ls_port_create(ovnsb_idl_txn, &nd->ls_ports,
-                                    new_nbsp->name, new_nbsp, od, sb, &lflows,
-                                    ni->sbrec_mirror_table,
-                                    ni->sbrec_chassis_table,
-                                    ni->sbrec_chassis_by_name,
-                                    ni->sbrec_chassis_by_hostname);
-                ovs_assert(ovs_list_is_empty(&lflows));
-                if (!op) {
-                    goto fail;
-                }
-                ovs_list_push_back(&ls_change->updated_ports, &op->list);
-            }
-            op->visited = true;
-        }
-
-        /* Check for deleted ports */
-        HMAP_FOR_EACH_SAFE (op, dp_node, &od->ports) {
-            if (!op->visited) {
-                if (!op->lsp_can_be_inc_processed) {
-                    goto fail_clean_deleted;
-                }
-                if (sset_contains(&nd->svc_monitor_lsps, op->key)) {
-                    /* This port was used for svc monitor, which may be
-                     * impacted by this deletion. Fallback to recompute. */
-                    goto fail_clean_deleted;
-                }
-                ovs_list_push_back(&ls_change->deleted_ports,
-                                   &op->list);
-                hmap_remove(&nd->ls_ports, &op->key_node);
-                hmap_remove(&od->ports, &op->dp_node);
-                sbrec_port_binding_delete(op->sb);
-                delete_fdb_entry(ni->sbrec_fdb_by_dp_and_port, od->tunnel_key,
-                                 op->tunnel_key);
-            }
-        }
-
-        if (!ovs_list_is_empty(&ls_change->added_ports) ||
-            !ovs_list_is_empty(&ls_change->updated_ports) ||
-            !ovs_list_is_empty(&ls_change->deleted_ports)) {
-            ovs_list_push_back(&nd->tracked_ls_changes.updated,
-                               &ls_change->list_node);
-        } else {
-            free(ls_change);
+        if (!ls_check_and_handle_lsp_changes(ovnsb_idl_txn, changed_ls,
+                                             ni, nd, od)) {
+            goto fail;
         }
     }
 
@@ -5261,13 +5309,7 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     }
     return true;
 
-fail_clean_deleted:
-    LIST_FOR_EACH_POP (op, list, &ls_change->deleted_ports) {
-        ovn_port_destroy_orphan(op);
-    }
-
 fail:
-    free(ls_change);
     destroy_northd_data_tracked_changes(nd);
     return false;
 }
