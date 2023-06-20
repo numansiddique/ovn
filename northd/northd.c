@@ -853,7 +853,8 @@ ovn_datapath_destroy(struct hmap *datapaths, struct ovn_datapath *od)
         ovn_ls_port_group_destroy(&od->nb_pgs);
         destroy_mcast_info_for_datapath(od);
         destroy_ports_for_datapath(od);
-
+        free(od->lb_uuids);
+        free(od->lb_group_uuids);
         free(od);
     }
 }
@@ -4081,6 +4082,48 @@ build_lb_vip_actions(const struct ovn_northd_lb *lb,
 }
 
 static void
+associate_ls_lbs(struct ovn_datapath *ls_od, struct hmap *lb_datapaths_map)
+{
+    struct ovn_lb_datapaths *lb_dps;
+
+    free(ls_od->lb_uuids);
+    ls_od->lb_uuids = xcalloc(ls_od->nbs->n_load_balancer,
+                              sizeof *ls_od->lb_uuids);
+    ls_od->n_lb_uuids = ls_od->nbs->n_load_balancer;
+    for (size_t i = 0; i < ls_od->nbs->n_load_balancer; i++) {
+        const struct uuid *lb_uuid =
+            &ls_od->nbs->load_balancer[i]->header_.uuid;
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+        ovs_assert(lb_dps);
+        ovn_lb_datapaths_add_ls(lb_dps, 1, &ls_od);
+        ls_od->lb_uuids[i] = *lb_uuid;
+    }
+}
+
+static void
+associate_ls_lb_groups(struct ovn_datapath *ls_od,
+                       struct hmap *lb_group_datapaths_map)
+{
+    const struct nbrec_load_balancer_group *nbrec_lb_group;
+    struct ovn_lb_group_datapaths *lb_group_dps;
+
+    free(ls_od->lb_group_uuids);
+    ls_od->lb_group_uuids = xcalloc(ls_od->nbs->n_load_balancer_group,
+                                    sizeof *ls_od->lb_group_uuids);
+    ls_od->n_lb_group_uuids = ls_od->nbs->n_load_balancer_group;
+    for (size_t i = 0; i < ls_od->nbs->n_load_balancer_group; i++) {
+        nbrec_lb_group = ls_od->nbs->load_balancer_group[i];
+        const struct uuid *lb_group_uuid = &nbrec_lb_group->header_.uuid;
+        lb_group_dps =
+            ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                        lb_group_uuid);
+        ovs_assert(lb_group_dps);
+        ovn_lb_group_datapaths_add_ls(lb_group_dps, 1, &ls_od);
+        ls_od->lb_group_uuids[i] = *lb_group_uuid;
+    }
+}
+
+static void
 build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                    struct ovn_datapaths *ls_datapaths,
                    struct ovn_datapaths *lr_datapaths,
@@ -4115,24 +4158,8 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
         if (!od->nbs) {
             continue;
         }
-
-        for (size_t i = 0; i < od->nbs->n_load_balancer; i++) {
-            const struct uuid *lb_uuid =
-                &od->nbs->load_balancer[i]->header_.uuid;
-            lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
-            ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
-        }
-
-        for (size_t i = 0; i < od->nbs->n_load_balancer_group; i++) {
-            nbrec_lb_group = od->nbs->load_balancer_group[i];
-            const struct uuid *lb_group_uuid = &nbrec_lb_group->header_.uuid;
-            lb_group_dps =
-                ovn_lb_group_datapaths_find(lb_group_datapaths_map,
-                                            lb_group_uuid);
-            ovs_assert(lb_group_dps);
-            ovn_lb_group_datapaths_add_ls(lb_group_dps, 1, &od);
-        }
+        associate_ls_lbs(od, lb_datapaths_map);
+        associate_ls_lb_groups(od, lb_group_datapaths_map);
     }
 
     HMAP_FOR_EACH (od, key_node, &lr_datapaths->datapaths) {
@@ -4891,23 +4918,29 @@ build_ports(struct ovsdb_idl_txn *ovnsb_txn,
     sset_destroy(&active_ha_chassis_grps);
 }
 
+static void
+destroy_tracked_ls_change(struct ls_change *ls_change)
+{
+    struct ovn_port *op;
+    LIST_FOR_EACH (op, list, &ls_change->added_ports) {
+        ovs_list_remove(&op->list);
+    }
+    LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
+        ovs_list_remove(&op->list);
+    }
+    LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
+        ovs_list_remove(&op->list);
+        ovn_port_destroy_orphan(op);
+    }
+}
+
 void
 destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
     struct ls_change *ls_change;
     LIST_FOR_EACH_SAFE (ls_change, list_node,
                         &nd->tracked_ls_changes.updated) {
-        struct ovn_port *op;
-        LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-            ovs_list_remove(&op->list);
-        }
-        LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-            ovs_list_remove(&op->list);
-        }
-        LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
-            ovs_list_remove(&op->list);
-            ovn_port_destroy_orphan(op);
-        }
+        destroy_tracked_ls_change(ls_change);
         ovs_list_remove(&ls_change->list_node);
         free(ls_change);
     }
@@ -5028,6 +5061,7 @@ ls_port_create(struct ovsdb_idl_txn *ovnsb_txn, struct hmap *ls_ports,
  * incrementally handled.
  * Presently supports i-p for the below changes:
  *    - logical switch ports.
+ *    - load balancers.
  */
 static bool
 check_unsupported_inc_proc_for_ls_changes(
@@ -5036,8 +5070,11 @@ check_unsupported_inc_proc_for_ls_changes(
     /* Check if the columns are changed in this row. */
     enum nbrec_logical_switch_column_id col;
     for (col = 0; col < NBREC_LOGICAL_SWITCH_N_COLUMNS; col++) {
-        if (nbrec_logical_switch_is_updated(ls, col) &&
-            col != NBREC_LOGICAL_SWITCH_COL_PORTS) {
+        if (nbrec_logical_switch_is_updated(ls, col)) {
+            if (col == NBREC_LOGICAL_SWITCH_COL_PORTS ||
+                col == NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER) {
+                continue;
+            }
             return true;
         }
     }
@@ -5062,12 +5099,6 @@ check_unsupported_inc_proc_for_ls_changes(
     }
     for (size_t i = 0; i < ls->n_forwarding_groups; i++) {
         if (nbrec_forwarding_group_row_get_seqno(ls->forwarding_groups[i],
-                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
-            return true;
-        }
-    }
-    for (size_t i = 0; i < ls->n_load_balancer; i++) {
-        if (nbrec_load_balancer_row_get_seqno(ls->load_balancer[i],
                                 OVSDB_IDL_CHANGE_MODIFY) > 0) {
             return true;
         }
@@ -5130,7 +5161,9 @@ ls_check_and_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                                 const struct nbrec_logical_switch *changed_ls,
                                 const struct northd_input *ni,
                                 struct northd_data *nd,
-                                struct ovn_datapath *od)
+                                struct ovn_datapath *od,
+                                struct ls_change *ls_change,
+                                bool *updated)
 {
     bool ls_ports_changed = false;
     if (!nbrec_logical_switch_is_updated(changed_ls,
@@ -5150,12 +5183,6 @@ ls_check_and_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     if (!ls_ports_changed) {
         return true;
     }
-
-    struct ls_change *ls_change = xzalloc(sizeof *ls_change);
-    ls_change->od = od;
-    ovs_list_init(&ls_change->added_ports);
-    ovs_list_init(&ls_change->deleted_ports);
-    ovs_list_init(&ls_change->updated_ports);
 
     struct ovn_port *op;
     HMAP_FOR_EACH (op, dp_node, &od->ports) {
@@ -5246,10 +5273,7 @@ ls_check_and_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     if (!ovs_list_is_empty(&ls_change->added_ports) ||
         !ovs_list_is_empty(&ls_change->updated_ports) ||
         !ovs_list_is_empty(&ls_change->deleted_ports)) {
-        ovs_list_push_back(&nd->tracked_ls_changes.updated,
-                            &ls_change->list_node);
-    } else {
-        free(ls_change);
+        *updated = true;
     }
 
     return true;
@@ -5260,8 +5284,58 @@ fail_clean_deleted:
     }
 
 fail:
-    free(ls_change);
+
+    LIST_FOR_EACH (op, list, &ls_change->added_ports) {
+        ovs_list_remove(&op->list);
+    }
+    LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
+        ovs_list_remove(&op->list);
+    }
+    LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
+        ovs_list_remove(&op->list);
+        ovn_port_destroy_orphan(op);
+    }
     return false;
+}
+
+static bool
+ls_check_and_handle_lb_changes(const struct nbrec_logical_switch *changed_ls,
+                               struct hmap *lb_datapaths_map,
+                               struct ovn_datapath *od,
+                               struct ls_change *ls_change,
+                               bool *updated)
+{
+
+    if (!nbrec_logical_switch_is_updated(changed_ls,
+                        NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER)) {
+        for (size_t i = 0; i < changed_ls->n_load_balancer; i++) {
+            if (nbrec_load_balancer_row_get_seqno(changed_ls->load_balancer[i],
+                                    OVSDB_IDL_CHANGE_MODIFY) > 0) {
+                ls_change->lbs_changed = true;
+                *updated = true;
+                /* Re-evaluate 'od->has_lb_vip' */
+                init_lb_for_datapath(od);
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    struct ovn_lb_datapaths *lb_dps;
+    for (size_t i = 0; i < od->n_lb_uuids; i++) {
+        lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &od->lb_uuids[i]);
+        if (lb_dps) {
+            ovn_lb_datapaths_remove_ls(lb_dps, 1, &od);
+        }
+    }
+
+    associate_ls_lbs(od, lb_datapaths_map);
+    ls_change->lbs_changed = true;
+    *updated = true;
+    /* Re-evaluate 'od->has_lb_vip' */
+    init_lb_for_datapath(od);
+    return true;
 }
 
 
@@ -5293,20 +5367,47 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             goto fail;
         }
 
-        /* Now only able to handle lsp changes. */
+        /* Now only able to handle lsp, load balancerload and
+         * load balancer group changes. */
         if (check_unsupported_inc_proc_for_ls_changes(changed_ls)) {
             goto fail;
         }
 
+        struct ls_change *ls_change = xzalloc(sizeof *ls_change);
+        ls_change->od = od;
+        ovs_list_init(&ls_change->added_ports);
+        ovs_list_init(&ls_change->deleted_ports);
+        ovs_list_init(&ls_change->updated_ports);
+
+        bool updated = false;
         if (!ls_check_and_handle_lsp_changes(ovnsb_idl_txn, changed_ls,
-                                             ni, nd, od)) {
+                                             ni, nd, od, ls_change,
+                                             &updated)) {
+            destroy_tracked_ls_change(ls_change);
+            free(ls_change);
             goto fail;
+        }
+
+        if (!ls_check_and_handle_lb_changes(changed_ls,
+                                            &nd->lb_datapaths_map, od,
+                                            ls_change, &updated)) {
+            destroy_tracked_ls_change(ls_change);
+            free(ls_change);
+            goto fail;
+        }
+
+        if (updated) {
+            ovs_list_push_back(&nd->tracked_ls_changes.updated,
+                               &ls_change->list_node);
+        } else {
+            free(ls_change);
         }
     }
 
     if (!ovs_list_is_empty(&nd->tracked_ls_changes.updated)) {
         nd->change_tracked = true;
     }
+
     return true;
 
 fail:
@@ -16628,6 +16729,13 @@ bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct hmap *lflows)
 {
     struct ls_change *ls_change;
+
+    LIST_FOR_EACH (ls_change, list_node, &ls_changes->updated) {
+     if (ls_change->lbs_changed) {
+            return false;
+        }
+    }
+
     LIST_FOR_EACH (ls_change, list_node, &ls_changes->updated) {
         const struct sbrec_multicast_group *sbmc_flood =
             mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,

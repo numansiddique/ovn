@@ -9750,15 +9750,15 @@ check ovn-nbctl ls-add sw0
 check ovn-nbctl --wait=sb lr-add lr0
 check_engine_stats recompute recompute
 
-# Associate lb1 to sw0. There should be a full recompute of northd engine node
+# Associate lb1 to sw0. There should be no recompute of northd engine node
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb1
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
-# Disassociate lb1 from sw0. There should be a full recompute of northd engine node.
+# Disassociate lb1 from sw0. There should be a no recompute of northd engine node.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 # Test load balancer group now
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
