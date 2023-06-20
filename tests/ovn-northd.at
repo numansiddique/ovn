@@ -9815,21 +9815,40 @@ check_engine_stats lflow recompute nocompute
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl ls-add sw0
 check ovn-nbctl --wait=sb lr-add lr0
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
-# Associate lb1 to sw0. There should be a full recompute of northd engine node
+# Associate lb1 to sw0. There should be no recompute of northd engine node
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb1
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
+check_engine_stats northd norecompute compute
+check_engine_stats lflow recompute nocompute
+
+# Disassociate lb1 from sw0. There should be a recompute of northd engine node.
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
-# Disassociate lb1 from sw0. There should be a full recompute of northd engine node.
+# Associate lb1 to sw0 and also create a port sw0p1.  This should result in
+# full recompute of lflow engine node.
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check as northd ovn-appctl -t NORTHD_TYPE vlog/set dbg
+check ovn-nbctl --wait=sb ls-lb-add sw0 lb1 -- lsp-add sw0 sw0p1
+check_engine_stats lb_data norecompute compute
+check_engine_stats northd norecompute compute
+check_engine_stats lflow recompute nocompute
+
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+
+# Disassociate lb1 from sw0. There should be a recompute of northd engine node.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
@@ -9869,7 +9888,7 @@ CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_switch sw0 load_balancer_group $lbg1_uuid
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
@@ -9882,7 +9901,7 @@ check_engine_stats lflow recompute nocompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl clear logical_switch sw0 load_balancer_group
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
@@ -9901,7 +9920,7 @@ check_engine_stats lflow recompute nocompute
 # Add back lb group to logical switch and then delete it.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_switch sw0 load_balancer_group $lbg1_uuid
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 
@@ -9942,7 +9961,7 @@ check_engine_stats lflow recompute nocompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl set logical_switch sw0 load_balancer_group=$lbg1_uuid
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -9956,15 +9975,15 @@ CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb2
-check_engine_stats lb_data norecompute nocompute
-check_engine_stats northd recompute nocompute
+check_engine_stats lb_data norecompute compute
+check_engine_stats northd norecompute compute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb3
-check_engine_stats lb_data norecompute nocompute
-check_engine_stats northd recompute nocompute
+check_engine_stats lb_data norecompute compute
+check_engine_stats northd norecompute compute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -9978,7 +9997,7 @@ CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-del sw0 lb2
-check_engine_stats lb_data norecompute nocompute
+check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
