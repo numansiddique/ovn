@@ -9789,12 +9789,26 @@ check ovn-nbctl ls-add sw0
 check ovn-nbctl --wait=sb lr-add lr0
 check_engine_stats recompute recompute
 
-# Associate lb1 to sw0. There should be a full recompute of northd engine node
+# Associate lb1 to sw0. There should be no recompute of northd engine node
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb1
+check_engine_stats norecompute recompute
+
+# Disassociate lb1 from sw0. There should be a recompute of northd engine node.
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
 check_engine_stats recompute recompute
 
-# Disassociate lb1 from sw0. There should be a full recompute of northd engine node.
+# Associate lb1 to sw0 and also create a port sw0p1.  This should result in
+# full recompute of lflow engine node.
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check as northd ovn-appctl -t NORTHD_TYPE vlog/set dbg
+check ovn-nbctl --wait=sb ls-lb-add sw0 lb1 -- lsp-add sw0 sw0p1
+check_engine_stats norecompute recompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+
+# Disassociate lb1 from sw0. There should be a recompute of northd engine node.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
 check_engine_stats recompute recompute
@@ -9892,12 +9906,12 @@ CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb2
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-add sw0 lb3
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
