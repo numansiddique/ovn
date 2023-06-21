@@ -4175,10 +4175,18 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                 &lb_group_dps->lb_group->lbs[j]->nlb->header_.uuid;
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
             ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_ls(lb_dps, lb_group_dps->n_ls,
-                                    lb_group_dps->ls);
-            ovn_lb_datapaths_add_lr(lb_dps, lb_group_dps->n_lr,
-                                    lb_group_dps->lr);
+            size_t index;
+            BITMAP_FOR_EACH_1 (index, ods_size(ls_datapaths),
+                               lb_group_dps->nb_ls_map) {
+                od = ls_datapaths->array[index];
+                ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+            }
+
+            BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
+                               lb_group_dps->nb_lr_map) {
+                od = lr_datapaths->array[index];
+                ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+            }
         }
     }
 }
@@ -4357,8 +4365,9 @@ build_lswitch_lbs_from_lrouter(struct ovn_datapaths *lr_datapaths,
 
     struct ovn_lb_group_datapaths *lb_group_dps;
     HMAP_FOR_EACH (lb_group_dps, hmap_node, lb_group_dps_map) {
-        for (size_t i = 0; i < lb_group_dps->n_lr; i++) {
-            struct ovn_datapath *od = lb_group_dps->lr[i];
+        BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
+                           lb_group_dps->nb_lr_map) {
+            struct ovn_datapath *od = lr_datapaths->array[index];
             ovn_lb_group_datapaths_add_ls(lb_group_dps, od->n_ls_peers,
                                           od->ls_peers);
             for (size_t j = 0; j < lb_group_dps->lb_group->n_lbs; j++) {
@@ -4989,7 +4998,8 @@ check_unsupported_inc_proc_for_ls_changes(
     for (col = 0; col < NBREC_LOGICAL_SWITCH_N_COLUMNS; col++) {
         if (nbrec_logical_switch_is_updated(ls, col)) {
             if (col == NBREC_LOGICAL_SWITCH_COL_PORTS ||
-                col == NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER) {
+                col == NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER ||
+                col == NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER_GROUP) {
                 continue;
             }
             return true;
@@ -5016,12 +5026,6 @@ check_unsupported_inc_proc_for_ls_changes(
     }
     for (size_t i = 0; i < ls->n_forwarding_groups; i++) {
         if (nbrec_forwarding_group_row_get_seqno(ls->forwarding_groups[i],
-                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
-            return true;
-        }
-    }
-    for (size_t i = 0; i < ls->n_load_balancer_group; i++) {
-        if (nbrec_load_balancer_group_row_get_seqno(ls->load_balancer_group[i],
                                 OVSDB_IDL_CHANGE_MODIFY) > 0) {
             return true;
         }
@@ -5247,6 +5251,48 @@ ls_check_and_handle_lb_changes(const struct nbrec_logical_switch *changed_ls,
     return true;
 }
 
+static bool
+ls_check_and_handle_lb_group_changes(
+    const struct nbrec_logical_switch *changed_ls,
+    struct hmap *lb_group_datapaths_map,
+    struct ovn_datapath *od,
+    struct ls_change *ls_change,
+    bool *updated)
+{
+
+    if (!nbrec_logical_switch_is_updated(changed_ls,
+                        NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER_GROUP)) {
+        for (size_t i = 0; i < changed_ls->n_load_balancer_group; i++) {
+            if (nbrec_load_balancer_group_row_get_seqno(
+                    changed_ls->load_balancer_group[i],
+                    OVSDB_IDL_CHANGE_MODIFY) > 0) {
+                ls_change->lbs_changed = true;
+                *updated = true;
+                /* Re-evaluate 'od->has_lb_vip' */
+                init_lb_for_datapath(od);
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    struct ovn_lb_group_datapaths *lbg_dps;
+    for (size_t i = 0; i < od->n_lb_group_uuids; i++) {
+        lbg_dps = ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                              &od->lb_group_uuids[i]);
+        if (lbg_dps) {
+            ovn_lb_group_datapaths_remove_ls(lbg_dps, 1, &od);
+        }
+    }
+
+    associate_ls_lb_groups(od, lb_group_datapaths_map);
+    ls_change->lbs_changed = true;
+    *updated = true;
+    /* Re-evaluate 'od->has_lb_vip' */
+    init_lb_for_datapath(od);
+    return true;
+}
 
 /* Return true if changes are handled incrementally, false otherwise.
  * When there are any changes, try to track what's exactly changed and set
@@ -5301,6 +5347,14 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
         if (!ls_check_and_handle_lb_changes(changed_ls,
                                             &nd->lb_datapaths_map, od,
                                             ls_change, &updated)) {
+            destroy_tracked_ls_change(ls_change);
+            free(ls_change);
+            goto fail;
+        }
+
+        if (!ls_check_and_handle_lb_group_changes(changed_ls,
+                                                  &nd->lb_group_datapaths_map,
+                                                  od, ls_change, &updated)) {
             destroy_tracked_ls_change(ls_change);
             free(ls_change);
             goto fail;
