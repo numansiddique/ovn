@@ -9760,6 +9760,14 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-lb-del sw0 lb1
 check_engine_stats norecompute recompute
 
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl lr-lb-add lr0 lb1
+check_engine_stats norecompute recompute
+
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl lr-lb-del lr0 lb1
+check_engine_stats norecompute recompute
+
 # Test load balancer group now
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 lbg1_uuid=$(ovn-nbctl create load_balancer_group name=lbg1)
@@ -9796,11 +9804,11 @@ check_engine_stats norecompute recompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_router lr0 load_balancer_group $lbg1_uuid
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl clear logical_router lr0 load_balancer_group
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 AT_CLEANUP
 ])
