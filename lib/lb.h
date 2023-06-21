@@ -188,6 +188,8 @@ void ovn_lb_datapaths_set_ls(struct ovn_lb_datapaths *, size_t n,
 
 void ovn_lb_datapaths_remove_ls(struct ovn_lb_datapaths *, size_t n,
                                 struct ovn_datapath **);
+void ovn_lb_datapaths_remove_lr(struct ovn_lb_datapaths *, size_t n,
+                                struct ovn_datapath **);
 
 struct ovn_lb_group_datapaths {
     struct hmap_node hmap_node;
@@ -217,6 +219,9 @@ void ovn_lb_group_datapaths_remove_ls(struct ovn_lb_group_datapaths *,
 
 void ovn_lb_group_datapaths_add_lr(struct ovn_lb_group_datapaths *,
                                    struct ovn_datapath *lr);
+void ovn_lb_group_datapaths_remove_lr(struct ovn_lb_group_datapaths *,
+                                      struct ovn_datapath *lr);
+
 struct ovn_controller_lb {
     struct hmap_node hmap_node;
 
