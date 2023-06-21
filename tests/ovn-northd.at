@@ -9783,16 +9783,16 @@ check_engine_stats norecompute recompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_switch sw0 load_balancer_group $lbg1_uuid
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 # Update lb and this should result in recompute
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set load_balancer . options:bar=foo
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl clear logical_switch sw0 load_balancer_group
-check_engine_stats recompute recompute
+check_engine_stats norecompute recompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_router lr0 load_balancer_group $lbg1_uuid

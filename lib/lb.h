@@ -19,6 +19,7 @@
 
 #include <sys/types.h>
 #include <netinet/in.h>
+#include "lib/bitmap.h"
 #include "lib/smap.h"
 #include "openvswitch/hmap.h"
 #include "ovn-util.h"
@@ -179,6 +180,9 @@ void ovn_lb_datapaths_add_lr(struct ovn_lb_datapaths *, size_t n,
                              struct ovn_datapath **);
 void ovn_lb_datapaths_add_ls(struct ovn_lb_datapaths *, size_t n,
                              struct ovn_datapath **);
+void ovn_lb_datapaths_set_ls(struct ovn_lb_datapaths *, size_t n,
+                             struct ovn_datapath **);
+
 void ovn_lb_datapaths_remove_ls(struct ovn_lb_datapaths *, size_t n,
                                 struct ovn_datapath **);
 
@@ -188,10 +192,11 @@ struct ovn_lb_group_datapaths {
     const struct ovn_lb_group *lb_group;
 
     /* Datapaths to which 'lb_group' is applied. */
-    size_t n_ls;
-    struct ovn_datapath **ls;
-    size_t n_lr;
-    struct ovn_datapath **lr;
+    size_t n_nb_ls;
+    unsigned long *nb_ls_map;
+
+    size_t n_nb_lr;
+    unsigned long *nb_lr_map;
 };
 
 struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_create(
@@ -202,21 +207,13 @@ void ovn_lb_group_datapaths_destroy(struct ovn_lb_group_datapaths *);
 struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_find(
     const struct hmap *lb_group_dps, const struct uuid *);
 
-static inline void
-ovn_lb_group_datapaths_add_ls(struct ovn_lb_group_datapaths *lbg_dps, size_t n,
-                               struct ovn_datapath **ods)
-{
-    memcpy(&lbg_dps->ls[lbg_dps->n_ls], ods, n * sizeof *ods);
-    lbg_dps->n_ls += n;
-}
+void ovn_lb_group_datapaths_add_ls(struct ovn_lb_group_datapaths *, size_t n,
+                                   struct ovn_datapath **);
+void ovn_lb_group_datapaths_remove_ls(struct ovn_lb_group_datapaths *,
+                                      size_t n, struct ovn_datapath **);
 
-static inline void
-ovn_lb_group_datapaths_add_lr(struct ovn_lb_group_datapaths *lbg_dps,
-                               struct ovn_datapath *lr)
-{
-    lbg_dps->lr[lbg_dps->n_lr++] = lr;
-}
-
+void ovn_lb_group_datapaths_add_lr(struct ovn_lb_group_datapaths *,
+                                   struct ovn_datapath *lr);
 struct ovn_controller_lb {
     struct hmap_node hmap_node;
 
