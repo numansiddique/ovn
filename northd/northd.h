@@ -119,8 +119,11 @@ struct northd_data {
     struct chassis_features features;
     struct sset svc_monitor_lsps;
     struct hmap svc_monitor_map;
+
+    /* Tracked data. */
     bool change_tracked;
     struct tracked_ls_changes tracked_ls_changes;
+    bool lrouters_changed;
 };
 
 struct lflow_data {
@@ -341,6 +344,8 @@ void ovnsb_db_run(struct ovsdb_idl_txn *ovnnb_txn,
                   struct hmap *ls_ports);
 bool northd_handle_ls_changes(struct ovsdb_idl_txn *,
                               const struct northd_input *,
+                              struct northd_data *);
+bool northd_handle_lr_changes(const struct northd_input *,
                               struct northd_data *);
 void destroy_northd_data_tracked_changes(struct northd_data *);
 void northd_destroy(struct northd_data *data);
