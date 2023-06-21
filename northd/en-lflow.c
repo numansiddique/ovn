@@ -102,6 +102,11 @@ lflow_northd_handler(struct engine_node *node,
     if (!northd_data->change_tracked) {
         return false;
     }
+
+    if (northd_data->lrouters_changed) {
+        return false;
+    }
+
     const struct engine_context *eng_ctx = engine_get_context();
     struct lflow_data *lflow_data = data;
 
