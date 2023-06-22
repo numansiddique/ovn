@@ -141,6 +141,7 @@ static ENGINE_NODE(sync_to_sb_addr_set, "sync_to_sb_addr_set");
 static ENGINE_NODE(fdb_aging, "fdb_aging");
 static ENGINE_NODE(fdb_aging_waker, "fdb_aging_waker");
 static ENGINE_NODE(sync_to_sb_lb, "sync_to_sb_lb");
+static ENGINE_NODE(sync_to_sb_pb, "sync_to_sb_pb");
 static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lb_data, "lb_data");
 
 void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
@@ -215,13 +216,16 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
                      sync_to_sb_lb_northd_handler);
     engine_add_input(&en_sync_to_sb_lb, &en_sb_load_balancer, NULL);
 
+    engine_add_input(&en_sync_to_sb_pb, &en_northd, NULL);
+
     /* en_sync_to_sb engine node syncs the SB database tables from
      * the NB database tables.
-     * Right now this engine syncs the SB Address_Set table and
-     * SB Load_Balancer table.
+     * Right now this engine syncs the SB Address_Set table,
+     * SB Load_Balancer table and (partly) SB Port_Binding table.
      */
     engine_add_input(&en_sync_to_sb, &en_sync_to_sb_addr_set, NULL);
     engine_add_input(&en_sync_to_sb, &en_sync_to_sb_lb, NULL);
+    engine_add_input(&en_sync_to_sb, &en_sync_to_sb_pb, NULL);
 
     engine_add_input(&en_sync_from_sb, &en_northd,
                      sync_from_sb_northd_handler);
