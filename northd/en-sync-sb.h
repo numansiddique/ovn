@@ -21,4 +21,8 @@ void *en_sync_to_sb_lb_init(struct engine_node *, struct engine_arg *);
 void en_sync_to_sb_lb_run(struct engine_node *, void *data);
 void en_sync_to_sb_lb_cleanup(void *data);
 
+void *en_sync_to_sb_pb_init(struct engine_node *, struct engine_arg *);
+void en_sync_to_sb_pb_run(struct engine_node *, void *data);
+void en_sync_to_sb_pb_cleanup(void *data);
+
 #endif /* end of EN_SYNC_SB_H */
