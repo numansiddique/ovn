@@ -240,6 +240,37 @@ en_sync_to_sb_lb_cleanup(void *data OVS_UNUSED)
 
 }
 
+void *
+en_sync_to_sb_pb_init(struct engine_node *node OVS_UNUSED,
+                      struct engine_arg *arg OVS_UNUSED)
+{
+    return NULL;
+}
+
+void
+en_sync_to_sb_pb_run(struct engine_node *node, void *data OVS_UNUSED)
+{
+    const struct engine_context *eng_ctx = engine_get_context();
+    struct northd_data *northd_data = engine_get_input_data("northd", node);
+
+    sync_pbs(eng_ctx->ovnsb_idl_txn, &northd_data->ls_ports);
+    engine_set_node_state(node, EN_UPDATED);
+}
+
+void
+en_sync_to_sb_pb_cleanup(void *data OVS_UNUSED)
+{
+
+}
+
+/* sync_to_sb_pb engine node functions.
+ * This engine node syncs the SB Port Bindings (partly)
+ * en_northd engine create the SB Port binding rows and
+ * updates most of the columns.
+ * This engine node updates the port binding columns which
+ * needs to be updated after northd engine is run.
+ */
+
 /* static functions. */
 static void
 sync_addr_set(struct ovsdb_idl_txn *ovnsb_txn, const char *name,
