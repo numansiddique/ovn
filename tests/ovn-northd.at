@@ -3906,7 +3906,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 check ovn-nbctl --wait=sb set logical_router lr0 options:lb_force_snat_ip="router_ip"
@@ -3958,7 +3958,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 check ovn-nbctl --wait=sb remove logical_router lr0 options chassis
@@ -4024,7 +4024,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 check ovn-nbctl --wait=sb lb-add lb2 10.0.0.20:80 10.0.0.40:8080
@@ -4065,7 +4065,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CLEANUP
@@ -5530,7 +5530,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CHECK([grep "lr_out_snat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
@@ -5593,7 +5593,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CHECK([grep "lr_out_snat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
@@ -5660,7 +5660,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CHECK([grep "lr_out_snat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
@@ -5739,7 +5739,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CHECK([grep "lr_out_snat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
@@ -5801,7 +5801,7 @@ AT_CHECK([grep "lr_out_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0],
 
 AT_CHECK([grep "lr_out_post_undnat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
   table=? (lr_out_post_undnat ), priority=0    , match=(1), action=(next;)
-  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next; )
+  table=? (lr_out_post_undnat ), priority=50   , match=(ip && ct.new), action=(ct_commit { } ; next;)
 ])
 
 AT_CHECK([grep "lr_out_snat" lr0flows | sed 's/table=./table=?/' | sort], [0], [dnl
