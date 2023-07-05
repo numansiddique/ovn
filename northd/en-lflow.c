@@ -45,6 +45,8 @@ lflow_get_input_data(struct engine_node *node,
         EN_OVSDB_GET(engine_get_input("SB_multicast_group", node));
     lflow_input->sbrec_igmp_group_table =
         EN_OVSDB_GET(engine_get_input("SB_igmp_group", node));
+    lflow_input->sbrec_logical_dp_group_table =
+        EN_OVSDB_GET(engine_get_input("SB_logical_dp_group", node));
 
     lflow_input->sbrec_mcast_group_by_name_dp =
            engine_ovsdb_node_get_index(
@@ -85,7 +87,7 @@ void en_lflow_run(struct engine_node *node, void *data)
                     lflow_input.sbrec_bfd_table,
                     lflow_input.lr_ports,
                     &bfd_connections);
-    build_lflows(eng_ctx->ovnsb_idl_txn, &lflow_input, &lflow_data->lflows);
+    build_lflows(eng_ctx->ovnsb_idl_txn, &lflow_input, lflow_data);
     bfd_cleanup_connections(lflow_input.nbrec_bfd_table,
                             &bfd_connections);
     hmap_destroy(&bfd_connections);
@@ -96,7 +98,7 @@ void en_lflow_run(struct engine_node *node, void *data)
 
 bool
 lflow_northd_handler(struct engine_node *node,
-                     void *data)
+                     void *data OVS_UNUSED)
 {
     struct northd_data *northd_data = engine_get_input_data("northd", node);
     if (!northd_data->change_tracked) {
@@ -116,11 +118,12 @@ lflow_northd_handler(struct engine_node *node,
 
     if (!lflow_handle_northd_ls_changes(eng_ctx->ovnsb_idl_txn,
                                         &northd_data->tracked_ls_changes,
-                                        &lflow_input, &lflow_data->lflows)) {
+                                        &lflow_input, lflow_data)) {
         return false;
     }
 
     engine_set_node_state(node, EN_UPDATED);
+
     return true;
 }
 

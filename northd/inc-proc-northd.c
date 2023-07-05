@@ -95,7 +95,8 @@ static unixctl_cb_func chassis_features_list;
     SB_NODE(bfd, "bfd") \
     SB_NODE(fdb, "fdb") \
     SB_NODE(static_mac_binding, "static_mac_binding") \
-    SB_NODE(chassis_template_var, "chassis_template_var")
+    SB_NODE(chassis_template_var, "chassis_template_var") \
+    SB_NODE(logical_dp_group, "logical_dp_group")
 
 enum sb_engine_node {
 #define SB_NODE(NAME, NAME_STR) SB_##NAME,
@@ -206,6 +207,8 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_lflow, &en_sb_logical_flow, NULL);
     engine_add_input(&en_lflow, &en_sb_multicast_group, NULL);
     engine_add_input(&en_lflow, &en_sb_igmp_group, NULL);
+    engine_add_input(&en_lflow, &en_sb_logical_dp_group, NULL);
+
     engine_add_input(&en_lflow, &en_northd, lflow_northd_handler);
 
     engine_add_input(&en_sync_to_sb_addr_set, &en_nb_address_set,
