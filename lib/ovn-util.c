@@ -626,13 +626,10 @@ ovn_pipeline_from_name(const char *pipeline)
 uint32_t
 sbrec_logical_flow_hash(const struct sbrec_logical_flow *lf)
 {
-    const struct sbrec_datapath_binding *ld = lf->logical_datapath;
-    uint32_t hash = ovn_logical_flow_hash(lf->table_id,
-                                          ovn_pipeline_from_name(lf->pipeline),
-                                          lf->priority, lf->match,
-                                          lf->actions);
-
-    return ld ? ovn_logical_flow_hash_datapath(&ld->header_.uuid, hash) : hash;
+    return ovn_logical_flow_hash(lf->table_id,
+                                 ovn_pipeline_from_name(lf->pipeline),
+                                 lf->priority, lf->match,
+                                 lf->actions);
 }
 
 uint32_t
