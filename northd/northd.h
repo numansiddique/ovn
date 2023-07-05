@@ -19,6 +19,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/ovs-atomic.h"
+#include "lib/objdep.h"
 #include "lib/sset.h"
 #include "northd/ipam.h"
 #include "openvswitch/hmap.h"
@@ -127,7 +128,10 @@ struct northd_data {
 };
 
 struct lflow_data {
-    struct hmap lflows;
+    struct hmap lflows_match_map;
+    struct hmap lflows_hash_map;
+    struct hmap ls_dp_groups;
+    struct hmap lr_dp_groups;
 };
 
 void lflow_data_init(struct lflow_data *);
@@ -354,10 +358,10 @@ void northd_indices_create(struct northd_data *data,
                            struct ovsdb_idl *ovnsb_idl);
 void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
                   struct lflow_input *input_data,
-                  struct hmap *lflows);
+                  struct lflow_data *lflow_data);
 bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_ls_changes *,
-                                    struct lflow_input *, struct hmap *lflows);
+                                    struct lflow_input *, struct lflow_data *);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports);
 
