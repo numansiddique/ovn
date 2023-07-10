@@ -22,6 +22,7 @@
 #include "lib/smap.h"
 #include "openvswitch/hmap.h"
 #include "ovn-util.h"
+#include "objdep.h"
 #include "sset.h"
 #include "uuid.h"
 
@@ -176,6 +177,8 @@ struct ovn_lb_datapaths {
 
     size_t n_nb_lr;
     unsigned long *nb_lr_map;
+
+    struct objdep_mgr lflow_dep_mgr;
 };
 
 struct ovn_lb_datapaths *ovn_lb_datapaths_create(const struct ovn_northd_lb *,

@@ -1082,6 +1082,7 @@ ovn_lb_datapaths_create(const struct ovn_northd_lb *lb, size_t n_ls_datapaths,
     lb_dps->nb_ls_map = bitmap_allocate(n_ls_datapaths);
     lb_dps->nb_lr_map = bitmap_allocate(n_lr_datapaths);
 
+    objdep_mgr_init(&lb_dps->lflow_dep_mgr);
     return lb_dps;
 }
 
@@ -1104,6 +1105,7 @@ ovn_lb_datapaths_destroy(struct ovn_lb_datapaths *lb_dps)
 {
     bitmap_free(lb_dps->nb_lr_map);
     bitmap_free(lb_dps->nb_ls_map);
+    objdep_mgr_destroy(&lb_dps->lflow_dep_mgr);
     free(lb_dps);
 }
 
