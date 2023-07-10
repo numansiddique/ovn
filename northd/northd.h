@@ -334,6 +334,8 @@ struct ovn_datapath {
     /* LB group uuids associated with this datapath. */
     struct uuid *lb_group_uuids;
     size_t n_lb_group_uuids;
+
+    struct objdep_mgr lflow_dep_mgr;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
