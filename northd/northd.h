@@ -325,6 +325,8 @@ struct ovn_datapath {
     /* Map of ovn_port objects belonging to this datapath.
      * This map doesn't include derived ports. */
     struct hmap ports;
+
+    struct objdep_mgr lflow_dep_mgr;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
