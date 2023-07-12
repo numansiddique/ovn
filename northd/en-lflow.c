@@ -119,6 +119,16 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
+    if (!hmapx_is_empty(&northd_data->tracked_deleted_lb_dps) ||
+            !hmapx_is_empty(&northd_data->tracked_crupdated_lb_dps)) {
+        if (!lflow_handle_northd_lb_changes(
+                eng_ctx->ovnsb_idl_txn, &northd_data->tracked_deleted_lb_dps,
+                &northd_data->tracked_crupdated_lb_dps, &lflow_input,
+                lflow_data)) {
+            return false;
+        }
+    }
+
     engine_set_node_state(node, EN_UPDATED);
 
     return true;

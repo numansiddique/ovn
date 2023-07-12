@@ -14,15 +14,19 @@
 #ifndef NORTHD_H
 #define NORTHD_H 1
 
+/* OVS includes. */
+#include "lib/hmapx.h"
+#include "lib/ovs-atomic.h"
+#include "lib/sset.h"
 #include "ovsdb-idl.h"
+#include "openvswitch/hmap.h"
 
+/* OVN includes. */
+#include "lib/objdep.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
-#include "lib/ovs-atomic.h"
-#include "lib/objdep.h"
-#include "lib/sset.h"
 #include "northd/ipam.h"
-#include "openvswitch/hmap.h"
+
 
 struct northd_input {
     /* Northbound table references */
@@ -125,6 +129,8 @@ struct northd_data {
     bool change_tracked;
     struct tracked_ls_changes tracked_ls_changes;
     bool lrouters_changed;
+    struct hmapx tracked_deleted_lb_dps;
+    struct hmapx tracked_crupdated_lb_dps;
 };
 
 struct lflow_data {
@@ -364,15 +370,17 @@ void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
 bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_ls_changes *,
                                     struct lflow_input *, struct lflow_data *);
+bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *,
+                                    struct hmapx *tracked_deleted_lb_dps,
+                                    struct hmapx *tracked_updated_lb_dps,
+                                    struct lflow_input *,
+                                    struct lflow_data *);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports);
 
 struct tracked_lb_data;
 bool northd_handle_lb_data_changes(struct tracked_lb_data *,
-                                   struct ovn_datapaths *ls_datapaths,
-                                   struct ovn_datapaths *lr_datapaths,
-                                   struct hmap *lb_datapaths_map,
-                                   struct hmap *lb_group_datapaths_map);
+                                   struct northd_data *);
 
 void build_bfd_table(struct ovsdb_idl_txn *ovnsb_txn,
                      const struct nbrec_bfd_table *,

@@ -238,11 +238,7 @@ northd_lb_data_handler(struct engine_node *node, void *data)
 
     struct northd_data *nd = data;
 
-    if (!northd_handle_lb_data_changes(&lb_data->tracked_lb_data,
-                                       &nd->ls_datapaths,
-                                       &nd->lr_datapaths,
-                                       &nd->lb_datapaths_map,
-                                       &nd->lb_group_datapaths_map)) {
+    if (!northd_handle_lb_data_changes(&lb_data->tracked_lb_data, nd)) {
         return false;
     }
 
