@@ -106,7 +106,7 @@ lflow_northd_handler(struct engine_node *node,
     }
 
     /* Fall back to recompute if lb related data has changed. */
-    if (northd_data->lb_changed) {
+    if (northd_data->trk_northd_changes.lb_changed) {
         return false;
     }
 
@@ -116,9 +116,9 @@ lflow_northd_handler(struct engine_node *node,
     struct lflow_input lflow_input;
     lflow_get_input_data(node, &lflow_input);
 
-    if (!lflow_handle_northd_ls_changes(eng_ctx->ovnsb_idl_txn,
-                                        &northd_data->tracked_ls_changes,
-                                        &lflow_input, lflow_data)) {
+    if (!lflow_handle_northd_changes(eng_ctx->ovnsb_idl_txn,
+                                     &northd_data->trk_northd_changes,
+                                     &lflow_input, lflow_data)) {
         return false;
     }
 
