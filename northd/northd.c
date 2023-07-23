@@ -5360,6 +5360,95 @@ fail:
     return false;
 }
 
+/* Returns true if the logical router has changes which are not
+ * incrementally handled.
+ * Presently supports i-p for the below changes:
+ *    - load balancers and load balancer groups.
+ */
+static bool
+check_unsupported_inc_proc_for_lr_changes(
+    const struct nbrec_logical_router *lr)
+{
+    /* Check if the columns are changed in this row. */
+    enum nbrec_logical_router_column_id col;
+    for (col = 0; col < NBREC_LOGICAL_ROUTER_N_COLUMNS; col++) {
+        if (nbrec_logical_router_is_updated(lr, col)) {
+            if (col == NBREC_LOGICAL_ROUTER_COL_LOAD_BALANCER ||
+                col == NBREC_LOGICAL_ROUTER_COL_LOAD_BALANCER_GROUP) {
+                continue;
+            }
+            return true;
+        }
+    }
+
+    /* Check if the referenced rows are changed.
+       XXX: Need a better OVSDB IDL interface for this check. */
+    for (size_t i = 0; i < lr->n_ports; i++) {
+        if (nbrec_logical_router_port_row_get_seqno(lr->ports[i],
+                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
+            return true;
+        }
+    }
+    if (lr->copp && nbrec_copp_row_get_seqno(lr->copp,
+                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
+        return true;
+    }
+    for (size_t i = 0; i < lr->n_nat; i++) {
+        if (nbrec_nat_row_get_seqno(lr->nat[i],
+                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
+            return true;
+        }
+    }
+    for (size_t i = 0; i < lr->n_policies; i++) {
+        if (nbrec_logical_router_policy_row_get_seqno(lr->policies[i],
+                                OVSDB_IDL_CHANGE_MODIFY) > 0) {
+            return true;
+        }
+    }
+    for (size_t i = 0; i < lr->n_static_routes; i++) {
+        if (nbrec_logical_router_static_route_row_get_seqno(
+            lr->static_routes[i], OVSDB_IDL_CHANGE_MODIFY) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Return true if changes are handled incrementally, false otherwise.
+ * When there are any changes, try to track what's exactly changed and set
+ * northd_data->change_tracked accordingly: change tracked - true, otherwise,
+ * false.
+ * Note: Changes to load balancer and load balancer groups associated with
+ * the logical routers are handled separately in the lb_data change
+ * handlers (northd_handle_lb_data_changes_pre_od and
+ * northd_handle_lb_data_changes_post_od).
+ * */
+bool
+northd_handle_lr_changes(const struct northd_input *ni,
+                         struct northd_data *nd)
+{
+    const struct nbrec_logical_router *changed_lr;
+
+    NBREC_LOGICAL_ROUTER_TABLE_FOR_EACH_TRACKED (changed_lr,
+                                             ni->nbrec_logical_router_table) {
+        if (nbrec_logical_router_is_new(changed_lr) ||
+            nbrec_logical_router_is_deleted(changed_lr)) {
+            goto fail;
+        }
+
+        /* Presently only able to handle load balancer and
+         * load balancer group changes. */
+        if (check_unsupported_inc_proc_for_lr_changes(changed_lr)) {
+            goto fail;
+        }
+    }
+
+    return true;
+fail:
+    destroy_northd_data_tracked_changes(nd);
+    return false;
+}
+
 bool
 northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *sbrec_port_binding_table,
@@ -5500,6 +5589,7 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
 bool
 northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                                       struct ovn_datapaths *ls_datapaths,
+                                      struct ovn_datapaths *lr_datapaths,
                                       struct hmap *lb_datapaths_map,
                                       struct hmap *lb_group_datapaths_map)
 {
@@ -5544,6 +5634,45 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
         init_lb_for_datapath(od);
     }
 
+    LIST_FOR_EACH (codlb, list_node, &trk_lb_data->crupdated_lr_lbs) {
+        od = ovn_datapath_find(&lr_datapaths->datapaths, &codlb->od_uuid);
+        ovs_assert(od);
+
+        struct uuidset_node *uuidnode;
+        UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbs) {
+            lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &uuidnode->uuid);
+            ovs_assert(lb_dps);
+            ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+
+            /* Add the lb_ips of lb_dps to the od. */
+            build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
+            build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+        }
+
+        UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbgrps) {
+            lbgrp_dps = ovn_lb_group_datapaths_find(lb_group_datapaths_map,
+                                                    &uuidnode->uuid);
+            ovs_assert(lbgrp_dps);
+            ovn_lb_group_datapaths_add_lr(lbgrp_dps, od);
+
+            /* Associate all the lbs of the lbgrp to the datapath 'od' */
+            for (size_t j = 0; j < lbgrp_dps->lb_group->n_lbs; j++) {
+                const struct uuid *lb_uuid
+                    = &lbgrp_dps->lb_group->lbs[j]->nlb->header_.uuid;
+                lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
+                ovs_assert(lb_dps);
+                ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+
+                /* Add the lb_ips of lb_dps to the od. */
+                build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
+                build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+            }
+        }
+
+        /* Re-evaluate 'od->has_lb_vip' */
+        init_lb_for_datapath(od);
+    }
+
     HMAPX_FOR_EACH (hmapx_node, &trk_lb_data->crupdated_lbs) {
         lb = hmapx_node->data;
         const struct uuid *lb_uuid = &lb->nlb->header_.uuid;
@@ -5576,8 +5705,19 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             lb_uuid = &lb->nlb->header_.uuid;
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
             ovs_assert(lb_dps);
+            for (size_t i = 0; i < lbgrp_dps->n_lr; i++) {
+                od = lbgrp_dps->lr[i];
+                ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+
+                /* Re-evaluate 'od->has_lb_vip' */
+                init_lb_for_datapath(od);
+
+                /* Add the lb_ips of lb_dps to the od. */
+                build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
+            }
+
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
-                od = lbgrp_dps->ls[i];
+               od = lbgrp_dps->ls[i];
                 ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
 
                 /* Re-evaluate 'od->has_lb_vip' */

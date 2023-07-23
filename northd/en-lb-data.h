@@ -45,6 +45,10 @@ struct tracked_lb_data {
      * 'struct crupdated_od_lb_data' */
     struct ovs_list crupdated_ls_lbs;
 
+    /* List of logical router <-> lb changes. List node is
+     * 'struct crupdated_od_lb_data' */
+    struct ovs_list crupdated_lr_lbs;
+
     /* Indicates if any of the tracked lb has health checks enabled. */
     bool has_health_checks;
 
@@ -57,6 +61,9 @@ struct tracked_lb_data {
 
     /* Indicates if a lb group was disassociated from a logical switch. */
     bool has_dissassoc_lbgrps_from_od;
+
+    /* Indicates if any lb (in the tracked data) has 'routable' flag set. */
+    bool has_routable_lb;
 };
 
 /* struct which maintains the data of the engine node lb_data. */
@@ -67,6 +74,7 @@ struct ed_type_lb_data {
     /* hmap of load balancer groups.  hmap node is 'struct ovn_lb_group *' */
     struct hmap lb_groups;
     struct hmap ls_lb_map;
+    struct hmap lr_lb_map;
 
     /* tracked data*/
     bool tracked;
@@ -81,5 +89,6 @@ void en_lb_data_clear_tracked_data(void *data);
 bool lb_data_load_balancer_handler(struct engine_node *, void *data);
 bool lb_data_load_balancer_group_handler(struct engine_node *, void *data);
 bool lb_data_logical_switch_handler(struct engine_node *, void *data);
+bool lb_data_logical_router_handler(struct engine_node *, void *data);
 
 #endif /* end of EN_NORTHD_LB_DATA_H */

@@ -145,6 +145,7 @@ struct ovn_lb_group {
     size_t n_lbs;
     struct ovn_northd_lb **lbs;
     struct ovn_lb_ip_set *lb_ips;
+    bool has_routable_lb;
 };
 
 struct ovn_lb_group *ovn_lb_group_create(
