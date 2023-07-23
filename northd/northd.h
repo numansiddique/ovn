@@ -357,7 +357,8 @@ bool northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *,
                                           struct hmap *lb_group_datapaths_map);
 bool northd_handle_lb_data_changes_post_od(struct tracked_lb_data *,
                                            struct ovn_datapaths *ls_datapaths,
-                                           struct hmap *lb_datapaths_map);
+                                           struct hmap *lb_datapaths_map,
+                                           struct hmap *lb_group_datapaths_map);
 
 void build_bfd_table(struct ovsdb_idl_txn *ovnsb_txn,
                      const struct nbrec_bfd_table *,
