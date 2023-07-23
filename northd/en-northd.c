@@ -236,6 +236,10 @@ northd_lb_data_handler_pre_od(struct engine_node *node, void *data)
         return false;
     }
 
+    if (lb_data->tracked_lb_data.has_dissassoc_lbgrps_from_od) {
+        return false;
+    }
+
     struct northd_data *nd = data;
 
     if (!northd_handle_lb_data_changes_pre_od(&lb_data->tracked_lb_data,
@@ -258,12 +262,15 @@ northd_lb_data_handler_post_od(struct engine_node *node, void *data)
 
     ovs_assert(lb_data->tracked);
     ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbs_from_od);
+    ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbgrps_from_od);
+    ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbs_from_lb_grops);
 
     struct northd_data *nd = data;
 
     if (!northd_handle_lb_data_changes_post_od(&lb_data->tracked_lb_data,
                                                &nd->ls_datapaths,
-                                               &nd->lb_datapaths_map)) {
+                                               &nd->lb_datapaths_map,
+                                               &nd->lb_group_datapaths_map)) {
         return false;
     }
 
