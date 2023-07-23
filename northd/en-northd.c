@@ -207,6 +207,26 @@ northd_sb_port_binding_handler(struct engine_node *node,
 }
 
 bool
+northd_nb_logical_router_handler(struct engine_node *node,
+                                 void *data)
+{
+    struct northd_data *nd = data;
+    struct northd_input input_data;
+
+    northd_get_input_data(node, &input_data);
+
+    if (!northd_handle_lr_changes(&input_data, nd)) {
+        return false;
+    }
+
+    if (nd->change_tracked) {
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+bool
 northd_lb_data_handler_pre_od(struct engine_node *node, void *data)
 {
     struct ed_type_lb_data *lb_data = engine_get_input_data("lb_data", node);
@@ -240,6 +260,10 @@ northd_lb_data_handler_pre_od(struct engine_node *node, void *data)
         return false;
     }
 
+    if (lb_data->tracked_lb_data.has_routable_lb) {
+        return false;
+    }
+
     struct northd_data *nd = data;
 
     if (!northd_handle_lb_data_changes_pre_od(&lb_data->tracked_lb_data,
@@ -264,11 +288,13 @@ northd_lb_data_handler_post_od(struct engine_node *node, void *data)
     ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbs_from_od);
     ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbgrps_from_od);
     ovs_assert(!lb_data->tracked_lb_data.has_dissassoc_lbs_from_lb_grops);
+    ovs_assert(!lb_data->tracked_lb_data.has_routable_lb);
 
     struct northd_data *nd = data;
 
     if (!northd_handle_lb_data_changes_post_od(&lb_data->tracked_lb_data,
                                                &nd->ls_datapaths,
+                                               &nd->lr_datapaths,
                                                &nd->lb_datapaths_map,
                                                &nd->lb_group_datapaths_map)) {
         return false;
