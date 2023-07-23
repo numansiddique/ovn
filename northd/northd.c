@@ -4959,34 +4959,26 @@ build_ports(struct ovsdb_idl_txn *ovnsb_txn,
 }
 
 static void
-destroy_tracked_ls_change(struct ls_change *ls_change)
+destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
 {
-    struct ovn_port *op;
-    LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-        ovs_list_remove(&op->list);
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH_SAFE (hmapx_node, &trk_ovn_ports->deleted) {
+        ovn_port_destroy_orphan(hmapx_node->data);
+        hmapx_delete(&trk_ovn_ports->deleted, hmapx_node);
     }
-    LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-        ovs_list_remove(&op->list);
-    }
-    LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
-        ovs_list_remove(&op->list);
-        ovn_port_destroy_orphan(op);
-    }
+
+    hmapx_clear(&trk_ovn_ports->created);
+    hmapx_clear(&trk_ovn_ports->updated);
 }
 
 void
 destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
-    struct ls_change *ls_change;
-    LIST_FOR_EACH_SAFE (ls_change, list_node,
-                        &nd->tracked_ls_changes.updated) {
-        destroy_tracked_ls_change(ls_change);
-        ovs_list_remove(&ls_change->list_node);
-        free(ls_change);
-    }
+    struct tracked_northd_changes *trk_changes = &nd->trk_northd_changes;
+    destroy_tracked_ovn_ports(&trk_changes->trk_ovn_ports);
 
     nd->change_tracked = false;
-    nd->lb_changed = false;
+    trk_changes->lb_changed = false;
 }
 
 /* Check if a changed LSP can be handled incrementally within the I-P engine
@@ -5237,7 +5229,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                                 const struct northd_input *ni,
                                 struct northd_data *nd,
                                 struct ovn_datapath *od,
-                                struct ls_change *ls_change,
+                                struct tracked_ovn_ports *trk_ports,
                                 bool *updated)
 {
     bool ls_ports_changed = false;
@@ -5282,8 +5274,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             if (!op) {
                 goto fail;
             }
-            ovs_list_push_back(&ls_change->added_ports,
-                                &op->list);
+            hmapx_add(&trk_ports->created, op);
         } else if (ls_port_has_changed(op->nbsp, new_nbsp)) {
             /* Existing port updated */
             bool temp = false;
@@ -5314,7 +5305,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                                 ni->sbrec_chassis_by_hostname)) {
                 goto fail;
             }
-            ovs_list_push_back(&ls_change->updated_ports, &op->list);
+            hmapx_add(&trk_ports->updated, op);
         }
         op->visited = true;
     }
@@ -5323,48 +5314,32 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     HMAP_FOR_EACH_SAFE (op, dp_node, &od->ports) {
         if (!op->visited) {
             if (!op->lsp_can_be_inc_processed) {
-                goto fail_clean_deleted;
+                goto fail;
             }
             if (sset_contains(&nd->svc_monitor_lsps, op->key)) {
                 /* This port was used for svc monitor, which may be
                  * impacted by this deletion. Fallback to recompute. */
-                goto fail_clean_deleted;
+                goto fail;
             }
-            ovs_list_push_back(&ls_change->deleted_ports,
-                                &op->list);
+            hmapx_add(&trk_ports->deleted, op);
             hmap_remove(&nd->ls_ports, &op->key_node);
             hmap_remove(&od->ports, &op->dp_node);
             sbrec_port_binding_delete(op->sb);
             delete_fdb_entry(ni->sbrec_fdb_by_dp_and_port, od->tunnel_key,
-                                op->tunnel_key);
+                             op->tunnel_key);
         }
     }
 
-    if (!ovs_list_is_empty(&ls_change->added_ports) ||
-        !ovs_list_is_empty(&ls_change->updated_ports) ||
-        !ovs_list_is_empty(&ls_change->deleted_ports)) {
+    if (!hmapx_is_empty(&trk_ports->created) ||
+            !hmapx_is_empty(&trk_ports->updated) ||
+            !hmapx_is_empty(&trk_ports->deleted)) {
         *updated = true;
     }
 
     return true;
 
-fail_clean_deleted:
-    LIST_FOR_EACH_POP (op, list, &ls_change->deleted_ports) {
-        ovn_port_destroy_orphan(op);
-    }
-
 fail:
-
-    LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-        ovs_list_remove(&op->list);
-    }
-    LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-        ovs_list_remove(&op->list);
-    }
-    LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
-        ovs_list_remove(&op->list);
-        ovn_port_destroy_orphan(op);
-    }
+    destroy_tracked_ovn_ports(trk_ports);
     return false;
 }
 
@@ -5383,6 +5358,7 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
 {
     const struct nbrec_logical_switch *changed_ls;
 
+    struct tracked_northd_changes *trk_nd_changes = &nd->trk_northd_changes;
     NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
                                              ni->nbrec_logical_switch_table) {
         if (nbrec_logical_switch_is_new(changed_ls) ||
@@ -5405,31 +5381,16 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             goto fail;
         }
 
-        struct ls_change *ls_change = xzalloc(sizeof *ls_change);
-        ls_change->od = od;
-        ovs_list_init(&ls_change->added_ports);
-        ovs_list_init(&ls_change->deleted_ports);
-        ovs_list_init(&ls_change->updated_ports);
-
         bool updated = false;
         if (!ls_handle_lsp_changes(ovnsb_idl_txn, changed_ls,
-                                   ni, nd, od, ls_change,
+                                   ni, nd, od, &trk_nd_changes->trk_ovn_ports,
                                    &updated)) {
-            destroy_tracked_ls_change(ls_change);
-            free(ls_change);
             goto fail;
         }
 
         if (updated) {
-            ovs_list_push_back(&nd->tracked_ls_changes.updated,
-                               &ls_change->list_node);
-        } else {
-            free(ls_change);
+            nd->change_tracked = true;
         }
-    }
-
-    if (!ovs_list_is_empty(&nd->tracked_ls_changes.updated)) {
-        nd->change_tracked = true;
     }
 
     return true;
@@ -17624,118 +17585,121 @@ sync_lflows_from_objres(struct ovsdb_idl_txn *ovnsb_txn,
     return true;
 }
 
-bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                    struct tracked_ls_changes *ls_changes,
-                                    struct lflow_input *lflow_input,
-                                    struct lflow_data *lflow_data)
+bool lflow_handle_northd_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                 struct tracked_northd_changes *trk_nd_changes,
+                                 struct lflow_input *lflow_input,
+                                 struct lflow_data *lflow_data)
 {
-    struct ls_change *ls_change;
+    struct tracked_ovn_ports *trk_ovn_ports = &trk_nd_changes->trk_ovn_ports;
 
-    LIST_FOR_EACH (ls_change, list_node, &ls_changes->updated) {
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->deleted) {
+        struct ovn_port *op = hmapx_node->data;
+
+        struct resource_to_objects_node  *res_node =
+                objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
+                                     op->nbsp->name);
+
+        /* unlink old lflows. */
+        unlink_objres_lflows(res_node, op->od, lflow_data,
+                                &op->lflow_dep_mgr);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &op->lflow_dep_mgr);
+        objdep_mgr_clear(&op->lflow_dep_mgr);
+
+        /* No need to update SB multicast groups, thanks to weak
+            * references. */
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->updated) {
+        struct ovn_port *op = hmapx_node->data;
+
+        struct resource_to_objects_node  *res_node =
+            objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
+                                 op->nbsp->name);
+
+        /* unlink old lflows. */
+        unlink_objres_lflows(res_node, op->od,
+                                lflow_data, &op->lflow_dep_mgr);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+        build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
+                                                 lflow_input->lr_ports,
+                                                 lflow_input->meter_groups,
+                                                 &match, &actions,
+                                                 lflow_data);
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* SB port_binding is not deleted, so don't update SB multicast
+         * groups. */
+
+        /* Sync the new flows to SB. */
+        res_node = objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
+                                        op->nbsp->name);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &op->lflow_dep_mgr);
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->created) {
+        struct ovn_port *op = hmapx_node->data;
+
         const struct sbrec_multicast_group *sbmc_flood =
             mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_FLOOD, ls_change->od->sb);
+                               MC_FLOOD, op->od->sb);
         const struct sbrec_multicast_group *sbmc_flood_l2 =
             mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_FLOOD_L2, ls_change->od->sb);
+                               MC_FLOOD_L2, op->od->sb);
         const struct sbrec_multicast_group *sbmc_unknown =
             mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_UNKNOWN, ls_change->od->sb);
+                               MC_UNKNOWN, op->od->sb);
 
-        struct ovn_port *op;
-        LIST_FOR_EACH (op, list, &ls_change->deleted_ports) {
-            struct resource_to_objects_node  *res_node =
-                objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
-                                     op->nbsp->name);
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+        build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
+                                                 lflow_input->lr_ports,
+                                                 lflow_input->meter_groups,
+                                                 &match, &actions,
+                                                 lflow_data);
+        ds_destroy(&match);
+        ds_destroy(&actions);
 
-            /* unlink old lflows. */
-            unlink_objres_lflows(res_node, op->od, lflow_data,
-                                 &op->lflow_dep_mgr);
-            sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
-                                    lflow_data, &op->lflow_dep_mgr);
-            objdep_mgr_clear(&op->lflow_dep_mgr);
+        /* Update SB multicast groups for the new port. */
+        if (!sbmc_flood) {
+            sbmc_flood = create_sb_multicast_group(ovnsb_txn,
+                op->od->sb, MC_FLOOD, OVN_MCAST_FLOOD_TUNNEL_KEY);
+        }
+        sbrec_multicast_group_update_ports_addvalue(sbmc_flood, op->sb);
 
-            /* No need to update SB multicast groups, thanks to weak
-             * references. */
+        if (!sbmc_flood_l2) {
+            sbmc_flood_l2 = create_sb_multicast_group(ovnsb_txn,
+                op->od->sb, MC_FLOOD_L2,
+                OVN_MCAST_FLOOD_L2_TUNNEL_KEY);
+        }
+        sbrec_multicast_group_update_ports_addvalue(sbmc_flood_l2, op->sb);
+
+        if (op->has_unknown) {
+            if (!sbmc_unknown) {
+                sbmc_unknown = create_sb_multicast_group(ovnsb_txn,
+                    op->od->sb, MC_UNKNOWN,
+                    OVN_MCAST_UNKNOWN_TUNNEL_KEY);
+            }
+            sbrec_multicast_group_update_ports_addvalue(sbmc_unknown,
+                                                        op->sb);
         }
 
-        LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-            struct resource_to_objects_node  *res_node =
-                objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
-                                     op->nbsp->name);
-
-            /* unlink old lflows. */
-            unlink_objres_lflows(res_node, op->od,
-                                 lflow_data, &op->lflow_dep_mgr);
-
-            /* Generate new lflows. */
-            struct ds match = DS_EMPTY_INITIALIZER;
-            struct ds actions = DS_EMPTY_INITIALIZER;
-            build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
-                                                     lflow_input->lr_ports,
-                                                     lflow_input->meter_groups,
-                                                     &match, &actions,
-                                                     lflow_data);
-            ds_destroy(&match);
-            ds_destroy(&actions);
-
-            /* SB port_binding is not deleted, so don't update SB multicast
-             * groups. */
-
-            /* Sync the new flows to SB. */
-            res_node = objdep_mgr_find_objs(&op->lflow_dep_mgr,
-                                            OBJDEP_TYPE_LPORT,
-                                            op->nbsp->name);
-            sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
-                                    lflow_data, &op->lflow_dep_mgr);
-        }
-
-        LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-            struct ds match = DS_EMPTY_INITIALIZER;
-            struct ds actions = DS_EMPTY_INITIALIZER;
-            build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
-                                                     lflow_input->lr_ports,
-                                                     lflow_input->meter_groups,
-                                                     &match, &actions,
-                                                     lflow_data);
-            ds_destroy(&match);
-            ds_destroy(&actions);
-
-            /* Update SB multicast groups for the new port. */
-            if (!sbmc_flood) {
-                sbmc_flood = create_sb_multicast_group(ovnsb_txn,
-                    ls_change->od->sb, MC_FLOOD, OVN_MCAST_FLOOD_TUNNEL_KEY);
-            }
-            sbrec_multicast_group_update_ports_addvalue(sbmc_flood, op->sb);
-
-            if (!sbmc_flood_l2) {
-                sbmc_flood_l2 = create_sb_multicast_group(ovnsb_txn,
-                    ls_change->od->sb, MC_FLOOD_L2,
-                    OVN_MCAST_FLOOD_L2_TUNNEL_KEY);
-            }
-            sbrec_multicast_group_update_ports_addvalue(sbmc_flood_l2, op->sb);
-
-            if (op->has_unknown) {
-                if (!sbmc_unknown) {
-                    sbmc_unknown = create_sb_multicast_group(ovnsb_txn,
-                        ls_change->od->sb, MC_UNKNOWN,
-                        OVN_MCAST_UNKNOWN_TUNNEL_KEY);
-                }
-                sbrec_multicast_group_update_ports_addvalue(sbmc_unknown,
-                                                            op->sb);
-            }
-
-            /* Sync the newly added flows to SB. */
-            struct resource_to_objects_node  *res_node;
-            res_node = objdep_mgr_find_objs(&op->lflow_dep_mgr,
-                                            OBJDEP_TYPE_LPORT,
-                                            op->nbsp->name);
-            sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
-                                    lflow_data, &op->lflow_dep_mgr);
-        }
+        /* Sync the newly added flows to SB. */
+        struct resource_to_objects_node  *res_node;
+        res_node = objdep_mgr_find_objs(&op->lflow_dep_mgr,
+                                        OBJDEP_TYPE_LPORT,
+                                        op->nbsp->name);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &op->lflow_dep_mgr);
     }
-    return true;
 
+    return true;
 }
 
 /* Each port group in Port_Group table in OVN_Northbound has a corresponding
@@ -18616,7 +18580,10 @@ northd_init(struct northd_data *data)
     sset_init(&data->svc_monitor_lsps);
     hmap_init(&data->svc_monitor_map);
     data->change_tracked = false;
-    ovs_list_init(&data->tracked_ls_changes.updated);
+
+    hmapx_init(&data->trk_northd_changes.trk_ovn_ports.created);
+    hmapx_init(&data->trk_northd_changes.trk_ovn_ports.updated);
+    hmapx_init(&data->trk_northd_changes.trk_ovn_ports.deleted);
 }
 
 void
@@ -18669,6 +18636,10 @@ northd_destroy(struct northd_data *data)
     destroy_debug_config();
 
     sset_destroy(&data->svc_monitor_lsps);
+
+    hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.created);
+    hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.updated);
+    hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.deleted);
 }
 
 void
