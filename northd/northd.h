@@ -19,6 +19,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/ovs-atomic.h"
+#include "lib/hmapx.h"
 #include "lib/objdep.h"
 #include "lib/sset.h"
 #include "northd/ipam.h"
@@ -87,21 +88,33 @@ struct ovn_datapaths {
     struct ovn_datapath **array;
 };
 
-/* Track what's changed for a single LS.
- * Now only track port changes. */
-struct ls_change {
-    struct ovs_list list_node;
-    struct ovn_datapath *od;
-    struct ovs_list added_ports;
-    struct ovs_list deleted_ports;
-    struct ovs_list updated_ports;
+/* Represents a tracked ovn_port. */
+struct tracked_ovn_port {
+    struct hmap_node hmap_node;
+    struct ovn_port *op;
 };
 
-/* Track what's changed for logical switches.
- * Now only track updated ones (added or deleted may be supported in the
- * future). */
-struct tracked_ls_changes {
-    struct ovs_list updated; /* Contains struct ls_change */
+struct tracked_ovn_ports {
+    /* tracked created ports.
+     * hmap node data is 'struct tracked_ovn_port *' */
+    struct hmap created;
+
+    /* tracked updated ports.
+     * hmap node data is 'struct tracked_ovn_port *' */
+    struct hmap updated;
+
+    /* tracked deleted ports.
+     * hmap node data is 'struct tracked_ovn_port *' */
+    struct hmap deleted;
+};
+
+/* Track what's changed in the northd engine node.
+ * Now only tracks ovn_ports (of vif type) - created, updated
+ * and deleted and indicates if load balancers have changed. */
+struct northd_tracked_data {
+    struct tracked_ovn_ports trk_ovn_ports;
+    bool lb_changed; /* Indicates if load balancers changed or association of
+                      * load balancer to logical switch/router changed. */
 };
 
 struct northd_data {
@@ -120,9 +133,7 @@ struct northd_data {
     struct sset svc_monitor_lsps;
     struct hmap svc_monitor_map;
     bool change_tracked;
-    struct tracked_ls_changes tracked_ls_changes;
-    bool lb_changed; /* Indicates if load balancers changed or association of
-                      * load balancer to logical switch/router changed. */
+    struct northd_tracked_data trk_northd_changes;
 };
 
 struct lflow_data {
@@ -352,9 +363,9 @@ void northd_indices_create(struct northd_data *data,
 void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
                   struct lflow_input *input_data,
                   struct lflow_data *lflow_data);
-bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                    struct tracked_ls_changes *,
-                                    struct lflow_input *, struct lflow_data *);
+bool lflow_handle_northd_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                 struct northd_tracked_data *,
+                                 struct lflow_input *, struct lflow_data *);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports);
 
