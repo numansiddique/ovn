@@ -303,7 +303,7 @@ northd_lb_data_handler_post_od(struct engine_node *node, void *data)
     /* Indicate the depedendant engine nodes that load balancer/group
      * related data has changed (including association to logical
      * switch/router). */
-    nd->lb_changed = true;
+    nd->trk_northd_changes.lb_changed = true;
     engine_set_node_state(node, EN_UPDATED);
     return true;
 }
