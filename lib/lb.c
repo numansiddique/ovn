@@ -794,6 +794,7 @@ ovn_lb_group_init(struct ovn_lb_group *lb_group,
         const struct uuid *lb_uuid =
             &nbrec_lb_group->load_balancer[i]->header_.uuid;
         lb_group->lbs[i] = ovn_northd_lb_find(lbs, lb_uuid);
+        lb_group->has_routable_lb |= lb_group->lbs[i]->routable;
     }
 }
 
@@ -814,6 +815,7 @@ static void
 ovn_lb_group_cleanup(struct ovn_lb_group *lb_group)
 {
     ovn_lb_ip_set_destroy(lb_group->lb_ips);
+    lb_group->has_routable_lb = false;
     free(lb_group->lbs);
 }
 
@@ -1078,7 +1080,10 @@ ovn_lb_datapaths_add_lr(struct ovn_lb_datapaths *lb_dps, size_t n,
                         struct ovn_datapath **ods)
 {
     for (size_t i = 0; i < n; i++) {
-        bitmap_set1(lb_dps->nb_lr_map, ods[i]->index);
+        if (!bitmap_is_set(lb_dps->nb_lr_map, ods[i]->index)) {
+            bitmap_set1(lb_dps->nb_lr_map, ods[i]->index);
+            lb_dps->n_nb_lr++;
+        }
     }
 }
 
