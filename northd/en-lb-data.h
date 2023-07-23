@@ -26,6 +26,7 @@ struct crupdated_od_lb_data {
 
     struct uuid od_uuid;
     struct uuidset assoc_lbs;
+    struct uuidset assoc_lbgrps;
 };
 
 struct tracked_lb_data {
@@ -53,6 +54,9 @@ struct tracked_lb_data {
 
     /* Indicates if a lb was disassociated from a logical switch. */
     bool has_dissassoc_lbs_from_od;
+
+    /* Indicates if a lb group was disassociated from a logical switch. */
+    bool has_dissassoc_lbgrps_from_od;
 };
 
 /* struct which maintains the data of the engine node lb_data. */
@@ -62,7 +66,7 @@ struct ed_type_lb_data {
 
     /* hmap of load balancer groups.  hmap node is 'struct ovn_lb_group *' */
     struct hmap lb_groups;
-    struct hmap od_lb_info;
+    struct hmap ls_lb_map;
 
     /* tracked data*/
     bool tracked;
