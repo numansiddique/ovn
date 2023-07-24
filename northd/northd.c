@@ -5006,14 +5006,55 @@ destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
     hmapx_clear(&trk_ovn_ports->updated);
 }
 
+static void
+destroy_tracked_datapaths(struct tracked_datapaths *trk_dps)
+{
+    hmapx_clear(&trk_dps->crupdated);
+    trk_dps->lr_datapaths_changed = false;
+}
+
+static void
+destroy_tracked_lb_datapaths(struct tracked_lb_datapaths *trk_lbs)
+{
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH_SAFE (hmapx_node, &trk_lbs->deleted) {
+        ovn_lb_datapaths_destroy(hmapx_node->data);
+        hmapx_delete(&trk_lbs->deleted, hmapx_node);
+    }
+
+    hmapx_clear(&trk_lbs->crupdated);
+}
+
 void
 destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
-    struct tracked_northd_changes *trk_changes = &nd->trk_northd_changes;
+    struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
     destroy_tracked_ovn_ports(&trk_changes->trk_ovn_ports);
-
+    destroy_tracked_datapaths(&trk_changes->trk_datapaths);
+    destroy_tracked_lb_datapaths(&trk_changes->trk_lbs);
     nd->change_tracked = false;
     trk_changes->lb_changed = false;
+}
+
+bool northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
+{
+    return (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)
+            || !hmapx_is_empty(&trk_nd_changes->trk_datapaths.crupdated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted));
+}
+
+bool northd_has_only_ports_in_tracked_data(
+    struct northd_tracked_data *trk_nd_changes)
+{
+    return (hmapx_is_empty(&trk_nd_changes->trk_datapaths.crupdated)
+            && hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
+            && hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
+            && (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)));
 }
 
 /* Check if a changed LSP can be handled incrementally within the I-P engine
@@ -5407,7 +5448,7 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
 {
     const struct nbrec_logical_switch *changed_ls;
 
-    struct tracked_northd_changes *trk_nd_changes = &nd->trk_northd_changes;
+    struct northd_tracked_data *trk_nd_changes = &nd->trk_northd_changes;
     NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
                                              ni->nbrec_logical_switch_table) {
         if (nbrec_logical_switch_is_new(changed_ls) ||
@@ -5602,7 +5643,8 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
                                      struct ovn_datapaths *ls_datapaths,
                                      struct ovn_datapaths *lr_datapaths,
                                      struct hmap *lb_datapaths_map,
-                                     struct hmap *lb_group_datapaths_map)
+                                     struct hmap *lb_group_datapaths_map,
+                                     struct northd_tracked_data *nd_changes)
 {
     struct ovn_lb_datapaths *lb_dps;
     struct ovn_northd_lb *lb;
@@ -5615,6 +5657,9 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
         lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
         ovs_assert(lb_dps);
 
+        /* Add the deleted lb to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_lbs.deleted, lb_dps);
+
         /* Re-evaluate 'od->has_lb_vip for od's associated with the
          * deleted lb. */
         size_t index;
@@ -5622,10 +5667,19 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
                            lb_dps->nb_ls_map) {
             od = ls_datapaths->array[index];
             init_lb_for_datapath(od);
+
+            /* Add the ls datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+            /* Also add the router ports of the logical switch
+             * to the northd tracked data. */
+            for (size_t i = 0; i < od->n_router_ports; i++) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated,
+                          od->router_ports[i]);
+            }
         }
 
         hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
-        ovn_lb_datapaths_destroy(lb_dps);
     }
 
     struct crupdated_lb *clb;
@@ -5681,7 +5735,8 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                                       struct ovn_datapaths *ls_datapaths,
                                       struct ovn_datapaths *lr_datapaths,
                                       struct hmap *lb_datapaths_map,
-                                      struct hmap *lb_group_datapaths_map)
+                                      struct hmap *lb_group_datapaths_map,
+                                      struct northd_tracked_data *nd_changes)
 {
     ovs_assert(!trk_lb_data->has_health_checks);
     ovs_assert(!trk_lb_data->has_dissassoc_lbs_from_lb_grops);
@@ -5701,6 +5756,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &uuidnode->uuid);
             ovs_assert(lb_dps);
             ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
 
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbgrps) {
@@ -5716,11 +5774,23 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
                 ovs_assert(lb_dps);
                 ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+
+                /* Add the lb to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
             }
         }
 
         /* Re-evaluate 'od->has_lb_vip' */
         init_lb_for_datapath(od);
+
+        /* Add the ls datapath to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+        /* Also add the router ports of the logical switch
+         * to the northd tracked data. */
+        for (size_t i = 0; i < od->n_router_ports; i++) {
+            hmapx_add(&nd_changes->trk_ovn_ports.updated, od->router_ports[i]);
+        }
     }
 
     LIST_FOR_EACH (codlb, list_node, &trk_lb_data->crupdated_lr_lbs) {
@@ -5736,6 +5806,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             /* Add the lb_ips of lb_dps to the od. */
             build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
             build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
 
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbgrps) {
@@ -5760,6 +5833,10 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
 
         /* Re-evaluate 'od->has_lb_vip' */
         init_lb_for_datapath(od);
+
+        /* Add the lr datapath to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+        nd_changes->trk_datapaths.lr_datapaths_changed = true;
     }
 
     struct crupdated_lb *clb;
@@ -5775,6 +5852,15 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             od = ls_datapaths->array[index];
             /* Re-evaluate 'od->has_lb_vip' */
             init_lb_for_datapath(od);
+
+            /* Add the ls datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+            /* Also add the router ports of the logical switch
+            * to the northd tracked data. */
+            for (size_t i = 0; i < od->n_router_ports; i++) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated, od->router_ports[i]);
+            }
         }
 
         BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
@@ -5798,7 +5884,12 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             add_neigh_ips_to_lrouter(od, lb->neigh_mode,
                                      &clb->inserted_vips_v4,
                                      &clb->inserted_vips_v6);
+
+            nd_changes->trk_datapaths.lr_datapaths_changed = true;
         }
+
+        /* Add the lb to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
     }
 
     struct ovn_lb_group *lbgrp;
@@ -5835,7 +5926,20 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
 
                 /* Re-evaluate 'od->has_lb_vip' */
                 init_lb_for_datapath(od);
+
+                /* Add the ls datapath to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+                /* Also add the router ports of the logical switch
+                * to the northd tracked data. */
+                for (size_t j = 0; j < od->n_router_ports; j++) {
+                    hmapx_add(&nd_changes->trk_ovn_ports.updated,
+                              od->router_ports[j]);
+                }
             }
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
     }
 
@@ -16704,25 +16808,27 @@ struct lswitch_flow_build_info {
  */
 static void
 build_lswitch_and_lrouter_iterate_by_ls(struct ovn_datapath *od,
-                                        struct lswitch_flow_build_info *lsi)
+                                    const struct hmap *port_groups,
+                                    const struct shash *meter_groups,
+                                    const struct chassis_features *features,
+                                    struct ds *actions,
+                                    struct lflow_data *lflows)
 {
     ovs_assert(od->nbs);
-    build_lswitch_lflows_pre_acl_and_acl(od, lsi->port_groups,
-                                         lsi->features,
-                                         lsi->lflows,
-                                         lsi->meter_groups);
+    build_lswitch_lflows_pre_acl_and_acl(od, port_groups, features, lflows,
+                                         meter_groups);
 
-    build_fwd_group_lflows(od, lsi->lflows);
-    build_lswitch_lflows_admission_control(od, lsi->lflows);
-    build_lswitch_learn_fdb_od(od, lsi->lflows);
-    build_lswitch_arp_nd_responder_default(od, lsi->lflows);
-    build_lswitch_dns_lookup_and_response(od, lsi->lflows, lsi->meter_groups);
-    build_lswitch_dhcp_and_dns_defaults(od, lsi->lflows);
-    build_lswitch_destination_lookup_bmcast(od, lsi->lflows, &lsi->actions,
-                                            lsi->meter_groups);
-    build_lswitch_output_port_sec_od(od, lsi->lflows);
-    build_lswitch_lb_affinity_default_flows(od, lsi->lflows);
-    build_lswitch_lflows_l2_unknown(od, lsi->lflows);
+    build_fwd_group_lflows(od, lflows);
+    build_lswitch_lflows_admission_control(od, lflows);
+    build_lswitch_learn_fdb_od(od, lflows);
+    build_lswitch_arp_nd_responder_default(od, lflows);
+    build_lswitch_dns_lookup_and_response(od, lflows, meter_groups);
+    build_lswitch_dhcp_and_dns_defaults(od, lflows);
+    build_lswitch_destination_lookup_bmcast(od, lflows, actions,
+                                            meter_groups);
+    build_lswitch_output_port_sec_od(od, lflows);
+    build_lswitch_lb_affinity_default_flows(od, lflows);
+    build_lswitch_lflows_l2_unknown(od, lflows);
 }
 
 /* Helper function to combine all lflow generation which is iterated by
@@ -16853,7 +16959,9 @@ build_lflows_thread(void *arg)
                     if (stop_parallel_processing()) {
                         return NULL;
                     }
-                    build_lswitch_and_lrouter_iterate_by_ls(od, lsi);
+                    build_lswitch_and_lrouter_iterate_by_ls(
+                        od, lsi->port_groups, lsi->meter_groups, lsi->features,
+                        &lsi->actions, lsi->lflows);
                 }
             }
             for (bnum = control->id;
@@ -17070,7 +17178,11 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
          */
         stopwatch_start(LFLOWS_DATAPATHS_STOPWATCH_NAME, time_msec());
         HMAP_FOR_EACH (od, key_node, &ls_datapaths->datapaths) {
-            build_lswitch_and_lrouter_iterate_by_ls(od, &lsi);
+            build_lswitch_and_lrouter_iterate_by_ls(od, lsi.port_groups,
+                                                    lsi.meter_groups,
+                                                    lsi.features,
+                                                    &lsi.actions,
+                                                    lsi.lflows);
         }
         HMAP_FOR_EACH (od, key_node, &lr_datapaths->datapaths) {
             build_lswitch_and_lrouter_iterate_by_lr(od, &lsi);
@@ -17580,6 +17692,38 @@ unlink_objres_lflows(struct resource_to_objects_node  *res_node,
     }
 }
 
+static void
+unlink_all_ods_objres_lflows(struct resource_to_objects_node  *res_node,
+                             size_t n_ls_datapaths,
+                             size_t n_lr_datapaths,
+                             struct hmap *lflows_hash_map)
+{
+    if (!res_node) {
+        return;
+    }
+
+    struct object_to_resources_list_node *resource_list_node;
+    RESOURCE_FOR_EACH_OBJ (resource_list_node, res_node) {
+        const struct uuid *obj_uuid = &resource_list_node->obj_uuid;
+        struct ovn_lflow *lflow = ovn_lflow_uuid_find(lflows_hash_map,
+                                                      obj_uuid);
+        if (!lflow) {
+            continue;
+        }
+
+        size_t n_datapaths;
+        if (ovn_stage_to_datapath_type(lflow->stage) == DP_SWITCH) {
+            n_datapaths = n_ls_datapaths;
+        } else {
+            n_datapaths = n_lr_datapaths;
+        }
+        size_t index;
+        BITMAP_FOR_EACH_1 (index, n_datapaths, lflow->dpg_bitmap) {
+            bitmap_set0(lflow->dpg_bitmap, index);
+        }
+    }
+}
+
 static bool
 sync_lflows_from_objres(struct ovsdb_idl_txn *ovnsb_txn,
                         struct resource_to_objects_node  *res_node,
@@ -17644,13 +17788,11 @@ sync_lflows_from_objres(struct ovsdb_idl_txn *ovnsb_txn,
     return true;
 }
 
-bool lflow_handle_northd_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                 struct tracked_northd_changes *trk_nd_changes,
-                                 struct lflow_input *lflow_input,
-                                 struct lflow_data *lflow_data)
+bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                struct tracked_ovn_ports *trk_ovn_ports,
+                                struct lflow_input *lflow_input,
+                                struct lflow_data *lflow_data)
 {
-    struct tracked_ovn_ports *trk_ovn_ports = &trk_nd_changes->trk_ovn_ports;
-
     struct hmapx_node *hmapx_node;
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->deleted) {
         struct ovn_port *op = hmapx_node->data;
@@ -17756,6 +17898,112 @@ bool lflow_handle_northd_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                         op->nbsp->name);
         sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
                                 lflow_data, &op->lflow_dep_mgr);
+    }
+
+    return true;
+}
+
+bool
+lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                     struct tracked_datapaths *trk_datapaths,
+                                     struct lflow_input *lflow_input,
+                                     struct lflow_data *lflow_data)
+{
+    struct ovn_datapath *od;
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH (hmapx_node, &trk_datapaths->crupdated) {
+        od = hmapx_node->data;
+        ovs_assert(od->nbs);
+
+        struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
+            &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name);
+
+        /* unlink old lflows. */
+        unlink_objres_lflows(res_node, od, lflow_data, &od->lflow_dep_mgr);
+
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_lswitch_and_lrouter_iterate_by_ls(
+            od, lflow_input->port_groups, lflow_input->meter_groups,
+            lflow_input->features, &actions, lflow_data);
+        ds_destroy(&actions);
+
+        /* Sync the new flows to SB. */
+        res_node = objdep_mgr_find_objs(&od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                        od->nbs->name);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &od->lflow_dep_mgr);
+    }
+
+    return true;
+}
+
+bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                    struct tracked_lb_datapaths *trk_lbs,
+                                    struct lflow_input *lflow_input,
+                                    struct lflow_data *lflow_data)
+{
+    struct ovn_lb_datapaths *lb_dps;
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH (hmapx_node, &trk_lbs->deleted) {
+        lb_dps = hmapx_node->data;
+
+        struct resource_to_objects_node  *res_node =
+                objdep_mgr_find_objs(&lb_dps->lflow_dep_mgr, OBJDEP_TYPE_LB,
+                                     lb_dps->lb->nlb->name);
+        /* unlink old lflows. */
+        unlink_all_ods_objres_lflows(res_node,
+                                     ods_size(lflow_input->ls_datapaths),
+                                     ods_size(lflow_input->lr_datapaths),
+                                     &lflow_data->lflows_hash_map);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &lb_dps->lflow_dep_mgr);
+        objdep_mgr_clear(&lb_dps->lflow_dep_mgr);
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_lbs->crupdated) {
+        lb_dps = hmapx_node->data;
+
+        struct resource_to_objects_node  *res_node =
+                objdep_mgr_find_objs(&lb_dps->lflow_dep_mgr, OBJDEP_TYPE_LB,
+                                     lb_dps->lb->nlb->name);
+        /* unlink old lflows. */
+        unlink_all_ods_objres_lflows(res_node,
+                                     ods_size(lflow_input->ls_datapaths),
+                                     ods_size(lflow_input->lr_datapaths),
+                                     &lflow_data->lflows_hash_map);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_lswitch_arp_nd_service_monitor(lb_dps, lflow_input->ls_ports,
+                                             lflow_data, &actions,
+                                             &match);
+        build_lrouter_defrag_flows_for_lb(lb_dps, lflow_data,
+                                          lflow_input->lr_datapaths, &match);
+        build_lrouter_flows_for_lb(lb_dps, lflow_data,
+                                   lflow_input->meter_groups,
+                                   lflow_input->lr_datapaths,
+                                   lflow_input->features,
+                                   lflow_input->svc_monitor_map,
+                                   &match, &actions);
+        build_lswitch_flows_for_lb(lb_dps, lflow_data,
+                                   lflow_input->meter_groups,
+                                   lflow_input->ls_datapaths,
+                                   lflow_input->features,
+                                   lflow_input->svc_monitor_map,
+                                   &match, &actions);
+
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* Sync the new flows to SB. */
+        res_node = objdep_mgr_find_objs(&lb_dps->lflow_dep_mgr,
+                                        OBJDEP_TYPE_LB,
+                                        lb_dps->lb->nlb->name);
+        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                                lflow_data, &lb_dps->lflow_dep_mgr);
     }
 
     return true;
@@ -18643,6 +18891,9 @@ northd_init(struct northd_data *data)
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.created);
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.updated);
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.deleted);
+    hmapx_init(&data->trk_northd_changes.trk_datapaths.crupdated);
+    hmapx_init(&data->trk_northd_changes.trk_lbs.crupdated);
+    hmapx_init(&data->trk_northd_changes.trk_lbs.deleted);
 }
 
 void
@@ -18699,6 +18950,9 @@ northd_destroy(struct northd_data *data)
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.created);
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.updated);
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.deleted);
+    hmapx_destroy(&data->trk_northd_changes.trk_datapaths.crupdated);
+    hmapx_destroy(&data->trk_northd_changes.trk_lbs.crupdated);
+    hmapx_destroy(&data->trk_northd_changes.trk_lbs.deleted);
 }
 
 void
