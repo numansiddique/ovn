@@ -103,12 +103,6 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
-    /* Fall back to recompute if any logical router datapath is present
-     * in the tracked changes. */
-    if (northd_data->trk_northd_changes.trk_datapaths.lr_datapaths_changed) {
-        return false;
-    }
-
     const struct engine_context *eng_ctx = engine_get_context();
     struct lflow_data *lflow_data = data;
 

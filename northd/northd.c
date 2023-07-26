@@ -4975,7 +4975,6 @@ static void
 destroy_tracked_datapaths(struct tracked_datapaths *trk_dps)
 {
     hmapx_clear(&trk_dps->crupdated);
-    trk_dps->lr_datapaths_changed = false;
 }
 
 static void
@@ -5779,6 +5778,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 /* Add the lb_ips of lb_dps to the od. */
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
                 build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+
+                /* Add the lb to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
             }
         }
 
@@ -5787,7 +5789,16 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
 
         /* Add the lr datapath to the northd tracked data. */
         hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-        nd_changes->trk_datapaths.lr_datapaths_changed = true;
+
+        /* Also add the peer (logical switch port) of logical router ports
+         * to the northd tracked data. */
+        struct ovn_port *op;
+        HMAP_FOR_EACH (op, dp_node, &od->ports) {
+            hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
+            if (op->peer) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated, op->peer);
+            }
+        }
     }
 
     struct crupdated_lb *clb;
@@ -5836,7 +5847,18 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                                      &clb->inserted_vips_v4,
                                      &clb->inserted_vips_v6);
 
-            nd_changes->trk_datapaths.lr_datapaths_changed = true;
+            /* Add the lr datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+            /* Also add the peer (logical switch port) of logical router ports
+            * to the northd tracked data. */
+            struct ovn_port *op;
+            HMAP_FOR_EACH (op, dp_node, &od->ports) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
+                if (op->peer) {
+                    hmapx_add(&nd_changes->trk_ovn_ports.updated, op->peer);
+                }
+            }
         }
 
         /* Add the lb to the northd tracked data. */
@@ -5869,6 +5891,20 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
 
                 /* Add the lb_ips of lb_dps to the od. */
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
+
+                /* Add the lr datapath to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+
+                /* Also add the peer (logical switch port) of logical router
+                 * ports to the northd tracked data. */
+                struct ovn_port *op;
+                HMAP_FOR_EACH (op, dp_node, &od->ports) {
+                    hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
+                    if (op->peer) {
+                        hmapx_add(&nd_changes->trk_ovn_ports.updated,
+                                  op->peer);
+                    }
+                }
             }
 
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
@@ -16787,35 +16823,40 @@ build_lswitch_and_lrouter_iterate_by_ls(struct ovn_datapath *od,
  */
 static void
 build_lswitch_and_lrouter_iterate_by_lr(struct ovn_datapath *od,
-                                        struct lswitch_flow_build_info *lsi)
+                                    const struct shash *meter_groups,
+                                    const struct hmap *lr_ports,
+                                    const struct hmap *ls_ports,
+                                    const struct chassis_features *features,
+                                    const struct hmap *bfd_connections,
+                                    struct ds *match,
+                                    struct ds *actions,
+                                    struct lflow_data *lflows)
 {
     ovs_assert(od->nbr);
-    build_adm_ctrl_flows_for_lrouter(od, lsi->lflows);
-    build_neigh_learning_flows_for_lrouter(od, lsi->lflows, &lsi->match,
-                                           &lsi->actions, lsi->meter_groups);
-    build_ND_RA_flows_for_lrouter(od, lsi->lflows);
-    build_ip_routing_pre_flows_for_lrouter(od, lsi->lflows);
-    build_static_route_flows_for_lrouter(od, lsi->features,
-                                         lsi->lflows, lsi->lr_ports,
-                                         lsi->bfd_connections);
-    build_mcast_lookup_flows_for_lrouter(od, lsi->lflows, &lsi->match,
-                                         &lsi->actions);
-    build_ingress_policy_flows_for_lrouter(od, lsi->lflows, lsi->lr_ports);
-    build_arp_resolve_flows_for_lrouter(od, lsi->lflows);
-    build_check_pkt_len_flows_for_lrouter(od, lsi->lflows, lsi->lr_ports,
-                                          &lsi->match, &lsi->actions,
-                                          lsi->meter_groups);
-    build_gateway_redirect_flows_for_lrouter(od, lsi->lflows, &lsi->match,
-                                             &lsi->actions);
-    build_arp_request_flows_for_lrouter(od, lsi->lflows, &lsi->match,
-                                        &lsi->actions, lsi->meter_groups);
-    build_misc_local_traffic_drop_flows_for_lrouter(od, lsi->lflows);
-    build_lrouter_arp_nd_for_datapath(od, lsi->lflows, lsi->meter_groups);
-    build_lrouter_nat_defrag_and_lb(od, lsi->lflows, lsi->ls_ports,
-                                    lsi->lr_ports, &lsi->match,
-                                    &lsi->actions, lsi->meter_groups,
-                                    lsi->features);
-    build_lrouter_lb_affinity_default_flows(od, lsi->lflows);
+    build_adm_ctrl_flows_for_lrouter(od, lflows);
+    build_neigh_learning_flows_for_lrouter(od, lflows, match,
+                                           actions, meter_groups);
+    build_ND_RA_flows_for_lrouter(od, lflows);
+    build_ip_routing_pre_flows_for_lrouter(od, lflows);
+    build_static_route_flows_for_lrouter(od, features,
+                                         lflows, lr_ports,
+                                         bfd_connections);
+    build_mcast_lookup_flows_for_lrouter(od, lflows, match,
+                                         actions);
+    build_ingress_policy_flows_for_lrouter(od, lflows, lr_ports);
+    build_arp_resolve_flows_for_lrouter(od, lflows);
+    build_check_pkt_len_flows_for_lrouter(od, lflows, lr_ports, match, actions,
+                                          meter_groups);
+    build_gateway_redirect_flows_for_lrouter(od, lflows, match, actions);
+    build_arp_request_flows_for_lrouter(od, lflows, match,
+                                        actions, meter_groups);
+    build_misc_local_traffic_drop_flows_for_lrouter(od, lflows);
+    build_lrouter_arp_nd_for_datapath(od, lflows, meter_groups);
+    build_lrouter_nat_defrag_and_lb(od, lflows, ls_ports,
+                                    lr_ports, match,
+                                    actions, meter_groups,
+                                    features);
+    build_lrouter_lb_affinity_default_flows(od, lflows);
 }
 
 /* Helper function to combine all lflow generation which is iterated by logical
@@ -16856,28 +16897,24 @@ build_lswitch_and_lrouter_iterate_by_lsp(struct ovn_port *op,
  */
 static void
 build_lswitch_and_lrouter_iterate_by_lrp(struct ovn_port *op,
-                                         struct lswitch_flow_build_info *lsi)
+                                         const struct shash *meter_groups,
+                                         struct ds *match,
+                                         struct ds *actions,
+                                         struct lflow_data *lflows)
 {
     ovs_assert(op->nbrp);
-    build_adm_ctrl_flows_for_lrouter_port(op, lsi->lflows, &lsi->match,
-                                          &lsi->actions);
-    build_neigh_learning_flows_for_lrouter_port(op, lsi->lflows, &lsi->match,
-                                                &lsi->actions);
-    build_ip_routing_flows_for_lrp(op, lsi->lflows);
-    build_ND_RA_flows_for_lrouter_port(op, lsi->lflows, &lsi->match,
-                                       &lsi->actions, lsi->meter_groups);
-    build_arp_resolve_flows_for_lrp(op, lsi->lflows, &lsi->match,
-                                    &lsi->actions);
-    build_egress_delivery_flows_for_lrouter_port(op, lsi->lflows, &lsi->match,
-                                                 &lsi->actions);
-    build_dhcpv6_reply_flows_for_lrouter_port(op, lsi->lflows, &lsi->match);
-    build_ipv6_input_flows_for_lrouter_port(op, lsi->lflows,
-                                            &lsi->match, &lsi->actions,
-                                            lsi->meter_groups);
-    build_lrouter_ipv4_ip_input(op, lsi->lflows,
-                                &lsi->match, &lsi->actions, lsi->meter_groups);
-    build_lrouter_force_snat_flows_op(op, lsi->lflows, &lsi->match,
-                                      &lsi->actions);
+    build_adm_ctrl_flows_for_lrouter_port(op, lflows, match, actions);
+    build_neigh_learning_flows_for_lrouter_port(op, lflows, match, actions);
+    build_ip_routing_flows_for_lrp(op, lflows);
+    build_ND_RA_flows_for_lrouter_port(op, lflows, match,
+                                       actions, meter_groups);
+    build_arp_resolve_flows_for_lrp(op, lflows, match, actions);
+    build_egress_delivery_flows_for_lrouter_port(op, lflows, match, actions);
+    build_dhcpv6_reply_flows_for_lrouter_port(op, lflows, match);
+    build_ipv6_input_flows_for_lrouter_port(op, lflows, match, actions,
+                                            meter_groups);
+    build_lrouter_ipv4_ip_input(op, lflows, match, actions, meter_groups);
+    build_lrouter_force_snat_flows_op(op, lflows, match, actions);
 }
 
 static void *
@@ -16924,7 +16961,10 @@ build_lflows_thread(void *arg)
                     if (stop_parallel_processing()) {
                         return NULL;
                     }
-                    build_lswitch_and_lrouter_iterate_by_lr(od, lsi);
+                    build_lswitch_and_lrouter_iterate_by_lr(
+                        od, lsi->meter_groups, lsi->lr_ports, lsi->ls_ports,
+                        lsi->features, lsi->bfd_connections, &lsi->match,
+                        &lsi->actions, lsi->lflows);
                 }
             }
             for (bnum = control->id;
@@ -16953,7 +16993,9 @@ build_lflows_thread(void *arg)
                     if (stop_parallel_processing()) {
                         return NULL;
                     }
-                    build_lswitch_and_lrouter_iterate_by_lrp(op, lsi);
+                    build_lswitch_and_lrouter_iterate_by_lrp(
+                        op, lsi->meter_groups, &lsi->match, &lsi->actions,
+                        lsi->lflows);
                 }
             }
             for (bnum = control->id;
@@ -17136,7 +17178,10 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
                                                     lsi.lflows);
         }
         HMAP_FOR_EACH (od, key_node, &lr_datapaths->datapaths) {
-            build_lswitch_and_lrouter_iterate_by_lr(od, &lsi);
+            build_lswitch_and_lrouter_iterate_by_lr(
+                od, lsi.meter_groups, lsi.lr_ports, lsi.ls_ports,
+                lsi.features, lsi.bfd_connections, &lsi.match,
+                &lsi.actions, lsi.lflows);
         }
         stopwatch_stop(LFLOWS_DATAPATHS_STOPWATCH_NAME, time_msec());
         stopwatch_start(LFLOWS_PORTS_STOPWATCH_NAME, time_msec());
@@ -17148,7 +17193,10 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
                                                      lsi.lflows);
         }
         HMAP_FOR_EACH (op, key_node, lr_ports) {
-            build_lswitch_and_lrouter_iterate_by_lrp(op, &lsi);
+            build_lswitch_and_lrouter_iterate_by_lrp(op, lsi.meter_groups,
+                                                     &lsi.match,
+                                                     &lsi.actions,
+                                                     lsi.lflows);
         }
         stopwatch_stop(LFLOWS_PORTS_STOPWATCH_NAME, time_msec());
         stopwatch_start(LFLOWS_LBS_STOPWATCH_NAME, time_msec());
@@ -17738,6 +17786,10 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->deleted) {
         struct ovn_port *op = hmapx_node->data;
 
+        /* We don't support lflow handling for deleted logical router
+         * ports yet. */
+        ovs_assert(op->nbsp);
+
         struct resource_to_objects_node  *res_node =
                 objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
                                      op->nbsp->name);
@@ -17756,22 +17808,34 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->updated) {
         struct ovn_port *op = hmapx_node->data;
 
+        /* We support lflow handling for both logical switch ports
+         * and router ports. */
+        const char *res_name = op->nbsp ? op->nbsp->name : op->nbrp->name;
+
         struct resource_to_objects_node  *res_node =
             objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
-                                 op->nbsp->name);
+                                 res_name);
 
         /* unlink old lflows. */
         unlink_objres_lflows(res_node, op->od,
-                                lflow_data, &op->lflow_dep_mgr);
+                             lflow_data, &op->lflow_dep_mgr);
 
         /* Generate new lflows. */
         struct ds match = DS_EMPTY_INITIALIZER;
         struct ds actions = DS_EMPTY_INITIALIZER;
-        build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
-                                                 lflow_input->lr_ports,
-                                                 lflow_input->meter_groups,
-                                                 &match, &actions,
-                                                 lflow_data);
+        if (op->nbsp) {
+            build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
+                                                     lflow_input->lr_ports,
+                                                     lflow_input->meter_groups,
+                                                     &match, &actions,
+                                                     lflow_data);
+        } else {
+            build_lswitch_and_lrouter_iterate_by_lrp(op,
+                                                     lflow_input->meter_groups,
+                                                     &match, &actions,
+                                                     lflow_data);
+        }
+
         ds_destroy(&match);
         ds_destroy(&actions);
 
@@ -17780,13 +17844,17 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
 
         /* Sync the new flows to SB. */
         res_node = objdep_mgr_find_objs(&op->lflow_dep_mgr, OBJDEP_TYPE_LPORT,
-                                        op->nbsp->name);
+                                        res_name);
         sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
                                 lflow_data, &op->lflow_dep_mgr);
     }
 
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->created) {
         struct ovn_port *op = hmapx_node->data;
+
+        /* We don't support lflow handling for created logical router ports
+         * yet. */
+        ovs_assert(op->nbsp);
 
         const struct sbrec_multicast_group *sbmc_flood =
             mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
@@ -17854,24 +17922,34 @@ lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
     struct hmapx_node *hmapx_node;
     HMAPX_FOR_EACH (hmapx_node, &trk_datapaths->crupdated) {
         od = hmapx_node->data;
-        ovs_assert(od->nbs);
 
+        char *od_name = od->nbs ? od->nbs->name : od->nbr->name;
         struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
-            &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name);
+            &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od_name);
 
         /* unlink old lflows. */
         unlink_objres_lflows(res_node, od, lflow_data, &od->lflow_dep_mgr);
 
         struct ds actions = DS_EMPTY_INITIALIZER;
 
-        build_lswitch_and_lrouter_iterate_by_ls(
+        if (od->nbs) {
+            build_lswitch_and_lrouter_iterate_by_ls(
             od, lflow_input->port_groups, lflow_input->meter_groups,
             lflow_input->features, &actions, lflow_data);
-        ds_destroy(&actions);
+        } else {
+            struct ds match = DS_EMPTY_INITIALIZER;
+            build_lswitch_and_lrouter_iterate_by_lr(
+                od, lflow_input->meter_groups, lflow_input->lr_ports,
+                lflow_input->ls_ports, lflow_input->features,
+                lflow_input->bfd_connections, &match,
+                &actions, lflow_data);
+            ds_destroy(&match);
+        }
 
+        ds_destroy(&actions);
         /* Sync the new flows to SB. */
         res_node = objdep_mgr_find_objs(&od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                                        od->nbs->name);
+                                        od_name);
         sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
                                 lflow_data, &od->lflow_dep_mgr);
     }
