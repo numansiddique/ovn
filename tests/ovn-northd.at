@@ -9944,7 +9944,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl add logical_router lr0 load_balancer_group $lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl clear logical_router lr0 load_balancer_group
@@ -10005,7 +10005,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl set logical_router lr1 load_balancer_group=$lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10027,7 +10027,7 @@ check ovn-nbctl --wait=sb lr-lb-add lr1 lb1
 check ovn-nbctl --wait=sb lr-lb-add lr1 lb2
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
