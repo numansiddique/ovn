@@ -116,10 +116,6 @@ struct tracked_datapaths {
     /* Tracked created or updated ovn_datapaths.
      * hmapx node data is 'struct ovn_datapaths' */
     struct hmapx crupdated;
-
-    /* Indicates if the tracked datapaths has any
-     * router datapath. */
-    bool lr_datapaths_changed;
 };
 
 /* Track what's changed in the northd engine node.
