@@ -113,9 +113,11 @@ struct tracked_lb_datapaths {
 };
 
 struct tracked_datapaths {
-    /* Tracked created or updated ovn_datapaths.
-     * hmapx node data is 'struct ovn_datapaths' */
-    struct hmapx crupdated;
+    unsigned long *nb_ls_map;
+    size_t n_nb_ls;
+
+    unsigned long *nb_lr_map;
+    size_t n_nb_lr;
 };
 
 /* Track what's changed in the northd engine node.
