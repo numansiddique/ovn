@@ -773,23 +773,9 @@ add_deleted_lb_group_to_tracked_data(struct ovn_lb_group *lbg,
 
 static bool
 is_ls_lbs_changed(const struct nbrec_logical_switch *nbs) {
-    if (nbrec_logical_switch_is_new(nbs) && nbs->n_load_balancer) {
-        return true;
-    }
-
-    if (nbrec_logical_switch_is_updated(nbs,
-            NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER)) {
-        return true;
-    }
-
-    for (size_t i = 0 ; i < nbs->n_load_balancer; i++) {
-        if (nbrec_load_balancer_row_get_seqno(nbs->load_balancer[i],
-                                              OVSDB_IDL_CHANGE_MODIFY) > 0) {
-            return true;
-        }
-    }
-
-    return false;
+    return ((nbrec_logical_switch_is_new(nbs) && nbs->n_load_balancer)
+            ||  nbrec_logical_switch_is_updated(nbs,
+                        NBREC_LOGICAL_SWITCH_COL_LOAD_BALANCER));
 }
 
 static bool
@@ -801,23 +787,9 @@ is_ls_lbgrps_changed(const struct nbrec_logical_switch *nbs) {
 
 static bool
 is_lr_lbs_changed(const struct nbrec_logical_router *nbr) {
-    if (nbrec_logical_router_is_new(nbr) && nbr->n_load_balancer) {
-        return true;
-    }
-
-    if (nbrec_logical_router_is_updated(nbr,
-            NBREC_LOGICAL_ROUTER_COL_LOAD_BALANCER)) {
-        return true;
-    }
-
-    for (size_t i = 0 ; i < nbr->n_load_balancer; i++) {
-        if (nbrec_load_balancer_row_get_seqno(nbr->load_balancer[i],
-                                              OVSDB_IDL_CHANGE_MODIFY) > 0) {
-            return true;
-        }
-    }
-
-    return false;
+    return ((nbrec_logical_router_is_new(nbr) && nbr->n_load_balancer)
+            ||  nbrec_logical_router_is_updated(nbr,
+                        NBREC_LOGICAL_ROUTER_COL_LOAD_BALANCER));
 }
 
 static bool

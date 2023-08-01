@@ -4974,7 +4974,17 @@ destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
 static void
 destroy_tracked_datapaths(struct tracked_datapaths *trk_dps)
 {
-    hmapx_clear(&trk_dps->crupdated);
+    if (trk_dps->nb_ls_map) {
+        bitmap_free(trk_dps->nb_ls_map);
+        trk_dps->nb_ls_map = NULL;
+    }
+    if (trk_dps->nb_lr_map) {
+        bitmap_free(trk_dps->nb_lr_map);
+        trk_dps->nb_lr_map = NULL;
+    }
+
+    trk_dps->n_nb_ls = 0;
+    trk_dps->n_nb_lr = 0;
 }
 
 static void
@@ -5000,12 +5010,60 @@ destroy_northd_data_tracked_changes(struct northd_data *nd)
     trk_changes->lb_changed = false;
 }
 
+static void
+add_od_to_northd_track_data(struct northd_tracked_data *nd_changes,
+                            struct ovn_datapath *od,
+                            size_t n_ls_datapaths,
+                            size_t n_lr_datapaths)
+{
+    struct tracked_datapaths *trk_dps = &nd_changes->trk_datapaths;
+
+    if (od->nbs) {
+        if (!trk_dps->nb_ls_map) {
+            trk_dps->nb_ls_map = bitmap_allocate(n_ls_datapaths);
+        }
+
+        if (!bitmap_is_set(trk_dps->nb_ls_map, od->index)) {
+            bitmap_set1(trk_dps->nb_ls_map, od->index);
+            trk_dps->n_nb_ls++;
+
+            /* Also add the router ports of the logical switch
+             * to the northd tracked data. */
+            for (size_t i = 0; i < od->n_router_ports; i++) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated,
+                          od->router_ports[i]);
+            }
+        }
+    } else {
+        ovs_assert(od->nbr);
+        if (!trk_dps->nb_lr_map) {
+            trk_dps->nb_lr_map = bitmap_allocate(n_lr_datapaths);
+        }
+
+        if (!bitmap_is_set(trk_dps->nb_lr_map, od->index)) {
+            bitmap_set1(trk_dps->nb_lr_map, od->index);
+            trk_dps->n_nb_lr++;
+
+            /* Also add the peer (logical switch port) of logical router ports
+             * to the northd tracked data. */
+            struct ovn_port *op;
+            HMAP_FOR_EACH (op, dp_node, &od->ports) {
+                hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
+                if (op->peer) {
+                    hmapx_add(&nd_changes->trk_ovn_ports.updated, op->peer);
+                }
+            }
+        }
+    }
+}
+
 bool northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
 {
-    return (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
+    return (trk_nd_changes->trk_datapaths.n_nb_ls
+            || trk_nd_changes->trk_datapaths.n_nb_lr
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)
-            || !hmapx_is_empty(&trk_nd_changes->trk_datapaths.crupdated)
             || !hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
             || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted));
 }
@@ -5013,7 +5071,8 @@ bool northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
 bool northd_has_only_ports_in_tracked_data(
     struct northd_tracked_data *trk_nd_changes)
 {
-    return (hmapx_is_empty(&trk_nd_changes->trk_datapaths.crupdated)
+    return (!trk_nd_changes->trk_datapaths.n_nb_ls
+            && !trk_nd_changes->trk_datapaths.n_nb_lr
             && hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
             && hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
             && (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
@@ -5619,14 +5678,9 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
             init_lb_for_datapath(od);
 
             /* Add the ls datapath to the northd tracked data. */
-            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-
-            /* Also add the router ports of the logical switch
-             * to the northd tracked data. */
-            for (size_t i = 0; i < od->n_router_ports; i++) {
-                hmapx_add(&nd_changes->trk_ovn_ports.updated,
-                          od->router_ports[i]);
-            }
+            add_od_to_northd_track_data(nd_changes, od,
+                                        ods_size(ls_datapaths),
+                                        ods_size(lr_datapaths));
         }
 
         hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
@@ -5734,13 +5788,10 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
         init_lb_for_datapath(od);
 
         /* Add the ls datapath to the northd tracked data. */
-        hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+        add_od_to_northd_track_data(nd_changes, od,
+                                    ods_size(ls_datapaths),
+                                    ods_size(lr_datapaths));
 
-        /* Also add the router ports of the logical switch
-         * to the northd tracked data. */
-        for (size_t i = 0; i < od->n_router_ports; i++) {
-            hmapx_add(&nd_changes->trk_ovn_ports.updated, od->router_ports[i]);
-        }
     }
 
     LIST_FOR_EACH (codlb, list_node, &trk_lb_data->crupdated_lr_lbs) {
@@ -5788,17 +5839,10 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
         init_lb_for_datapath(od);
 
         /* Add the lr datapath to the northd tracked data. */
-        hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
+        add_od_to_northd_track_data(nd_changes, od,
+                                    ods_size(ls_datapaths),
+                                    ods_size(lr_datapaths));
 
-        /* Also add the peer (logical switch port) of logical router ports
-         * to the northd tracked data. */
-        struct ovn_port *op;
-        HMAP_FOR_EACH (op, dp_node, &od->ports) {
-            hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
-            if (op->peer) {
-                hmapx_add(&nd_changes->trk_ovn_ports.updated, op->peer);
-            }
-        }
     }
 
     struct crupdated_lb *clb;
@@ -5816,13 +5860,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             init_lb_for_datapath(od);
 
             /* Add the ls datapath to the northd tracked data. */
-            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-
-            /* Also add the router ports of the logical switch
-            * to the northd tracked data. */
-            for (size_t i = 0; i < od->n_router_ports; i++) {
-                hmapx_add(&nd_changes->trk_ovn_ports.updated, od->router_ports[i]);
-            }
+            add_od_to_northd_track_data(nd_changes, od,
+                                        ods_size(ls_datapaths),
+                                        ods_size(lr_datapaths));
         }
 
         BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
@@ -5848,17 +5888,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                                      &clb->inserted_vips_v6);
 
             /* Add the lr datapath to the northd tracked data. */
-            hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-
-            /* Also add the peer (logical switch port) of logical router ports
-            * to the northd tracked data. */
-            struct ovn_port *op;
-            HMAP_FOR_EACH (op, dp_node, &od->ports) {
-                hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
-                if (op->peer) {
-                    hmapx_add(&nd_changes->trk_ovn_ports.updated, op->peer);
-                }
-            }
+            add_od_to_northd_track_data(nd_changes, od,
+                                        ods_size(ls_datapaths),
+                                        ods_size(lr_datapaths));
         }
 
         /* Add the lb to the northd tracked data. */
@@ -5893,18 +5925,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
 
                 /* Add the lr datapath to the northd tracked data. */
-                hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-
-                /* Also add the peer (logical switch port) of logical router
-                 * ports to the northd tracked data. */
-                struct ovn_port *op;
-                HMAP_FOR_EACH (op, dp_node, &od->ports) {
-                    hmapx_add(&nd_changes->trk_ovn_ports.updated, op);
-                    if (op->peer) {
-                        hmapx_add(&nd_changes->trk_ovn_ports.updated,
-                                  op->peer);
-                    }
-                }
+                add_od_to_northd_track_data(nd_changes, od,
+                                            ods_size(ls_datapaths),
+                                            ods_size(lr_datapaths));
             }
 
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
@@ -5915,14 +5938,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 init_lb_for_datapath(od);
 
                 /* Add the ls datapath to the northd tracked data. */
-                hmapx_add(&nd_changes->trk_datapaths.crupdated, od);
-
-                /* Also add the router ports of the logical switch
-                * to the northd tracked data. */
-                for (size_t j = 0; j < od->n_router_ports; j++) {
-                    hmapx_add(&nd_changes->trk_ovn_ports.updated,
-                              od->router_ports[j]);
-                }
+                add_od_to_northd_track_data(nd_changes, od,
+                                            ods_size(ls_datapaths),
+                                            ods_size(lr_datapaths));
             }
 
             /* Add the lb to the northd tracked data. */
@@ -17912,6 +17930,43 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
     return true;
 }
 
+static void
+lflow_update_od_lflows(struct ovn_datapath *od,
+                       struct ovsdb_idl_txn *ovnsb_txn,
+                       struct lflow_input *lflow_input,
+                       struct lflow_data *lflow_data)
+{
+    char *od_name = od->nbs ? od->nbs->name : od->nbr->name;
+    struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
+        &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od_name);
+
+    /* unlink old lflows. */
+    unlink_objres_lflows(res_node, od, lflow_data, &od->lflow_dep_mgr);
+
+    struct ds actions = DS_EMPTY_INITIALIZER;
+
+    if (od->nbs) {
+        build_lswitch_and_lrouter_iterate_by_ls(
+        od, lflow_input->port_groups, lflow_input->meter_groups,
+        lflow_input->features, &actions, lflow_data);
+    } else {
+        struct ds match = DS_EMPTY_INITIALIZER;
+        build_lswitch_and_lrouter_iterate_by_lr(
+            od, lflow_input->meter_groups, lflow_input->lr_ports,
+            lflow_input->ls_ports, lflow_input->features,
+            lflow_input->bfd_connections, &match,
+            &actions, lflow_data);
+        ds_destroy(&match);
+    }
+
+    ds_destroy(&actions);
+    /* Sync the new flows to SB. */
+    res_node = objdep_mgr_find_objs(&od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                    od_name);
+    sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                            lflow_data, &od->lflow_dep_mgr);
+}
+
 bool
 lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                      struct tracked_datapaths *trk_datapaths,
@@ -17919,39 +17974,21 @@ lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                      struct lflow_data *lflow_data)
 {
     struct ovn_datapath *od;
-    struct hmapx_node *hmapx_node;
-    HMAPX_FOR_EACH (hmapx_node, &trk_datapaths->crupdated) {
-        od = hmapx_node->data;
-
-        char *od_name = od->nbs ? od->nbs->name : od->nbr->name;
-        struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
-            &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od_name);
-
-        /* unlink old lflows. */
-        unlink_objres_lflows(res_node, od, lflow_data, &od->lflow_dep_mgr);
-
-        struct ds actions = DS_EMPTY_INITIALIZER;
-
-        if (od->nbs) {
-            build_lswitch_and_lrouter_iterate_by_ls(
-            od, lflow_input->port_groups, lflow_input->meter_groups,
-            lflow_input->features, &actions, lflow_data);
-        } else {
-            struct ds match = DS_EMPTY_INITIALIZER;
-            build_lswitch_and_lrouter_iterate_by_lr(
-                od, lflow_input->meter_groups, lflow_input->lr_ports,
-                lflow_input->ls_ports, lflow_input->features,
-                lflow_input->bfd_connections, &match,
-                &actions, lflow_data);
-            ds_destroy(&match);
+    size_t index;
+    if (trk_datapaths->n_nb_ls && trk_datapaths->nb_ls_map) {
+        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->ls_datapaths),
+                           trk_datapaths->nb_ls_map) {
+            od = lflow_input->ls_datapaths->array[index];
+            lflow_update_od_lflows(od, ovnsb_txn, lflow_input, lflow_data);
         }
+    }
 
-        ds_destroy(&actions);
-        /* Sync the new flows to SB. */
-        res_node = objdep_mgr_find_objs(&od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                                        od_name);
-        sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
-                                lflow_data, &od->lflow_dep_mgr);
+    if (trk_datapaths->n_nb_lr && trk_datapaths->nb_lr_map) {
+        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->lr_datapaths),
+                           trk_datapaths->nb_lr_map) {
+            od = lflow_input->lr_datapaths->array[index];
+            lflow_update_od_lflows(od, ovnsb_txn, lflow_input, lflow_data);
+        }
     }
 
     return true;
@@ -18910,7 +18947,6 @@ northd_init(struct northd_data *data)
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.created);
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.updated);
     hmapx_init(&data->trk_northd_changes.trk_ovn_ports.deleted);
-    hmapx_init(&data->trk_northd_changes.trk_datapaths.crupdated);
     hmapx_init(&data->trk_northd_changes.trk_lbs.crupdated);
     hmapx_init(&data->trk_northd_changes.trk_lbs.deleted);
 }
@@ -18969,7 +19005,6 @@ northd_destroy(struct northd_data *data)
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.created);
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.updated);
     hmapx_destroy(&data->trk_northd_changes.trk_ovn_ports.deleted);
-    hmapx_destroy(&data->trk_northd_changes.trk_datapaths.crupdated);
     hmapx_destroy(&data->trk_northd_changes.trk_lbs.crupdated);
     hmapx_destroy(&data->trk_northd_changes.trk_lbs.deleted);
 }
