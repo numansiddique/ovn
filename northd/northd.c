@@ -5110,6 +5110,13 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             goto fail;
         }
 
+        /* Fall back to recompute if a logical switch had only router
+         * ports before these changes. */
+        bool only_rports = (od->n_router_ports == hmap_count(&od->ports));
+        if (only_rports) {
+            goto fail;
+        }
+
         ls_change = xzalloc(sizeof *ls_change);
         ls_change->od = od;
         ovs_list_init(&ls_change->added_ports);
@@ -5199,6 +5206,13 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                 delete_fdb_entry(ni->sbrec_fdb_by_dp_and_port, od->tunnel_key,
                                  op->tunnel_key);
             }
+        }
+
+        /* Fall back to recompute if a logical switch has only router
+         * ports left after processing these changes. */
+        only_rports = (od->n_router_ports == hmap_count(&od->ports));
+        if (only_rports) {
+            goto fail_clean_deleted;
         }
 
         if (!ovs_list_is_empty(&ls_change->added_ports) ||
