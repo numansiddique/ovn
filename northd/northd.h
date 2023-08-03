@@ -117,6 +117,9 @@ struct tracked_lb_datapaths {
     /* Tracked logical routers related to lb. */
     unsigned long *nb_lr_map;
     size_t n_nb_lr;
+
+    /* Tracked router port or switch ports connecting to a router. */
+    struct hmapx router_lports;
 };
 
 /* Track what's changed in the northd engine node.
