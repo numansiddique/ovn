@@ -110,12 +110,11 @@ struct tracked_lb_datapaths {
     /* Tracked deleted lbs.
      * hmapx node data is 'struct ovn_lb_datapaths' */
     struct hmapx deleted;
-};
 
-struct tracked_datapaths {
     unsigned long *nb_ls_map;
     size_t n_nb_ls;
 
+    /* Tracked logical routers related to lb. */
     unsigned long *nb_lr_map;
     size_t n_nb_lr;
 };
@@ -127,7 +126,6 @@ struct northd_tracked_data {
     bool lb_changed; /* Indicates if load balancers changed or association of
                       * load balancer to logical switch/router changed. */
     struct tracked_ovn_ports trk_ovn_ports;
-    struct tracked_datapaths trk_datapaths;
     struct tracked_lb_datapaths trk_lbs;
 };
 
@@ -352,6 +350,8 @@ struct ovn_datapath {
     struct hmap ports;
 
     struct objdep_mgr lflow_dep_mgr;
+    struct objdep_mgr lb_lflow_dep_mgr;
+    struct objdep_mgr ct_lb_lflow_dep_mgr;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
@@ -377,10 +377,6 @@ void northd_indices_create(struct northd_data *data,
 void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
                   struct lflow_input *input_data,
                   struct lflow_data *lflow_data);
-bool lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                          struct tracked_datapaths *,
-                                          struct lflow_input *,
-                                          struct lflow_data *);
 bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                       struct tracked_ovn_ports *,
                                       struct lflow_input *,

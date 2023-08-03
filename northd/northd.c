@@ -820,6 +820,8 @@ ovn_datapath_create(struct hmap *datapaths, const struct uuid *key,
     od->lr_group = NULL;
     hmap_init(&od->ports);
     objdep_mgr_init(&od->lflow_dep_mgr);
+    objdep_mgr_init(&od->lb_lflow_dep_mgr);
+    objdep_mgr_init(&od->ct_lb_lflow_dep_mgr);
     return od;
 }
 
@@ -855,6 +857,8 @@ ovn_datapath_destroy(struct hmap *datapaths, struct ovn_datapath *od)
         destroy_mcast_info_for_datapath(od);
         destroy_ports_for_datapath(od);
         objdep_mgr_destroy(&od->lflow_dep_mgr);
+        objdep_mgr_destroy(&od->lb_lflow_dep_mgr);
+        objdep_mgr_destroy(&od->ct_lb_lflow_dep_mgr);
         free(od);
     }
 }
@@ -5007,22 +5011,6 @@ destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
 }
 
 static void
-destroy_tracked_datapaths(struct tracked_datapaths *trk_dps)
-{
-    if (trk_dps->nb_ls_map) {
-        bitmap_free(trk_dps->nb_ls_map);
-        trk_dps->nb_ls_map = NULL;
-    }
-    if (trk_dps->nb_lr_map) {
-        bitmap_free(trk_dps->nb_lr_map);
-        trk_dps->nb_lr_map = NULL;
-    }
-
-    trk_dps->n_nb_ls = 0;
-    trk_dps->n_nb_lr = 0;
-}
-
-static void
 destroy_tracked_lb_datapaths(struct tracked_lb_datapaths *trk_lbs)
 {
     struct hmapx_node *hmapx_node;
@@ -5032,6 +5020,20 @@ destroy_tracked_lb_datapaths(struct tracked_lb_datapaths *trk_lbs)
     }
 
     hmapx_clear(&trk_lbs->crupdated);
+
+    if (trk_lbs->nb_ls_map) {
+        bitmap_free(trk_lbs->nb_ls_map);
+        trk_lbs->nb_ls_map = NULL;
+    }
+
+    trk_lbs->n_nb_ls = 0;
+
+    if (trk_lbs->nb_lr_map) {
+        bitmap_free(trk_lbs->nb_lr_map);
+        trk_lbs->nb_lr_map = NULL;
+    }
+
+    trk_lbs->n_nb_lr = 0;
 }
 
 void
@@ -5039,28 +5041,27 @@ destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
     struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
     destroy_tracked_ovn_ports(&trk_changes->trk_ovn_ports);
-    destroy_tracked_datapaths(&trk_changes->trk_datapaths);
     destroy_tracked_lb_datapaths(&trk_changes->trk_lbs);
     nd->change_tracked = false;
     trk_changes->lb_changed = false;
 }
 
 static void
-add_od_to_northd_track_data(struct northd_tracked_data *nd_changes,
-                            struct ovn_datapath *od,
-                            size_t n_ls_datapaths,
-                            size_t n_lr_datapaths)
+add_od_to_northd_lb_dps_track_data(struct northd_tracked_data *nd_changes,
+                                   struct ovn_datapath *od,
+                                   size_t n_ls_datapaths,
+                                   size_t n_lr_datapaths)
 {
-    struct tracked_datapaths *trk_dps = &nd_changes->trk_datapaths;
+    struct tracked_lb_datapaths *trk_lbs = &nd_changes->trk_lbs;
 
     if (od->nbs) {
-        if (!trk_dps->nb_ls_map) {
-            trk_dps->nb_ls_map = bitmap_allocate(n_ls_datapaths);
+        if (!trk_lbs->nb_ls_map) {
+            trk_lbs->nb_ls_map = bitmap_allocate(n_ls_datapaths);
         }
 
-        if (!bitmap_is_set(trk_dps->nb_ls_map, od->index)) {
-            bitmap_set1(trk_dps->nb_ls_map, od->index);
-            trk_dps->n_nb_ls++;
+        if (!bitmap_is_set(trk_lbs->nb_ls_map, od->index)) {
+            bitmap_set1(trk_lbs->nb_ls_map, od->index);
+            trk_lbs->n_nb_ls++;
 
             /* Also add the router ports of the logical switch
              * to the northd tracked data. */
@@ -5071,13 +5072,13 @@ add_od_to_northd_track_data(struct northd_tracked_data *nd_changes,
         }
     } else {
         ovs_assert(od->nbr);
-        if (!trk_dps->nb_lr_map) {
-            trk_dps->nb_lr_map = bitmap_allocate(n_lr_datapaths);
+        if (!trk_lbs->nb_lr_map) {
+            trk_lbs->nb_lr_map = bitmap_allocate(n_lr_datapaths);
         }
 
-        if (!bitmap_is_set(trk_dps->nb_lr_map, od->index)) {
-            bitmap_set1(trk_dps->nb_lr_map, od->index);
-            trk_dps->n_nb_lr++;
+        if (!bitmap_is_set(trk_lbs->nb_lr_map, od->index)) {
+            bitmap_set1(trk_lbs->nb_lr_map, od->index);
+            trk_lbs->n_nb_lr++;
 
             /* Also add the peer (logical switch port) of logical router ports
              * to the northd tracked data. */
@@ -5094,8 +5095,8 @@ add_od_to_northd_track_data(struct northd_tracked_data *nd_changes,
 
 bool northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
 {
-    return (trk_nd_changes->trk_datapaths.n_nb_ls
-            || trk_nd_changes->trk_datapaths.n_nb_lr
+    return (trk_nd_changes->trk_lbs.n_nb_ls
+            || trk_nd_changes->trk_lbs.n_nb_lr
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)
@@ -5106,8 +5107,8 @@ bool northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
 bool northd_has_only_ports_in_tracked_data(
     struct northd_tracked_data *trk_nd_changes)
 {
-    return (!trk_nd_changes->trk_datapaths.n_nb_ls
-            && !trk_nd_changes->trk_datapaths.n_nb_lr
+    return (!trk_nd_changes->trk_lbs.n_nb_ls
+            && !trk_nd_changes->trk_lbs.n_nb_lr
             && hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
             && hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
             && (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
@@ -5727,9 +5728,9 @@ northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *trk_lb_data,
             init_lb_for_datapath(od);
 
             /* Add the ls datapath to the northd tracked data. */
-            add_od_to_northd_track_data(nd_changes, od,
-                                        ods_size(ls_datapaths),
-                                        ods_size(lr_datapaths));
+            add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                               ods_size(ls_datapaths),
+                                               ods_size(lr_datapaths));
         }
 
         hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
@@ -5837,9 +5838,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
         init_lb_for_datapath(od);
 
         /* Add the ls datapath to the northd tracked data. */
-        add_od_to_northd_track_data(nd_changes, od,
-                                    ods_size(ls_datapaths),
-                                    ods_size(lr_datapaths));
+        add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                           ods_size(ls_datapaths),
+                                           ods_size(lr_datapaths));
 
     }
 
@@ -5888,9 +5889,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
         init_lb_for_datapath(od);
 
         /* Add the lr datapath to the northd tracked data. */
-        add_od_to_northd_track_data(nd_changes, od,
-                                    ods_size(ls_datapaths),
-                                    ods_size(lr_datapaths));
+        add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                           ods_size(ls_datapaths),
+                                           ods_size(lr_datapaths));
 
     }
 
@@ -5909,9 +5910,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
             init_lb_for_datapath(od);
 
             /* Add the ls datapath to the northd tracked data. */
-            add_od_to_northd_track_data(nd_changes, od,
-                                        ods_size(ls_datapaths),
-                                        ods_size(lr_datapaths));
+            add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                               ods_size(ls_datapaths),
+                                               ods_size(lr_datapaths));
         }
 
         BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
@@ -5937,9 +5938,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                                      &clb->inserted_vips_v6);
 
             /* Add the lr datapath to the northd tracked data. */
-            add_od_to_northd_track_data(nd_changes, od,
-                                        ods_size(ls_datapaths),
-                                        ods_size(lr_datapaths));
+            add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                               ods_size(ls_datapaths),
+                                               ods_size(lr_datapaths));
         }
 
         /* Add the lb to the northd tracked data. */
@@ -5974,9 +5975,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
 
                 /* Add the lr datapath to the northd tracked data. */
-                add_od_to_northd_track_data(nd_changes, od,
-                                            ods_size(ls_datapaths),
-                                            ods_size(lr_datapaths));
+                add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                                   ods_size(ls_datapaths),
+                                                   ods_size(lr_datapaths));
             }
 
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
@@ -5987,9 +5988,9 @@ northd_handle_lb_data_changes_post_od(struct tracked_lb_data *trk_lb_data,
                 init_lb_for_datapath(od);
 
                 /* Add the ls datapath to the northd tracked data. */
-                add_od_to_northd_track_data(nd_changes, od,
-                                            ods_size(ls_datapaths),
-                                            ods_size(lr_datapaths));
+                add_od_to_northd_lb_dps_track_data(nd_changes, od,
+                                                   ods_size(ls_datapaths),
+                                                   ods_size(lr_datapaths));
             }
 
             /* Add the lb to the northd tracked data. */
@@ -6727,6 +6728,16 @@ __ovn_lflow_add_default_drop(struct lflow_data *lflow_data,
     ovn_lflow_add_at(LFLOW_DATA, OD, NULL, 0, STAGE, PRIORITY, MATCH, ACTIONS,\
                      NULL, NULL, NULL, OVS_SOURCE_LOCATOR, \
                      &(OD)->lflow_dep_mgr, OBJDEP_TYPE_OD, RES_NAME, OD)
+#define ovn_lflow_add_with_lb_lflow_ref(LFLOW_DATA, OD, STAGE, PRIORITY, \
+                                        MATCH, ACTIONS, RES_NAME) \
+    ovn_lflow_add_at(LFLOW_DATA, OD, NULL, 0, STAGE, PRIORITY, MATCH, ACTIONS,\
+                     NULL, NULL, NULL, OVS_SOURCE_LOCATOR, \
+                     &(OD)->lb_lflow_dep_mgr, OBJDEP_TYPE_OD, RES_NAME, OD)
+#define ovn_lflow_add_with_ct_lb_lflow_ref(LFLOW_DATA, OD, STAGE, PRIORITY, \
+                                           MATCH, ACTIONS, RES_NAME) \
+    ovn_lflow_add_at(LFLOW_DATA, OD, NULL, 0, STAGE, PRIORITY, MATCH, ACTIONS,\
+                     NULL, NULL, NULL, OVS_SOURCE_LOCATOR, \
+                     &(OD)->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD, RES_NAME, OD)
 
 #define ovn_lflow_metered(LFLOW_DATA, OD, STAGE, PRIORITY, MATCH, ACTIONS, \
                           CTRL_METER, LFLOW_DEP_MGR, OBJDEP_TYPE, RES_NAME, \
@@ -7252,7 +7263,8 @@ build_lswitch_output_port_sec_od(struct ovn_datapath *od,
 static void
 skip_port_from_conntrack(struct ovn_datapath *od, struct ovn_port *op,
                          enum ovn_stage in_stage, enum ovn_stage out_stage,
-                         uint16_t priority, struct lflow_data *lflows)
+                         uint16_t priority, struct lflow_data *lflows,
+                         struct objdep_mgr *lflow_dep_mgr)
 {
     /* Can't use ct() for router ports. Consider the following configuration:
      * lp1(10.0.0.2) on hostA--ls1--lr0--ls2--lp2(10.0.1.2) on hostB, For a
@@ -7275,12 +7287,12 @@ skip_port_from_conntrack(struct ovn_datapath *od, struct ovn_port *op,
     ovn_lflow_add_with_lport_and_hint(lflows, od, in_stage, priority,
                                       ingress_match, ingress_action,
                                       op->key, &op->nbsp->header_,
-                                      &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                      lflow_dep_mgr, OBJDEP_TYPE_OD,
                                       od->nbs->name, od);
     ovn_lflow_add_with_lport_and_hint(lflows, od, out_stage, priority,
                                       egress_match, egress_action,
                                       op->key, &op->nbsp->header_,
-                                      &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                      lflow_dep_mgr, OBJDEP_TYPE_OD,
                                       od->nbs->name, od);
 
     free(ingress_match);
@@ -7299,7 +7311,7 @@ build_stateless_filter(struct ovn_datapath *od,
                                 acl->match,
                                 action,
                                 &acl->header_,
-                                &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                 od->nbs->name, od);
     } else {
         ovn_lflow_add_with_hint(lflows, od, S_SWITCH_OUT_PRE_ACL,
@@ -7307,7 +7319,7 @@ build_stateless_filter(struct ovn_datapath *od,
                                 acl->match,
                                 action,
                                 &acl->header_,
-                                &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                 od->nbs->name, od);
     }
 }
@@ -7343,16 +7355,16 @@ build_pre_acls(struct ovn_datapath *od, const struct hmap *port_groups,
 {
     /* Ingress and Egress Pre-ACL Table (Priority 0): Packets are
      * allowed by default. */
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_IN_PRE_ACL, 0, "1", "next;", od->nbs->name);
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_OUT_PRE_ACL, 0, "1", "next;", od->nbs->name);
 
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_IN_PRE_ACL, 110,
                   "eth.dst == $svc_monitor_mac", "next;", od->nbs->name);
 
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_OUT_PRE_ACL, 110,
         "eth.src == $svc_monitor_mac", "next;", od->nbs->name);
 
@@ -7363,13 +7375,13 @@ build_pre_acls(struct ovn_datapath *od, const struct hmap *port_groups,
         for (size_t i = 0; i < od->n_router_ports; i++) {
             skip_port_from_conntrack(od, od->router_ports[i],
                                      S_SWITCH_IN_PRE_ACL, S_SWITCH_OUT_PRE_ACL,
-                                     110, lflows);
+                                     110, lflows, &od->ct_lb_lflow_dep_mgr);
         }
         for (size_t i = 0; i < od->n_localnet_ports; i++) {
             skip_port_from_conntrack(od, od->localnet_ports[i],
                                      S_SWITCH_IN_PRE_ACL,
                                      S_SWITCH_OUT_PRE_ACL,
-                                     110, lflows);
+                                     110, lflows, &od->ct_lb_lflow_dep_mgr);
         }
 
         /* stateless filters always take precedence over stateful ACLs. */
@@ -7379,22 +7391,22 @@ build_pre_acls(struct ovn_datapath *od, const struct hmap *port_groups,
          *
          * Not to do conntrack on ND and ICMP destination
          * unreachable packets. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_PRE_ACL, 110,
             "nd || nd_rs || nd_ra || mldv1 || mldv2 || "
             "(udp && udp.src == 546 && udp.dst == 547)", "next;",
             od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_PRE_ACL, 110,
             "nd || nd_rs || nd_ra || mldv1 || mldv2 || "
             "(udp && udp.src == 546 && udp.dst == 547)", "next;",
             od->nbs->name);
 
         /* Do not send multicast packets to conntrack. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_PRE_ACL, 110, "eth.mcast", "next;",
             od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_PRE_ACL, 110, "eth.mcast", "next;",
             od->nbs->name);
 
@@ -7406,10 +7418,10 @@ build_pre_acls(struct ovn_datapath *od, const struct hmap *port_groups,
          *
          * 'REGBIT_CONNTRACK_DEFRAG' is set to let the pre-stateful table send
          * it to conntrack for tracking and defragmentation. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_PRE_ACL, 100, "ip",
             REGBIT_CONNTRACK_DEFRAG" = 1; next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_OUT_PRE_ACL,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_SWITCH_OUT_PRE_ACL,
                                         100, "ip",
                                         REGBIT_CONNTRACK_DEFRAG" = 1; next;",
                                         od->nbs->name);
@@ -7517,6 +7529,62 @@ build_interconn_mcast_snoop_flows(struct ovn_datapath *od,
 }
 
 static void
+build_pre_lb_lb_related(struct ovn_datapath *od, struct lflow_data *lflows)
+{
+    /* Localnet ports have no need for going through conntrack, unless
+     * the logical switch has a load balancer. Then, conntrack is necessary
+     * so that traffic arriving via the localnet port can be load
+     * balanced.
+     */
+    if (!od->has_lb_vip) {
+        for (size_t i = 0; i < od->n_localnet_ports; i++) {
+            skip_port_from_conntrack(od, od->localnet_ports[i],
+                                     S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
+                                     110, lflows, &od->lb_lflow_dep_mgr);
+        }
+    }
+
+    /* 'REGBIT_CONNTRACK_NAT' is set to let the pre-stateful table send
+     * packet to conntrack for defragmentation and possibly for unNATting.
+     *
+     * Send all the packets to conntrack in the ingress pipeline if the
+     * logical switch has a load balancer with VIP configured. Earlier
+     * we used to set the REGBIT_CONNTRACK_DEFRAG flag in the ingress
+     * pipeline if the IP destination matches the VIP. But this causes
+     * few issues when a logical switch has no ACLs configured with
+     * allow-related.
+     * To understand the issue, lets a take a TCP load balancer -
+     * 10.0.0.10:80=10.0.0.3:80.
+     * If a logical port - p1 with IP - 10.0.0.5 opens a TCP connection
+     * with the VIP - 10.0.0.10, then the packet in the ingress pipeline
+     * of 'p1' is sent to the p1's conntrack zone id and the packet is
+     * load balanced to the backend - 10.0.0.3. For the reply packet from
+     * the backend lport, it is not sent to the conntrack of backend
+     * lport's zone id. This is fine as long as the packet is valid.
+     * Suppose the backend lport sends an invalid TCP packet (like
+     * incorrect sequence number), the packet gets * delivered to the
+     * lport 'p1' without unDNATing the packet to the VIP - 10.0.0.10.
+     * And this causes the connection to be reset by the lport p1's VIF.
+     *
+     * We can't fix this issue by adding a logical flow to drop ct.inv
+     * packets in the egress pipeline since it will drop all other
+     * connections not destined to the load balancers.
+     *
+     * To fix this issue, we send all the packets to the conntrack in the
+     * ingress pipeline if a load balancer is configured. We can now
+     * add a lflow to drop ct.inv packets.
+     */
+    if (od->has_lb_vip) {
+        ovn_lflow_add_with_lb_lflow_ref(
+            lflows, od, S_SWITCH_IN_PRE_LB, 100, "ip",
+            REGBIT_CONNTRACK_NAT" = 1; next;", od->nbs->name);
+        ovn_lflow_add_with_lb_lflow_ref(
+            lflows, od, S_SWITCH_OUT_PRE_LB, 100, "ip",
+            REGBIT_CONNTRACK_NAT" = 1; next;", od->nbs->name);
+    }
+}
+
+static void
 build_pre_lb(struct ovn_datapath *od, const struct shash *meter_groups,
              struct lflow_data *lflows)
 {
@@ -7552,19 +7620,7 @@ build_pre_lb(struct ovn_datapath *od, const struct shash *meter_groups,
     for (size_t i = 0; i < od->n_router_ports; i++) {
         skip_port_from_conntrack(od, od->router_ports[i],
                                  S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
-                                 110, lflows);
-    }
-    /* Localnet ports have no need for going through conntrack, unless
-     * the logical switch has a load balancer. Then, conntrack is necessary
-     * so that traffic arriving via the localnet port can be load
-     * balanced.
-     */
-    if (!od->has_lb_vip) {
-        for (size_t i = 0; i < od->n_localnet_ports; i++) {
-            skip_port_from_conntrack(od, od->localnet_ports[i],
-                                     S_SWITCH_IN_PRE_LB, S_SWITCH_OUT_PRE_LB,
-                                     110, lflows);
-        }
+                                 110, lflows, &od->lflow_dep_mgr);
     }
 
     /* Do not sent statless flows via conntrack */
@@ -7572,45 +7628,6 @@ build_pre_lb(struct ovn_datapath *od, const struct shash *meter_groups,
                   REGBIT_ACL_STATELESS" == 1", "next;", od->nbs->name);
     ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_OUT_PRE_LB, 110,
                   REGBIT_ACL_STATELESS" == 1", "next;", od->nbs->name);
-
-    /* 'REGBIT_CONNTRACK_NAT' is set to let the pre-stateful table send
-     * packet to conntrack for defragmentation and possibly for unNATting.
-     *
-     * Send all the packets to conntrack in the ingress pipeline if the
-     * logical switch has a load balancer with VIP configured. Earlier
-     * we used to set the REGBIT_CONNTRACK_DEFRAG flag in the ingress
-     * pipeline if the IP destination matches the VIP. But this causes
-     * few issues when a logical switch has no ACLs configured with
-     * allow-related.
-     * To understand the issue, lets a take a TCP load balancer -
-     * 10.0.0.10:80=10.0.0.3:80.
-     * If a logical port - p1 with IP - 10.0.0.5 opens a TCP connection
-     * with the VIP - 10.0.0.10, then the packet in the ingress pipeline
-     * of 'p1' is sent to the p1's conntrack zone id and the packet is
-     * load balanced to the backend - 10.0.0.3. For the reply packet from
-     * the backend lport, it is not sent to the conntrack of backend
-     * lport's zone id. This is fine as long as the packet is valid.
-     * Suppose the backend lport sends an invalid TCP packet (like
-     * incorrect sequence number), the packet gets * delivered to the
-     * lport 'p1' without unDNATing the packet to the VIP - 10.0.0.10.
-     * And this causes the connection to be reset by the lport p1's VIF.
-     *
-     * We can't fix this issue by adding a logical flow to drop ct.inv
-     * packets in the egress pipeline since it will drop all other
-     * connections not destined to the load balancers.
-     *
-     * To fix this issue, we send all the packets to the conntrack in the
-     * ingress pipeline if a load balancer is configured. We can now
-     * add a lflow to drop ct.inv packets.
-     */
-    if (od->has_lb_vip) {
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_SWITCH_IN_PRE_LB, 100, "ip",
-            REGBIT_CONNTRACK_NAT" = 1; next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_SWITCH_OUT_PRE_LB, 100, "ip",
-            REGBIT_CONNTRACK_NAT" = 1; next;", od->nbs->name);
-    }
 }
 
 static void
@@ -7676,11 +7693,11 @@ build_acl_hints(struct ovn_datapath *od,
 
         /* In any case, advance to the next stage. */
         if (!od->has_acls && !od->has_lb_vip) {
-            ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, UINT16_MAX,
-                                            "1", "next;", od->nbs->name);
+            ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, UINT16_MAX,
+                                               "1", "next;", od->nbs->name);
         } else {
-            ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 0, "1",
-                                            "next;", od->nbs->name);
+            ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 0, "1",
+                                               "next;", od->nbs->name);
         }
 
         if (!od->has_stateful_acl && !od->has_lb_vip) {
@@ -7691,7 +7708,7 @@ build_acl_hints(struct ovn_datapath *od,
          * or drop ACLs. For allow ACLs, the connection must also be committed
          * to conntrack so we set REGBIT_ACL_HINT_ALLOW_NEW.
          */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 7, "ct.new && !ct.est",
             REGBIT_ACL_HINT_ALLOW_NEW " = 1; "
             REGBIT_ACL_HINT_DROP " = 1; "
@@ -7708,14 +7725,14 @@ build_acl_hints(struct ovn_datapath *od,
         match = features->ct_no_masked_label
                 ? "!ct.new && ct.est && !ct.rpl && ct_mark.blocked == 1"
                 : "!ct.new && ct.est && !ct.rpl && ct_label.blocked == 1";
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 6, match,
             REGBIT_ACL_HINT_ALLOW_NEW " = 1; "
             REGBIT_ACL_HINT_DROP " = 1; "
             "next;", od->nbs->name);
 
         /* Not tracked traffic can either be allowed or dropped. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 5, "!ct.trk",
             REGBIT_ACL_HINT_ALLOW " = 1; "
             REGBIT_ACL_HINT_DROP " = 1; "
@@ -7732,7 +7749,7 @@ build_acl_hints(struct ovn_datapath *od,
         match = features->ct_no_masked_label
                 ? "!ct.new && ct.est && !ct.rpl && ct_mark.blocked == 0"
                 : "!ct.new && ct.est && !ct.rpl && ct_label.blocked == 0";
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 4, match,
             REGBIT_ACL_HINT_ALLOW " = 1; "
             REGBIT_ACL_HINT_BLOCK " = 1; next;",
@@ -7741,13 +7758,13 @@ build_acl_hints(struct ovn_datapath *od,
         /* Not established or established and already blocked connections may
          * hit drop ACLs.
          */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 3, "!ct.est",
             REGBIT_ACL_HINT_DROP " = 1; next;", od->nbs->name);
         match = features->ct_no_masked_label
                 ? "ct.est && ct_mark.blocked == 1"
                 : "ct.est && ct_label.blocked == 1";
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, stage, 2, match,
             REGBIT_ACL_HINT_DROP " = 1; next;", od->nbs->name);
 
@@ -7758,7 +7775,7 @@ build_acl_hints(struct ovn_datapath *od,
         match = features->ct_no_masked_label
                 ? "ct.est && ct_mark.blocked == 0"
                 : "ct.est && ct_label.blocked == 0";
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 1, match,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 1, match,
                       REGBIT_ACL_HINT_BLOCK " = 1; "
                       "next;", od->nbs->name);
     }
@@ -7894,7 +7911,7 @@ consider_acl(struct lflow_data *lflows, struct ovn_datapath *od,
         ds_put_format(match, "(%s)", acl->match);
         ovn_lflow_add_with_hint(lflows, od, stage, priority,
                                 ds_cstr(match), ds_cstr(actions),
-                                &acl->header_, &od->lflow_dep_mgr,
+                                &acl->header_, &od->ct_lb_lflow_dep_mgr,
                                 OBJDEP_TYPE_OD, od->nbs->name, od);
         return;
     }
@@ -7932,7 +7949,7 @@ consider_acl(struct lflow_data *lflows, struct ovn_datapath *od,
         ds_put_cstr(actions, "next;");
         ovn_lflow_add_with_hint(lflows, od, stage, priority,
                                 ds_cstr(match), ds_cstr(actions),
-                                &acl->header_, &od->lflow_dep_mgr,
+                                &acl->header_, &od->ct_lb_lflow_dep_mgr,
                                 OBJDEP_TYPE_OD, od->nbs->name, od);
 
         /* Match on traffic in the request direction for an established
@@ -7955,7 +7972,7 @@ consider_acl(struct lflow_data *lflows, struct ovn_datapath *od,
         ds_put_cstr(actions, "next;");
         ovn_lflow_add_with_hint(lflows, od, stage, priority,
                                 ds_cstr(match), ds_cstr(actions),
-                                &acl->header_, &od->lflow_dep_mgr,
+                                &acl->header_, &od->ct_lb_lflow_dep_mgr,
                                 OBJDEP_TYPE_OD, od->nbs->name, od);
     } else if (!strcmp(acl->action, "drop")
                || !strcmp(acl->action, "reject")) {
@@ -7973,7 +7990,7 @@ consider_acl(struct lflow_data *lflows, struct ovn_datapath *od,
         ds_put_cstr(actions, "next;");
         ovn_lflow_add_with_hint(lflows, od, stage, priority,
                                 ds_cstr(match), ds_cstr(actions),
-                                &acl->header_, &od->lflow_dep_mgr,
+                                &acl->header_, &od->ct_lb_lflow_dep_mgr,
                                 OBJDEP_TYPE_OD, od->nbs->name, od);
         /* For an existing connection without ct_mark.blocked set, we've
          * encountered a policy change. ACLs previously allowed
@@ -7995,7 +8012,7 @@ consider_acl(struct lflow_data *lflows, struct ovn_datapath *od,
                       ct_blocked_match);
         ovn_lflow_add_with_hint(lflows, od, stage, priority,
                                 ds_cstr(match), ds_cstr(actions),
-                                &acl->header_, &od->lflow_dep_mgr,
+                                &acl->header_, &od->ct_lb_lflow_dep_mgr,
                                 OBJDEP_TYPE_OD, od->nbs->name, od);
     }
 }
@@ -8163,18 +8180,18 @@ build_acl_action_lflows(struct ovn_datapath *od, struct lflow_data *lflows,
     for (size_t i = 0; i < ARRAY_SIZE(stages); i++) {
         enum ovn_stage stage = stages[i];
         if (!od->has_acls) {
-            ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 0, "1", "next;",
+            ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 0, "1", "next;",
                                             od->nbs->name);
             continue;
         }
         ds_truncate(actions, verdict_len);
         ds_put_cstr(actions, "next;");
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 1000,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 1000,
                       REGBIT_ACL_VERDICT_ALLOW " == 1", ds_cstr(actions),
                       od->nbs->name);
         ds_truncate(actions, verdict_len);
         ds_put_cstr(actions, debug_implicit_drop_action());
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 1000,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 1000,
                       REGBIT_ACL_VERDICT_DROP " == 1",
                       ds_cstr(actions), od->nbs->name);
         bool ingress = ovn_stage_get_pipeline(stage) == P_IN;
@@ -8193,12 +8210,12 @@ build_acl_action_lflows(struct ovn_datapath *od, struct lflow_data *lflows,
                           REGBIT_ACL_VERDICT_REJECT " == 1", ds_cstr(actions),
                           copp_meter_get(COPP_REJECT, od->nbs->copp,
                           meter_groups),
-                          &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                          &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                           od->nbs->name, od);
 
         ds_truncate(actions, verdict_len);
         ds_put_cstr(actions, default_acl_action);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 0, "1",
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 0, "1",
                                         ds_cstr(actions), od->nbs->name);
 
         struct ds tier_actions = DS_EMPTY_INITIALIZER;
@@ -8210,7 +8227,7 @@ build_acl_action_lflows(struct ovn_datapath *od, struct lflow_data *lflows,
                           "next(pipeline=%s,table=%d);",
                           j + 1, ingress ? "ingress" : "egress",
                           ovn_stage_get_table(stage) - 1);
-            ovn_lflow_add_with_od_lflow_ref(lflows, od, stage, 500,
+            ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, stage, 500,
                                             ds_cstr(match),
                                             ds_cstr(&tier_actions),
                                             od->nbs->name);
@@ -8278,7 +8295,7 @@ build_acl_log_related_flows(struct ovn_datapath *od, struct lflow_data *lflows,
     ovn_lflow_add_with_hint(lflows, od, log_related_stage,
                             UINT16_MAX - 2,
                             ds_cstr(match), ds_cstr(actions),
-                            &acl->header_, &od->lflow_dep_mgr,
+                            &acl->header_, &od->ct_lb_lflow_dep_mgr,
                             OBJDEP_TYPE_OD, od->nbs->name, od);
 
     ds_clear(match);
@@ -8290,7 +8307,7 @@ build_acl_log_related_flows(struct ovn_datapath *od, struct lflow_data *lflows,
     ovn_lflow_add_with_hint(lflows, od, log_related_stage,
                             UINT16_MAX - 2,
                             ds_cstr(match), ds_cstr(actions),
-                            &acl->header_, &od->lflow_dep_mgr,
+                            &acl->header_, &od->ct_lb_lflow_dep_mgr,
                             OBJDEP_TYPE_OD, od->nbs->name, od);
 }
 
@@ -8318,29 +8335,29 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
      * are any stateful ACLs in this datapath. */
     if (!od->has_acls) {
         if (!od->has_lb_vip) {
-            ovn_lflow_add_with_od_lflow_ref(
+            ovn_lflow_add_with_ct_lb_lflow_ref(
                 lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX, "1", "next;",
                 od->nbs->name);
-            ovn_lflow_add_with_od_lflow_ref(
+            ovn_lflow_add_with_ct_lb_lflow_ref(
                 lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX, "1", "next;",
                 od->nbs->name);
         } else {
-            ovn_lflow_add_with_od_lflow_ref(
+            ovn_lflow_add_with_ct_lb_lflow_ref(
                 lflows, od, S_SWITCH_IN_ACL_EVAL, 0, "1", "next;",
                 od->nbs->name);
-            ovn_lflow_add_with_od_lflow_ref(
+            ovn_lflow_add_with_ct_lb_lflow_ref(
                 lflows, od, S_SWITCH_OUT_ACL_EVAL, 0, "1", "next;",
                 od->nbs->name);
         }
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL, 0, "1", "next;",
             od->nbs->name);
     } else {
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_EVAL, 0, "1", "next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, 0, "1", "next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL, 0, "1", "next;",
             od->nbs->name);
     }
@@ -8371,11 +8388,11 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
          * uses "next;". */
         ds_clear(&match);
         ds_put_format(&match, "ip && ct.est && %s == 1", ct_blocked_match);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_IN_ACL_EVAL, 1,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_SWITCH_IN_ACL_EVAL, 1,
                       ds_cstr(&match),
                       REGBIT_CONNTRACK_COMMIT" = 1; "
                       REGBIT_ACL_VERDICT_ALLOW" = 1; next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_OUT_ACL_EVAL, 1,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_SWITCH_OUT_ACL_EVAL, 1,
                       ds_cstr(&match),
                       REGBIT_CONNTRACK_COMMIT" = 1; "
                       REGBIT_ACL_VERDICT_ALLOW" = 1; next;", od->nbs->name);
@@ -8383,10 +8400,10 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
         const char *next_action = default_acl_drop
                              ? "next;"
                              : REGBIT_CONNTRACK_COMMIT" = 1; next;";
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_EVAL, 1, "ip && !ct.est", next_action,
             od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, 1, "ip && !ct.est",
             next_action, od->nbs->name);
 
@@ -8401,11 +8418,11 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
         ds_put_format(&match, "%s(ct.est && ct.rpl && %s == 1)",
                       use_ct_inv_match ? "ct.inv || " : "",
                       ct_blocked_match);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
             ds_cstr(&match), REGBIT_ACL_VERDICT_DROP " = 1; next;",
             od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX - 3,
             ds_cstr(&match), REGBIT_ACL_VERDICT_DROP " = 1; next;",
             od->nbs->name);
@@ -8424,13 +8441,13 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
                       "ct.rpl && %s == 0",
                       use_ct_inv_match ? " && !ct.inv" : "",
                       ct_blocked_match);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
             ds_cstr(&match), REGBIT_ACL_HINT_DROP" = 0; "
             REGBIT_ACL_HINT_BLOCK" = 0; "
             REGBIT_ACL_HINT_ALLOW_REL" = 1; "
             REGBIT_ACL_VERDICT_ALLOW" = 1; next;", od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX - 3,
             ds_cstr(&match), REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
             od->nbs->name);
@@ -8461,16 +8478,16 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
         ds_put_format(&match, "!ct.est && ct.rel && !ct.new%s && %s == 0",
                       use_ct_inv_match ? " && !ct.inv" : "",
                       ct_blocked_match);
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
             ds_cstr(&match), ct_in_acl_action, od->nbs->name);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_OUT_ACL_EVAL,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_SWITCH_OUT_ACL_EVAL,
                                         UINT16_MAX - 3,
                                         ds_cstr(&match), ct_out_acl_action,
                                         od->nbs->name);
         /* Reply and related traffic matched by an "allow-related" ACL
          * should be allowed in the ls_in_acl_after_lb stage too. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL,
             UINT16_MAX - 3,
             REGBIT_ACL_HINT_ALLOW_REL" == 1",
@@ -8484,15 +8501,15 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
      * Also, don't send them to conntrack because session tracking
      * for these protocols is not working properly:
      * https://bugzilla.kernel.org/show_bug.cgi?id=11797. */
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
         IPV6_CT_OMIT_MATCH, REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
         od->nbs->name);
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX - 3,
         IPV6_CT_OMIT_MATCH, REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
         od->nbs->name);
-    ovn_lflow_add_with_od_lflow_ref(
+    ovn_lflow_add_with_ct_lb_lflow_ref(
         lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL, UINT16_MAX - 3,
         IPV6_CT_OMIT_MATCH, REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
         od->nbs->name);
@@ -8530,7 +8547,7 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
             has_stateful ? REGBIT_ACL_VERDICT_ALLOW" = 1; "
                            "ct_commit; next;"
                          : REGBIT_ACL_VERDICT_ALLOW" = 1; next;";
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, 34000, "udp.src == 53",
             dns_actions, od->nbs->name);
     }
@@ -8538,13 +8555,13 @@ build_acls(struct ovn_datapath *od, const struct chassis_features *features,
     if (od->has_acls || od->has_lb_vip) {
         /* Add a 34000 priority flow to advance the service monitor reply
         * packets to skip applying ingress ACLs. */
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_IN_ACL_EVAL,
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_SWITCH_IN_ACL_EVAL,
             34000, "eth.dst == $svc_monitor_mac",
             REGBIT_ACL_VERDICT_ALLOW" = 1; next;", od->nbs->name);
 
         /* Add a 34000 priority flow to advance the service monitor packets
         * generated by ovn-controller to skip applying egress ACLs. */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_ct_lb_lflow_ref(
             lflows, od, S_SWITCH_OUT_ACL_EVAL, 34000,
             "eth.src == $svc_monitor_mac",
             REGBIT_ACL_VERDICT_ALLOW" = 1; next;", od->nbs->name);
@@ -9229,11 +9246,11 @@ build_lb_hairpin(struct ovn_datapath *od, struct lflow_data *lflows)
     /* Ingress Pre-Hairpin/Nat-Hairpin/Hairpin tabled (Priority 0).
      * Packets that don't need hairpinning should continue processing.
      */
-    ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_IN_PRE_HAIRPIN, 0,
+    ovn_lflow_add_with_lb_lflow_ref(lflows, od, S_SWITCH_IN_PRE_HAIRPIN, 0,
                                     "1", "next;", od->nbs->name);
-    ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_IN_NAT_HAIRPIN, 0,
+    ovn_lflow_add_with_lb_lflow_ref(lflows, od, S_SWITCH_IN_NAT_HAIRPIN, 0,
                                     "1", "next;", od->nbs->name);
-    ovn_lflow_add_with_od_lflow_ref(lflows, od, S_SWITCH_IN_HAIRPIN, 0,
+    ovn_lflow_add_with_lb_lflow_ref(lflows, od, S_SWITCH_IN_HAIRPIN, 0,
                                     "1", "next;", od->nbs->name);
 
     if (od->has_lb_vip) {
@@ -9246,7 +9263,7 @@ build_lb_hairpin(struct ovn_datapath *od, struct lflow_data *lflows)
             REGBIT_HAIRPIN " = chk_lb_hairpin(); "
             REGBIT_HAIRPIN_REPLY " = chk_lb_hairpin_reply(); "
             "next;", &od->nbs->header_,
-            &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name, NULL);
+            &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name, NULL);
 
         /* If packet needs to be hairpinned, snat the src ip with the VIP
          * for new sessions. */
@@ -9255,7 +9272,7 @@ build_lb_hairpin(struct ovn_datapath *od, struct lflow_data *lflows)
                                 " && "REGBIT_HAIRPIN " == 1",
                                 "ct_snat_to_vip; next;",
                                 &od->nbs->header_,
-                                &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                 od->nbs->name, od);
 
         /* If packet needs to be hairpinned, for established sessions there
@@ -9266,7 +9283,7 @@ build_lb_hairpin(struct ovn_datapath *od, struct lflow_data *lflows)
                                 " && "REGBIT_HAIRPIN " == 1",
                                 "ct_snat;",
                                 &od->nbs->header_,
-                                &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                 od->nbs->name, od);
 
         /* For the reply of hairpinned traffic, snat the src ip to the VIP. */
@@ -9274,14 +9291,14 @@ build_lb_hairpin(struct ovn_datapath *od, struct lflow_data *lflows)
                                 "ip && "REGBIT_HAIRPIN_REPLY " == 1",
                                 "ct_snat;",
                                 &od->nbs->header_,
-                                &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                 od->nbs->name, od);
 
         /* Ingress Hairpin table.
         * - Priority 1: Packets that were SNAT-ed for hairpinning should be
         *   looped back (i.e., swap ETH addresses and send back on inport).
         */
-        ovn_lflow_add_with_od_lflow_ref(
+        ovn_lflow_add_with_lb_lflow_ref(
             lflows, od, S_SWITCH_IN_HAIRPIN, 1,
             "("REGBIT_HAIRPIN " == 1 || " REGBIT_HAIRPIN_REPLY " == 1)",
             "eth.dst <-> eth.src; outport = inport; flags.loopback = 1; "
@@ -10102,6 +10119,7 @@ build_lswitch_lflows_pre_acl_and_acl(struct ovn_datapath *od,
     ls_get_acl_flags(od);
 
     build_pre_acls(od, port_groups, lflows);
+    build_pre_lb_lb_related(od, lflows);
     build_pre_lb(od, meter_groups, lflows);
     build_pre_stateful(od, features, lflows);
     build_acl_hints(od, features, lflows);
@@ -13303,15 +13321,16 @@ static void
 build_lrouter_force_snat_flows(struct lflow_data *lflows,
                                struct ovn_datapath *od,
                                const char *ip_version, const char *ip_addr,
-                               const char *context)
+                               const char *context,
+                               struct objdep_mgr *lflow_dep_mgr)
 {
     struct ds match = DS_EMPTY_INITIALIZER;
     struct ds actions = DS_EMPTY_INITIALIZER;
     ds_put_format(&match, "ip%s && ip%s.dst == %s",
                   ip_version, ip_version, ip_addr);
-    ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_IN_UNSNAT, 110,
-                                    ds_cstr(&match), "ct_snat;",
-                                    od->nbr->name);
+    ovn_lflow_add(lflows, od, S_ROUTER_IN_UNSNAT, 110, ds_cstr(&match),
+                  "ct_snat;", lflow_dep_mgr, OBJDEP_TYPE_OD,
+                  od->nbr->name, od);
 
     /* Higher priority rules to force SNAT with the IP addresses
      * configured in the Gateway router.  This only takes effect
@@ -13320,9 +13339,9 @@ build_lrouter_force_snat_flows(struct lflow_data *lflows,
     ds_put_format(&match, "flags.force_snat_for_%s == 1 && ip%s",
                   context, ip_version);
     ds_put_format(&actions, "ct_snat(%s);", ip_addr);
-    ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_OUT_SNAT, 100,
-                                    ds_cstr(&match), ds_cstr(&actions),
-                                    od->nbr->name);
+    ovn_lflow_add(lflows, od, S_ROUTER_OUT_SNAT, 100, ds_cstr(&match),
+                  ds_cstr(&actions), lflow_dep_mgr, OBJDEP_TYPE_OD,
+                  od->nbr->name, od);
 
     ds_destroy(&match);
     ds_destroy(&actions);
@@ -15765,8 +15784,8 @@ build_lrouter_in_unsnat_in_czone_flow(struct lflow_data *lflows,
     ds_put_cstr(match, " && flags.loopback == 0");
     ovn_lflow_add_with_hint(lflows, od, S_ROUTER_IN_UNSNAT,
                             100, ds_cstr(match), "ct_snat_in_czone;",
-                            &nat->header_, &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                            od->nbr->name, od);
+                            &nat->header_, &od->lflow_dep_mgr,
+                            OBJDEP_TYPE_OD, od->nbr->name, od);
 
     ds_truncate(match, common_match_len);
     /* Update common zone match for the hairpin traffic. */
@@ -15774,8 +15793,8 @@ build_lrouter_in_unsnat_in_czone_flow(struct lflow_data *lflows,
 
     ovn_lflow_add_with_hint(lflows, od, S_ROUTER_IN_UNSNAT,
                             100, ds_cstr(match), "ct_snat;",
-                            &nat->header_, &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                            od->nbr->name, od);
+                            &nat->header_, &od->lflow_dep_mgr,
+                            OBJDEP_TYPE_OD, od->nbr->name, od);
 }
 
 static void
@@ -15797,8 +15816,8 @@ build_lrouter_in_unsnat_flow(struct lflow_data *lflows,
 
     ovn_lflow_add_with_hint(lflows, od, S_ROUTER_IN_UNSNAT,
                             priority, ds_cstr(match), "ct_snat;",
-                            &nat->header_, &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                            od->nbr->name, od);
+                            &nat->header_, &od->lflow_dep_mgr,
+                            OBJDEP_TYPE_OD, od->nbr->name, od);
 }
 
 static void
@@ -16403,6 +16422,130 @@ lrouter_check_nat_entry(struct ovn_datapath *od, const struct nbrec_nat *nat,
 
 /* NAT, Defrag and load balancing. */
 static void
+build_lrouter_nat_flows_lb_related(struct ovn_datapath *od,
+                                   struct lflow_data *lflows,
+                                   struct ds *match,
+                                   const struct chassis_features *features)
+{
+    if (!od->has_lb_vip) {
+        return;
+    }
+
+    const char *ct_flag_reg = features->ct_no_masked_label
+                              ? "ct_mark"
+                              : "ct_label";
+    /* Ingress DNAT (Priority 50/70).
+     *
+     * Allow traffic that is related to an existing conntrack entry.
+     * At the same time apply NAT for this traffic.
+     *
+     * NOTE: This does not support related data sessions (eg,
+     * a dynamically negotiated FTP data channel), but will allow
+     * related traffic such as an ICMP Port Unreachable through
+     * that's generated from a non-listening UDP port.  */
+    if (features->ct_lb_related) {
+        ds_clear(match);
+
+        ds_put_cstr(match, "ct.rel && !ct.est && !ct.new");
+        size_t match_len = match->length;
+
+        ds_put_format(match, " && %s.skip_snat == 1", ct_flag_reg);
+        ovn_lflow_add_with_lb_lflow_ref(
+            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
+            "flags.skip_snat_for_lb = 1; ct_commit_nat;", od->nbr->name);
+
+        ds_truncate(match, match_len);
+        ds_put_format(match, " && %s.force_snat == 1", ct_flag_reg);
+        ovn_lflow_add_with_lb_lflow_ref(
+            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
+            "flags.force_snat_for_lb = 1; ct_commit_nat;", od->nbr->name);
+
+        ds_truncate(match, match_len);
+        ovn_lflow_add_with_lb_lflow_ref(lflows, od, S_ROUTER_IN_DNAT, 50,
+                                        ds_cstr(match), "ct_commit_nat;",
+                                        od->nbr->name);
+    }
+
+    /* Ingress DNAT (Priority 50/70).
+     *
+     * Pass the traffic that is already established to the next table with
+     * proper flags set.
+     */
+    ds_clear(match);
+
+    ds_put_format(match, "ct.est && !ct.rel && !ct.new && %s.natted",
+                    ct_flag_reg);
+    size_t match_len = match->length;
+
+    ds_put_format(match, " && %s.skip_snat == 1", ct_flag_reg);
+    ovn_lflow_add_with_lb_lflow_ref(
+        lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
+        "flags.skip_snat_for_lb = 1; next;", od->nbr->name);
+
+    ds_truncate(match, match_len);
+    ds_put_format(match, " && %s.force_snat == 1", ct_flag_reg);
+    ovn_lflow_add_with_lb_lflow_ref(
+        lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
+        "flags.force_snat_for_lb = 1; next;", od->nbr->name);
+
+    ds_truncate(match, match_len);
+    ovn_lflow_add_with_lb_lflow_ref(lflows, od, S_ROUTER_IN_DNAT, 50,
+                                    ds_cstr(match), "next;",
+                                    od->nbr->name);
+
+    /* Handle force SNAT options set in the gateway router. */
+    if (od->is_gw_router) {
+        bool lb_force_snat_ip =
+            !lport_addresses_is_empty(&od->lb_force_snat_addrs);
+        if (lb_force_snat_ip) {
+            if (od->lb_force_snat_addrs.n_ipv4_addrs) {
+                build_lrouter_force_snat_flows(lflows, od, "4",
+                    od->lb_force_snat_addrs.ipv4_addrs[0].addr_s, "lb",
+                    &od->lb_lflow_dep_mgr);
+            }
+            if (od->lb_force_snat_addrs.n_ipv6_addrs) {
+                build_lrouter_force_snat_flows(lflows, od, "6",
+                    od->lb_force_snat_addrs.ipv6_addrs[0].addr_s, "lb",
+                    &od->lb_lflow_dep_mgr);
+            }
+        }
+    }
+}
+
+static void
+build_lrouter_nat_flows_ct_lb_related(struct ovn_datapath *od,
+                                      struct lflow_data *lflows)
+{
+    if(!(od->nbr->n_nat || od->has_lb_vip)) {
+        return;
+    }
+
+    /* If the router has load balancer or DNAT rules, re-circulate every packet
+     * through the DNAT zone so that packets that need to be unDNATed in the
+     * reverse direction get unDNATed.
+     *
+     * We also commit newly initiated connections in the reply direction to the
+     * DNAT zone. This ensures that these flows are tracked. If the flow was
+     * not committed, it would produce ongoing datapath flows with the ct.new
+     * flag set. Some NICs are unable to offload these flows.
+     */
+    if (od->is_gw_router) {
+        /* Do not send ND or ICMP packets to connection tracking. */
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_ROUTER_OUT_UNDNAT,
+                                           100, "nd || nd_rs || nd_ra", "next;",
+                                           od->nbr->name);
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od, S_ROUTER_OUT_UNDNAT, 50,
+                                           "ip", "flags.loopback = 1; ct_dnat;",
+                                           od->nbr->name);
+        ovn_lflow_add_with_ct_lb_lflow_ref(lflows, od,
+                                           S_ROUTER_OUT_POST_UNDNAT,
+                                           50, "ip && ct.new",
+                                           "ct_commit { } ; next; ",
+                                           od->nbr->name);
+    }
+}
+
+static void
 build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
                                 struct lflow_data *lflows,
                                 const struct hmap *ls_ports,
@@ -16438,93 +16581,6 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
     ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_IN_ECMP_STATEFUL, 0,
                                     "1", "next;", od->nbr->name);
 
-    const char *ct_flag_reg = features->ct_no_masked_label
-                              ? "ct_mark"
-                              : "ct_label";
-    /* Ingress DNAT (Priority 50/70).
-     *
-     * Allow traffic that is related to an existing conntrack entry.
-     * At the same time apply NAT for this traffic.
-     *
-     * NOTE: This does not support related data sessions (eg,
-     * a dynamically negotiated FTP data channel), but will allow
-     * related traffic such as an ICMP Port Unreachable through
-     * that's generated from a non-listening UDP port.  */
-    if (od->has_lb_vip && features->ct_lb_related) {
-        ds_clear(match);
-
-        ds_put_cstr(match, "ct.rel && !ct.est && !ct.new");
-        size_t match_len = match->length;
-
-        ds_put_format(match, " && %s.skip_snat == 1", ct_flag_reg);
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
-            "flags.skip_snat_for_lb = 1; ct_commit_nat;", od->nbr->name);
-
-        ds_truncate(match, match_len);
-        ds_put_format(match, " && %s.force_snat == 1", ct_flag_reg);
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
-            "flags.force_snat_for_lb = 1; ct_commit_nat;", od->nbr->name);
-
-        ds_truncate(match, match_len);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_IN_DNAT, 50,
-                                        ds_cstr(match), "ct_commit_nat;",
-                                        od->nbr->name);
-    }
-
-    /* Ingress DNAT (Priority 50/70).
-     *
-     * Pass the traffic that is already established to the next table with
-     * proper flags set.
-     */
-    if (od->has_lb_vip) {
-        ds_clear(match);
-
-        ds_put_format(match, "ct.est && !ct.rel && !ct.new && %s.natted",
-                      ct_flag_reg);
-        size_t match_len = match->length;
-
-        ds_put_format(match, " && %s.skip_snat == 1", ct_flag_reg);
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
-            "flags.skip_snat_for_lb = 1; next;", od->nbr->name);
-
-        ds_truncate(match, match_len);
-        ds_put_format(match, " && %s.force_snat == 1", ct_flag_reg);
-        ovn_lflow_add_with_od_lflow_ref(
-            lflows, od, S_ROUTER_IN_DNAT, 70, ds_cstr(match),
-            "flags.force_snat_for_lb = 1; next;", od->nbr->name);
-
-        ds_truncate(match, match_len);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_IN_DNAT, 50,
-                                        ds_cstr(match), "next;",
-                                        od->nbr->name);
-    }
-
-    /* If the router has load balancer or DNAT rules, re-circulate every packet
-     * through the DNAT zone so that packets that need to be unDNATed in the
-     * reverse direction get unDNATed.
-     *
-     * We also commit newly initiated connections in the reply direction to the
-     * DNAT zone. This ensures that these flows are tracked. If the flow was
-     * not committed, it would produce ongoing datapath flows with the ct.new
-     * flag set. Some NICs are unable to offload these flows.
-     */
-    if (od->is_gw_router && (od->nbr->n_nat || od->has_lb_vip)) {
-        /* Do not send ND or ICMP packets to connection tracking. */
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_OUT_UNDNAT, 100,
-                                        "nd || nd_rs || nd_ra", "next;",
-                                        od->nbr->name);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_OUT_UNDNAT, 50,
-                                        "ip", "flags.loopback = 1; ct_dnat;",
-                                        od->nbr->name);
-        ovn_lflow_add_with_od_lflow_ref(lflows, od, S_ROUTER_OUT_POST_UNDNAT,
-                                        50, "ip && ct.new",
-                                        "ct_commit { } ; next; ",
-                                        od->nbr->name);
-    }
-
     /* Send the IPv6 NS packets to next table. When ovn-controller
      * generates IPv6 NS (for the action - nd_ns{}), the injected
      * packet would go through conntrack - which is not required. */
@@ -16542,8 +16598,6 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
 
     bool dnat_force_snat_ip =
         !lport_addresses_is_empty(&od->dnat_force_snat_addrs);
-    bool lb_force_snat_ip =
-        !lport_addresses_is_empty(&od->lb_force_snat_addrs);
 
     for (int i = 0; i < od->nbr->n_nat; i++) {
         const struct nbrec_nat *nat = nat = od->nbr->nat[i];
@@ -16610,7 +16664,7 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
                                         150, ds_cstr(match),
                                         debug_drop_action(),
                                         &nat->header_,
-                                        &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                        &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
                                         od->nbr->name, od);
                 /* Now for packets coming from other (downlink) LRPs, allow ARP
                  * resolve for the NAT IP, so that such packets can be
@@ -16631,7 +16685,8 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
                                         100, ds_cstr(match),
                                         ds_cstr(actions),
                                         &nat->header_,
-                                        &od->lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                        &od->ct_lb_lflow_dep_mgr,
+                                        OBJDEP_TYPE_OD,
                                         od->nbr->name, od);
                 if (od->redirect_bridged && distributed_nat) {
                     ds_clear(match);
@@ -16810,22 +16865,12 @@ build_lrouter_nat_defrag_and_lb(struct ovn_datapath *od,
             if (od->dnat_force_snat_addrs.n_ipv4_addrs) {
                 build_lrouter_force_snat_flows(lflows, od, "4",
                     od->dnat_force_snat_addrs.ipv4_addrs[0].addr_s,
-                    "dnat");
+                    "dnat", &od->lflow_dep_mgr);
             }
             if (od->dnat_force_snat_addrs.n_ipv6_addrs) {
                 build_lrouter_force_snat_flows(lflows, od, "6",
                     od->dnat_force_snat_addrs.ipv6_addrs[0].addr_s,
-                    "dnat");
-            }
-        }
-        if (lb_force_snat_ip) {
-            if (od->lb_force_snat_addrs.n_ipv4_addrs) {
-                build_lrouter_force_snat_flows(lflows, od, "4",
-                    od->lb_force_snat_addrs.ipv4_addrs[0].addr_s, "lb");
-            }
-            if (od->lb_force_snat_addrs.n_ipv6_addrs) {
-                build_lrouter_force_snat_flows(lflows, od, "6",
-                    od->lb_force_snat_addrs.ipv6_addrs[0].addr_s, "lb");
+                    "dnat", &od->lflow_dep_mgr);
             }
         }
     }
@@ -16923,6 +16968,8 @@ build_lswitch_and_lrouter_iterate_by_lr(struct ovn_datapath *od,
                                     lr_ports, match,
                                     actions, meter_groups,
                                     features);
+    build_lrouter_nat_flows_lb_related(od, lflows, match, features);
+    build_lrouter_nat_flows_ct_lb_related(od, lflows);
     build_lrouter_lb_affinity_default_flows(od, lflows);
 }
 
@@ -17990,67 +18037,81 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
 }
 
 static void
-lflow_update_od_lflows(struct ovn_datapath *od,
-                       struct ovsdb_idl_txn *ovnsb_txn,
-                       struct lflow_input *lflow_input,
-                       struct lflow_data *lflow_data)
+lflow_update_ls_lb_lflows(struct ovn_datapath *od,
+                          struct ovsdb_idl_txn *ovnsb_txn,
+                          struct lflow_input *lflow_input,
+                          struct lflow_data *lflow_data)
 {
-    char *od_name = od->nbs ? od->nbs->name : od->nbr->name;
     struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
-        &od->lflow_dep_mgr, OBJDEP_TYPE_OD, od_name);
+        &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name);
 
     /* unlink old lflows. */
-    unlink_objres_lflows(res_node, od, lflow_data, &od->lflow_dep_mgr);
+    unlink_objres_lflows(res_node, od, lflow_data, &od->lb_lflow_dep_mgr);
 
-    struct ds actions = DS_EMPTY_INITIALIZER;
+    res_node = objdep_mgr_find_objs(
+        &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbs->name);
+    unlink_objres_lflows(res_node, od, lflow_data, &od->ct_lb_lflow_dep_mgr);
 
-    if (od->nbs) {
-        build_lswitch_and_lrouter_iterate_by_ls(
-        od, lflow_input->port_groups, lflow_input->meter_groups,
-        lflow_input->features, &actions, lflow_data);
-    } else {
-        struct ds match = DS_EMPTY_INITIALIZER;
-        build_lswitch_and_lrouter_iterate_by_lr(
-            od, lflow_input->meter_groups, lflow_input->lr_ports,
-            lflow_input->ls_ports, lflow_input->features,
-            lflow_input->bfd_connections, &match,
-            &actions, lflow_data);
-        ds_destroy(&match);
-    }
+    build_pre_acls(od, lflow_input->port_groups, lflow_data);
+    build_pre_lb_lb_related(od, lflow_data);
+    build_acl_hints(od, lflow_input->features, lflow_data);
+    build_acls(od, lflow_input->features, lflow_data, lflow_input->port_groups,
+               lflow_input->meter_groups);
+    build_lb_hairpin(od, lflow_data);
 
-    ds_destroy(&actions);
     /* Sync the new flows to SB. */
-    res_node = objdep_mgr_find_objs(&od->lflow_dep_mgr, OBJDEP_TYPE_OD,
-                                    od_name);
+    res_node = objdep_mgr_find_objs(&od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                    od->nbs->name);
     sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
-                            lflow_data, &od->lflow_dep_mgr);
+                            lflow_data, &od->lb_lflow_dep_mgr);
+
+    res_node = objdep_mgr_find_objs(&od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                    od->nbs->name);
+    sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                            lflow_data, &od->ct_lb_lflow_dep_mgr);
 }
 
-bool
-lflow_handle_northd_datapath_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                     struct tracked_datapaths *trk_datapaths,
-                                     struct lflow_input *lflow_input,
-                                     struct lflow_data *lflow_data)
+static void
+lflow_update_lr_lb_lflows(struct ovn_datapath *od,
+                          struct ovsdb_idl_txn *ovnsb_txn,
+                          struct lflow_input *lflow_input,
+                          struct lflow_data *lflow_data)
 {
-    struct ovn_datapath *od;
-    size_t index;
-    if (trk_datapaths->n_nb_ls && trk_datapaths->nb_ls_map) {
-        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->ls_datapaths),
-                           trk_datapaths->nb_ls_map) {
-            od = lflow_input->ls_datapaths->array[index];
-            lflow_update_od_lflows(od, ovnsb_txn, lflow_input, lflow_data);
-        }
-    }
+    ovs_assert(od->nbr);
 
-    if (trk_datapaths->n_nb_lr && trk_datapaths->nb_lr_map) {
-        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->lr_datapaths),
-                           trk_datapaths->nb_lr_map) {
-            od = lflow_input->lr_datapaths->array[index];
-            lflow_update_od_lflows(od, ovnsb_txn, lflow_input, lflow_data);
-        }
-    }
+    struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
+        &od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbr->name);
 
-    return true;
+    /* unlink old lflows. */
+    unlink_objres_lflows(res_node, od, lflow_data, &od->lb_lflow_dep_mgr);
+
+    struct ds actions = DS_EMPTY_INITIALIZER;
+    struct ds match = DS_EMPTY_INITIALIZER;
+
+    build_lrouter_nat_flows_lb_related(od, lflow_data, &match,
+                                       lflow_input->features);
+
+    /* Sync the new flows to SB. */
+    res_node = objdep_mgr_find_objs(&od->lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                    od->nbr->name);
+    sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                            lflow_data, &od->lb_lflow_dep_mgr);
+
+
+    res_node = objdep_mgr_find_objs(
+        &od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD, od->nbr->name);
+    unlink_objres_lflows(res_node, od, lflow_data, &od->ct_lb_lflow_dep_mgr);
+
+    build_lrouter_nat_flows_ct_lb_related(od, lflow_data);
+
+    /* Sync the new flows to SB. */
+    res_node = objdep_mgr_find_objs(&od->ct_lb_lflow_dep_mgr, OBJDEP_TYPE_OD,
+                                    od->nbr->name);
+    sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
+                            lflow_data, &od->ct_lb_lflow_dep_mgr);
+
+    ds_destroy(&match);
+    ds_destroy(&actions);
 }
 
 bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
@@ -18119,6 +18180,24 @@ bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                         lb_dps->lb->nlb->name);
         sync_lflows_from_objres(ovnsb_txn, res_node, lflow_input,
                                 lflow_data, &lb_dps->lflow_dep_mgr);
+    }
+
+    if (trk_lbs->n_nb_ls && trk_lbs->nb_ls_map) {
+        size_t index;
+        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->ls_datapaths),
+                           trk_lbs->nb_ls_map) {
+            struct ovn_datapath *od = lflow_input->ls_datapaths->array[index];
+            lflow_update_ls_lb_lflows(od, ovnsb_txn, lflow_input, lflow_data);
+        }
+    }
+
+    if (trk_lbs->n_nb_lr && trk_lbs->nb_lr_map) {
+        size_t index;
+        BITMAP_FOR_EACH_1 (index, ods_size(lflow_input->lr_datapaths),
+                           trk_lbs->nb_lr_map) {
+            struct ovn_datapath *od = lflow_input->lr_datapaths->array[index];
+            lflow_update_lr_lb_lflows(od, ovnsb_txn, lflow_input, lflow_data);
+        }
     }
 
     return true;
