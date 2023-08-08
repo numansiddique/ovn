@@ -123,6 +123,12 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
+    if (!lflow_handle_northd_od_changes(eng_ctx->ovnsb_idl_txn,
+                                &northd_data->trk_northd_changes.trk_datapaths,
+                                &lflow_input, lflow_data)) {
+        return false;
+    }
+
     engine_set_node_state(node, EN_UPDATED);
 
     return true;

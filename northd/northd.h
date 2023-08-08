@@ -113,6 +113,12 @@ struct tracked_ovn_ports {
     struct hmap deleted;
 };
 
+struct tracked_datapaths {
+    /* Tracked created or updated logical switches or
+     * routers. */
+    struct hmapx crupdated;
+};
+
 struct tracked_lb_datapaths {
     /* Tracked created or updated load balancers.
      * hmapx node data is 'struct ovn_lb_datapaths' */
@@ -137,6 +143,7 @@ struct tracked_lb_datapaths {
 struct northd_tracked_data {
     struct tracked_ovn_ports trk_ovn_ports;
     struct tracked_lb_datapaths trk_lbs;
+    struct tracked_datapaths trk_datapaths;
 };
 
 struct northd_data {
@@ -391,6 +398,10 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                       struct lflow_data *);
 bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_lb_datapaths *,
+                                    struct lflow_input *lflow_input,
+                                    struct lflow_data *lflow_data);
+bool lflow_handle_northd_od_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                    struct tracked_datapaths *,
                                     struct lflow_input *lflow_input,
                                     struct lflow_data *lflow_data);
 bool northd_handle_sb_port_binding_changes(
