@@ -105,6 +105,10 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
+    if (northd_data->trk_northd_changes.lb_nats_changed) {
+        return false;
+    }
+
     const struct engine_context *eng_ctx = engine_get_context();
     struct lflow_data *lflow_data = data;
 
@@ -119,6 +123,12 @@ lflow_northd_handler(struct engine_node *node,
 
     if (!lflow_handle_northd_lb_changes(eng_ctx->ovnsb_idl_txn,
                                 &northd_data->trk_northd_changes.trk_lbs,
+                                &lflow_input, lflow_data)) {
+        return false;
+    }
+
+    if (!lflow_handle_northd_od_changes(eng_ctx->ovnsb_idl_txn,
+                                &northd_data->trk_northd_changes.trk_datapaths,
                                 &lflow_input, lflow_data)) {
         return false;
     }
