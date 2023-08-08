@@ -244,10 +244,11 @@ bool
 sync_to_sb_lb_northd_handler(struct engine_node *node, void *data OVS_UNUSED)
 {
     struct northd_data *nd = engine_get_input_data("northd", node);
-    if (nd->change_tracked) {
+    if (nd->change_tracked &&
+            northd_has_only_ports_in_tracked_data(&nd->trk_northd_changes)) {
         /* There are only NB LSP related changes and these can be safely
          * ignore and returned true.  However in case the northd engine
-         * tracking data includes other changes, we need to do additional
+         * tracking data includes other ports, we need to do additional
          * checks before safely ignoring. */
         return true;
     }
