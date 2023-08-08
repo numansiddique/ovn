@@ -113,6 +113,12 @@ struct tracked_ovn_ports {
     struct hmap deleted;
 };
 
+struct tracked_datapaths {
+    /* Tracked created or updated logical switches or
+     * routers. */
+    struct hmapx crupdated;
+};
+
 struct tracked_lb_datapaths {
     /* Tracked created or updated load balancers.
      * hmapx node data is 'struct ovn_lb_datapaths' */
@@ -137,6 +143,10 @@ struct tracked_lb_datapaths {
 struct northd_tracked_data {
     struct tracked_ovn_ports trk_ovn_ports;
     struct tracked_lb_datapaths trk_lbs;
+    struct tracked_datapaths trk_datapaths;
+
+    /* Indicates if any router's NATs changed which were also LB vips. */
+    bool lb_nats_changed;
 };
 
 struct northd_data {
@@ -334,6 +344,9 @@ struct ovn_datapath {
     /* Set of nat external ips on the router. */
     struct sset external_ips;
 
+    /* Set of nat external ips which are lb vips too. */
+    struct sset lb_nats;
+
     /* SNAT IPs owned by the router (shash of 'struct ovn_snat_ip'). */
     struct shash snat_ips;
 
@@ -375,8 +388,10 @@ void ovnsb_db_run(struct ovsdb_idl_txn *ovnnb_txn,
 bool northd_handle_ls_changes(struct ovsdb_idl_txn *,
                               const struct northd_input *,
                               struct northd_data *);
-bool northd_handle_lr_changes(const struct northd_input *,
-                              struct northd_data *);
+bool northd_handle_lr_changes_pre_lb(const struct northd_input *,
+                                     struct northd_data *);
+bool northd_handle_lr_changes_post_lb(const struct northd_input *,
+                                      struct northd_data *);
 void destroy_northd_data_tracked_changes(struct northd_data *);
 void northd_destroy(struct northd_data *data);
 void northd_init(struct northd_data *data);
@@ -391,6 +406,10 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                       struct lflow_data *);
 bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_lb_datapaths *,
+                                    struct lflow_input *lflow_input,
+                                    struct lflow_data *lflow_data);
+bool lflow_handle_northd_od_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                    struct tracked_datapaths *,
                                     struct lflow_input *lflow_input,
                                     struct lflow_data *lflow_data);
 bool northd_handle_sb_port_binding_changes(

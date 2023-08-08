@@ -207,19 +207,41 @@ northd_sb_port_binding_handler(struct engine_node *node,
 }
 
 bool
-northd_nb_logical_router_handler(struct engine_node *node,
-                                 void *data)
+northd_nb_logical_router_handler_pre_lb(struct engine_node *node,
+                                        void *data)
 {
     struct northd_data *nd = data;
     struct northd_input input_data;
 
     northd_get_input_data(node, &input_data);
 
-    if (!northd_handle_lr_changes(&input_data, nd)) {
+    if (!northd_handle_lr_changes_pre_lb(&input_data, nd)) {
         return false;
     }
 
-    if (nd->change_tracked) {
+    if (northd_has_tracked_data(&nd->trk_northd_changes)) {
+        nd->change_tracked = true;
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    return true;
+}
+
+bool
+northd_nb_logical_router_handler_post_lb(struct engine_node *node,
+                                        void *data)
+{
+    struct northd_data *nd = data;
+    struct northd_input input_data;
+
+    northd_get_input_data(node, &input_data);
+
+    if (!northd_handle_lr_changes_post_lb(&input_data, nd)) {
+        return false;
+    }
+
+    if (northd_has_tracked_data(&nd->trk_northd_changes)) {
+        nd->change_tracked = true;
         engine_set_node_state(node, EN_UPDATED);
     }
 
