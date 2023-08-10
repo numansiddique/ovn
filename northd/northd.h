@@ -31,7 +31,6 @@ struct northd_input {
     const struct nbrec_nb_global_table *nbrec_nb_global_table;
     const struct nbrec_logical_switch_table *nbrec_logical_switch_table;
     const struct nbrec_logical_router_table *nbrec_logical_router_table;
-    const struct nbrec_port_group_table *nbrec_port_group_table;
     const struct nbrec_meter_table *nbrec_meter_table;
     const struct nbrec_acl_table *nbrec_acl_table;
     const struct nbrec_static_mac_binding_table
@@ -49,7 +48,6 @@ struct northd_input {
     const struct sbrec_chassis_table *sbrec_chassis_table;
     const struct sbrec_fdb_table *sbrec_fdb_table;
     const struct sbrec_service_monitor_table *sbrec_service_monitor_table;
-    const struct sbrec_port_group_table *sbrec_port_group_table;
     const struct sbrec_meter_table *sbrec_meter_table;
     const struct sbrec_dns_table *sbrec_dns_table;
     const struct sbrec_ip_multicast_table *sbrec_ip_multicast_table;
@@ -156,7 +154,6 @@ struct northd_data {
     struct ovn_datapaths lr_datapaths;
     struct hmap ls_ports;
     struct hmap lr_ports;
-    struct ls_port_group_table ls_port_groups;
     struct shash meter_groups;
     struct hmap lb_datapaths_map;
     struct hmap lb_group_datapaths_map;

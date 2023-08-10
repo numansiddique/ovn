@@ -19443,7 +19443,6 @@ northd_init(struct northd_data *data)
     ovn_datapaths_init(&data->lr_datapaths);
     hmap_init(&data->ls_ports);
     hmap_init(&data->lr_ports);
-    ls_port_group_table_init(&data->ls_port_groups);
     shash_init(&data->meter_groups);
     hmap_init(&data->lb_datapaths_map);
     hmap_init(&data->lb_group_datapaths_map);
@@ -19482,8 +19481,6 @@ northd_destroy(struct northd_data *data)
         ovn_lb_group_datapaths_destroy(lb_group_dps);
     }
     hmap_destroy(&data->lb_group_datapaths_map);
-
-    ls_port_group_table_destroy(&data->ls_port_groups);
 
     struct shash_node *node;
     SHASH_FOR_EACH_SAFE (node, &data->meter_groups) {
@@ -19638,9 +19635,6 @@ ovnnb_db_run(struct northd_input *input_data,
                        ods_size(&data->ls_datapaths),
                        ods_size(&data->lr_datapaths));
     build_ipam(&data->ls_datapaths.datapaths, &data->ls_ports);
-    ls_port_group_table_build(&data->ls_port_groups,
-                              input_data->nbrec_port_group_table,
-                              &data->ls_ports);
     build_lrouter_groups(&data->lr_ports, &data->lr_list);
     build_ip_mcast(ovnsb_txn, input_data->sbrec_ip_multicast_table,
                    input_data->sbrec_ip_mcast_by_dp,
@@ -19655,9 +19649,6 @@ ovnnb_db_run(struct northd_input *input_data,
     stopwatch_start(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
     ovn_update_ipv6_prefix(&data->lr_ports);
 
-    ls_port_group_table_sync(&data->ls_port_groups,
-                             input_data->sbrec_port_group_table,
-                             ovnsb_txn);
     sync_meters(ovnsb_txn, input_data->nbrec_meter_table,
                 input_data->nbrec_acl_table, input_data->sbrec_meter_table,
                 &data->meter_groups);
