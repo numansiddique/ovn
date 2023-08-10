@@ -18,6 +18,8 @@
 
 #include "ovsdb-idl.h"
 #include "lib/packets.h"
+#include "lib/sset.h"
+#include "lib/svec.h"
 #include "include/ovn/version.h"
 
 #define ovn_set_program_name(name) \
@@ -429,5 +431,81 @@ enum en_lport_type {
 enum en_lport_type get_lport_type(const struct sbrec_port_binding *);
 char *get_lport_type_str(enum en_lport_type lport_type);
 bool is_pb_router_type(const struct sbrec_port_binding *);
+
+/* A wrapper that holds sorted arrays of strings. */
+struct sorted_array {
+    const char **arr;
+    bool owns_array;
+    size_t n;
+};
+
+static inline struct sorted_array
+sorted_array_create(const char **sorted_data, size_t n, bool take_ownership)
+{
+    return (struct sorted_array) {
+        .arr = sorted_data,
+        .owns_array = take_ownership,
+        .n = n,
+    };
+}
+
+static inline void
+sorted_array_destroy(struct sorted_array *a)
+{
+    if (a->owns_array) {
+        free(a->arr);
+    }
+}
+
+static inline struct sorted_array
+sorted_array_from_svec(struct svec *v)
+{
+    svec_sort(v);
+    return sorted_array_create((const char **) v->names, v->n, false);
+}
+
+static inline struct sorted_array
+sorted_array_from_sset(struct sset *s)
+{
+    return sorted_array_create(sset_sort(s), sset_count(s), true);
+}
+
+/* DB set columns are already sorted, just wrap them into a sorted array. */
+#define sorted_array_from_dbrec(dbrec, column)           \
+    sorted_array_create((const char **) (dbrec)->column, \
+                        (dbrec)->n_##column, false)
+
+static inline void
+sorted_array_apply_diff(const struct sorted_array *a1,
+                        const struct sorted_array *a2,
+                        void (*apply_callback)(const void *arg,
+                                               const char *item,
+                                               bool add),
+                        const void *arg)
+{
+    size_t idx1, idx2;
+
+    for (idx1 = idx2 = 0; idx1 < a1->n && idx2 < a2->n;) {
+        int cmp = strcmp(a1->arr[idx1], a2->arr[idx2]);
+        if (cmp < 0) {
+            apply_callback(arg, a1->arr[idx1], true);
+            idx1++;
+        } else if (cmp > 0) {
+            apply_callback(arg, a2->arr[idx2], false);
+            idx2++;
+        } else {
+            idx1++;
+            idx2++;
+        }
+    }
+
+    for (; idx1 < a1->n; idx1++) {
+        apply_callback(arg, a1->arr[idx1], true);
+    }
+
+    for (; idx2 < a2->n; idx2++) {
+        apply_callback(arg, a2->arr[idx2], false);
+    }
+}
 
 #endif /* OVN_UTIL_H */
