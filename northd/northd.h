@@ -22,6 +22,7 @@
 #include "lib/hmapx.h"
 #include "lib/objdep.h"
 #include "lib/sset.h"
+#include "northd/en-port-group.h"
 #include "northd/ipam.h"
 #include "openvswitch/hmap.h"
 
@@ -155,7 +156,7 @@ struct northd_data {
     struct ovn_datapaths lr_datapaths;
     struct hmap ls_ports;
     struct hmap lr_ports;
-    struct hmap ls_port_groups;         /* Stores struct ls_port_group. */
+    struct ls_port_group_table ls_port_groups;
     struct shash meter_groups;
     struct hmap lb_datapaths_map;
     struct hmap lb_group_datapaths_map;
@@ -196,7 +197,7 @@ struct lflow_input {
     const struct ovn_datapaths *lr_datapaths;
     const struct hmap *ls_ports;
     const struct hmap *lr_ports;
-    const struct hmap *ls_port_groups;
+    const struct ls_port_group_table *ls_port_groups;
     const struct shash *meter_groups;
     const struct hmap *lb_datapaths_map;
     const struct hmap *bfd_connections;
@@ -372,24 +373,6 @@ struct ovn_datapath {
     struct objdep_mgr lflow_dep_mgr;
 };
 
-/* Per logical switch port group information. */
-struct ls_port_group {
-    struct hmap_node key_node;  /* Index on 'nbs->header_.uuid'. */
-
-    const struct nbrec_logical_switch *nbs;
-    int64_t sb_datapath_key; /* SB.Datapath_Binding.tunnel_key. */
-
-    /* Port groups with ports attached to 'nbs'. */
-    struct hmap nb_pgs; /* Stores struct ls_port_group_record. */
-};
-
-struct ls_port_group_record {
-    struct hmap_node key_node;  /* Index on 'nb_pg->header_.uuid'. */
-
-    const struct nbrec_port_group *nb_pg;
-    struct sset ports;          /* Subset of 'nb_pg' ports in this record. */
-};
-
 void ovnnb_db_run(struct northd_input *input_data,
                   struct northd_data *data,
                   struct ovsdb_idl_txn *ovnnb_txn,
@@ -464,4 +447,6 @@ void sync_lbs(struct ovsdb_idl_txn *, const struct sbrec_load_balancer_table *,
 void sync_pbs(struct ovsdb_idl_txn *, struct hmap *ls_ports,
               struct hmap *lr_ports);
 
+const struct ovn_datapath *northd_get_datapath_for_port(
+    const struct hmap *ls_ports, const char *port_name);
 #endif /* NORTHD_H */
