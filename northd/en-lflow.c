@@ -57,7 +57,7 @@ lflow_get_input_data(struct engine_node *node,
     lflow_input->lr_datapaths = &northd_data->lr_datapaths;
     lflow_input->ls_ports = &northd_data->ls_ports;
     lflow_input->lr_ports = &northd_data->lr_ports;
-    lflow_input->port_groups = &northd_data->port_groups;
+    lflow_input->ls_port_groups = &northd_data->ls_port_groups;
     lflow_input->meter_groups = &northd_data->meter_groups;
     lflow_input->lb_datapaths_map = &northd_data->lb_datapaths_map;
     lflow_input->svc_monitor_map = &northd_data->svc_monitor_map;
