@@ -71,8 +71,6 @@ northd_get_input_data(struct engine_node *node,
         EN_OVSDB_GET(engine_get_input("NB_logical_switch", node));
     input_data->nbrec_logical_router_table =
         EN_OVSDB_GET(engine_get_input("NB_logical_router", node));
-    input_data->nbrec_port_group_table =
-        EN_OVSDB_GET(engine_get_input("NB_port_group", node));
     input_data->nbrec_meter_table =
         EN_OVSDB_GET(engine_get_input("NB_meter", node));
     input_data->nbrec_acl_table =
@@ -100,8 +98,6 @@ northd_get_input_data(struct engine_node *node,
         EN_OVSDB_GET(engine_get_input("SB_fdb", node));
     input_data->sbrec_service_monitor_table =
         EN_OVSDB_GET(engine_get_input("SB_service_monitor", node));
-    input_data->sbrec_port_group_table =
-        EN_OVSDB_GET(engine_get_input("SB_port_group", node));
     input_data->sbrec_meter_table =
         EN_OVSDB_GET(engine_get_input("SB_meter", node));
     input_data->sbrec_dns_table =

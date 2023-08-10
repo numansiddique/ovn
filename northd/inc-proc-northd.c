@@ -139,6 +139,7 @@ static ENGINE_NODE(mac_binding_aging_waker, "mac_binding_aging_waker");
 static ENGINE_NODE(northd_output, "northd_output");
 static ENGINE_NODE(sync_to_sb, "sync_to_sb");
 static ENGINE_NODE(sync_to_sb_addr_set, "sync_to_sb_addr_set");
+static ENGINE_NODE(port_group, "port_group");
 static ENGINE_NODE(fdb_aging, "fdb_aging");
 static ENGINE_NODE(fdb_aging_waker, "fdb_aging_waker");
 static ENGINE_NODE(sync_to_sb_lb, "sync_to_sb_lb");
@@ -159,7 +160,6 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_lb_data, &en_nb_logical_router,
                      lb_data_logical_router_handler);
 
-    engine_add_input(&en_northd, &en_nb_port_group, NULL);
     engine_add_input(&en_northd, &en_nb_acl, NULL);
     engine_add_input(&en_northd, &en_nb_mirror, NULL);
     engine_add_input(&en_northd, &en_nb_meter, NULL);
@@ -168,7 +168,6 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
 
     engine_add_input(&en_northd, &en_sb_sb_global, NULL);
     engine_add_input(&en_northd, &en_sb_chassis, NULL);
-    engine_add_input(&en_northd, &en_sb_port_group, NULL);
     engine_add_input(&en_northd, &en_sb_mirror, NULL);
     engine_add_input(&en_northd, &en_sb_meter, NULL);
     engine_add_input(&en_northd, &en_sb_datapath_binding, NULL);
@@ -212,6 +211,7 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_lflow, &en_sb_logical_dp_group, NULL);
 
     engine_add_input(&en_lflow, &en_northd, lflow_northd_handler);
+    engine_add_input(&en_lflow, &en_port_group, NULL);
 
     engine_add_input(&en_sync_to_sb_addr_set, &en_nb_address_set,
                      sync_to_sb_addr_set_nb_address_set_handler);
@@ -226,14 +226,23 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
 
     engine_add_input(&en_sync_to_sb_pb, &en_northd, NULL);
 
+    engine_add_input(&en_port_group, &en_nb_port_group, NULL);
+    engine_add_input(&en_port_group, &en_sb_port_group, NULL);
+    /* No need for an explicit handler for northd changes.  Port changes
+     * that affect port_groups trigger updates to the NB.Port_Group
+     * table too (because of the explicit dependency in the schema). */
+    engine_add_input(&en_port_group, &en_northd, engine_noop_handler);
+
     /* en_sync_to_sb engine node syncs the SB database tables from
      * the NB database tables.
      * Right now this engine syncs the SB Address_Set table,
-     * SB Load_Balancer table and (partly) SB Port_Binding table.
+     * SB Load_Balancer table, SB Port_Group and (partly) SB
+     * Port_Binding table.
      */
     engine_add_input(&en_sync_to_sb, &en_sync_to_sb_addr_set, NULL);
     engine_add_input(&en_sync_to_sb, &en_sync_to_sb_lb, NULL);
     engine_add_input(&en_sync_to_sb, &en_sync_to_sb_pb, NULL);
+    engine_add_input(&en_sync_to_sb, &en_port_group, NULL);
 
     engine_add_input(&en_sync_from_sb, &en_northd,
                      sync_from_sb_northd_handler);
