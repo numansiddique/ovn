@@ -3390,6 +3390,9 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
 {
     sbrec_port_binding_set_datapath(op->sb, op->od->sb);
     if (op->nbrp) {
+        /* Note: SB port binding options for router ports are set in
+         * sync_pbs(). */
+
         /* If the router is for l3 gateway, it resides on a chassis
          * and its port type is "l3gateway". */
         const char *chassis_name = smap_get(&op->od->nbr->options, "chassis");
@@ -3401,15 +3404,11 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
             sbrec_port_binding_set_type(op->sb, "patch");
         }
 
-        struct smap new;
-        smap_init(&new);
         if (is_cr_port(op)) {
             ovs_assert(sbrec_chassis_by_name);
             ovs_assert(sbrec_chassis_by_hostname);
             ovs_assert(sbrec_ha_chassis_grp_by_name);
             ovs_assert(active_ha_chassis_grps);
-            const char *redirect_type = smap_get(&op->nbrp->options,
-                                                 "redirect-type");
 
             if (op->nbrp->ha_chassis_group) {
                 if (op->nbrp->n_gateway_chassis) {
@@ -3451,48 +3450,7 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
                 /* Delete the legacy gateway_chassis from the pb. */
                 sbrec_port_binding_set_gateway_chassis(op->sb, NULL, 0);
             }
-            smap_add(&new, "distributed-port", op->nbrp->name);
-
-            bool always_redirect =
-                !op->od->has_distributed_nat &&
-                !l3dgw_port_has_associated_vtep_lports(op->l3dgw_port);
-
-            if (redirect_type) {
-                smap_add(&new, "redirect-type", redirect_type);
-                /* XXX Why can't we enable always-redirect when redirect-type
-                 * is bridged? */
-                if (!strcmp(redirect_type, "bridged")) {
-                    always_redirect = false;
-                }
-            }
-
-            if (always_redirect) {
-                smap_add(&new, "always-redirect", "true");
-            }
-        } else {
-            if (op->peer) {
-                smap_add(&new, "peer", op->peer->key);
-                if (op->nbrp->ha_chassis_group ||
-                    op->nbrp->n_gateway_chassis) {
-                    char *redirect_name =
-                        ovn_chassis_redirect_name(op->nbrp->name);
-                    smap_add(&new, "chassis-redirect-port", redirect_name);
-                    free(redirect_name);
-                }
-            }
-            if (chassis_name) {
-                smap_add(&new, "l3gateway-chassis", chassis_name);
-            }
         }
-
-        const char *ipv6_pd_list = smap_get(&op->sb->options,
-                                            "ipv6_ra_pd_list");
-        if (ipv6_pd_list) {
-            smap_add(&new, "ipv6_ra_pd_list", ipv6_pd_list);
-        }
-
-        sbrec_port_binding_set_options(op->sb, &new);
-        smap_destroy(&new);
 
         sbrec_port_binding_set_parent_port(op->sb, NULL);
         sbrec_port_binding_set_tag(op->sb, NULL, 0);
@@ -4667,10 +4625,23 @@ sync_lbs(struct ovsdb_idl_txn *ovnsb_txn,
     }
 }
 
-/* Sync the SB Port bindings which needs to be updated.
- * Presently it syncs the nat column of port bindings corresponding to
- * the logical switch ports. */
-void sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports)
+static void ovn_update_ipv6_options(struct hmap *lr_ports);
+static void ovn_update_ipv6_prefix(struct hmap *lr_ports);
+
+/* Sync the SB Port bindings which needs to be updated after the northd
+ * engine is run.
+ * Presently it syncs
+ *   - the nat column of port bindings corresponding to
+ *     the logical switch ports.
+ *   - 'always-redirect' flag of chassis resident gateway ports.
+ *
+ *  Note:  Ideally we should move ovn_port_update_sbrec() here.
+ *  But until we add full incremental processing to northd engine,
+ *  it is difficult.
+ * */
+void
+sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports,
+         struct hmap *lr_ports)
 {
     ovs_assert(ovnsb_idl_txn);
 
@@ -4796,6 +4767,64 @@ void sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports)
             sbrec_port_binding_set_nat_addresses(op->sb, NULL, 0);
         }
     }
+
+    /* Only sets the port binding options column for the router ports.
+     * */
+    HMAP_FOR_EACH (op, key_node, lr_ports) {
+        ovs_assert(op->nbrp);
+        struct smap new;
+        smap_init(&new);
+
+        const char *chassis_name = smap_get(&op->od->nbr->options, "chassis");
+        if (is_cr_port(op)) {
+            smap_add(&new, "distributed-port", op->nbrp->name);
+
+            bool always_redirect =
+                !op->od->has_distributed_nat &&
+                !l3dgw_port_has_associated_vtep_lports(op->l3dgw_port);
+
+            const char *redirect_type = smap_get(&op->nbrp->options,
+                                                "redirect-type");
+            if (redirect_type) {
+                smap_add(&new, "redirect-type", redirect_type);
+                /* XXX Why can't we enable always-redirect when redirect-type
+                    * is bridged? */
+                if (!strcmp(redirect_type, "bridged")) {
+                    always_redirect = false;
+                }
+            }
+
+            if (always_redirect) {
+                smap_add(&new, "always-redirect", "true");
+            }
+        } else {
+            if (op->peer) {
+                smap_add(&new, "peer", op->peer->key);
+                if (op->nbrp->ha_chassis_group ||
+                    op->nbrp->n_gateway_chassis) {
+                    char *redirect_name =
+                        ovn_chassis_redirect_name(op->nbrp->name);
+                    smap_add(&new, "chassis-redirect-port", redirect_name);
+                    free(redirect_name);
+                }
+            }
+            if (chassis_name) {
+                smap_add(&new, "l3gateway-chassis", chassis_name);
+            }
+        }
+
+        const char *ipv6_pd_list = smap_get(&op->sb->options,
+                                            "ipv6_ra_pd_list");
+        if (ipv6_pd_list) {
+            smap_add(&new, "ipv6_ra_pd_list", ipv6_pd_list);
+        }
+
+        sbrec_port_binding_set_options(op->sb, &new);
+        smap_destroy(&new);
+    }
+
+    ovn_update_ipv6_options(lr_ports);
+    ovn_update_ipv6_prefix(lr_ports);
 }
 
 static bool
@@ -19501,8 +19530,6 @@ ovnnb_db_run(struct northd_input *input_data,
         &data->lr_ports);
     stopwatch_stop(BUILD_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
     stopwatch_start(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
-    ovn_update_ipv6_options(&data->lr_ports);
-    ovn_update_ipv6_prefix(&data->lr_ports);
 
     sync_port_groups(ovnsb_txn, input_data->sbrec_port_group_table,
                      &data->port_groups);

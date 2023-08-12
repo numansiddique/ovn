@@ -427,6 +427,7 @@ const char *northd_get_svc_monitor_mac(void);
 void sync_lbs(struct ovsdb_idl_txn *, const struct sbrec_load_balancer_table *,
               struct ovn_datapaths *ls_datapaths, struct hmap *lbs);
 
-void sync_pbs(struct ovsdb_idl_txn *, struct hmap *ls_ports);
+void sync_pbs(struct ovsdb_idl_txn *, struct hmap *ls_ports,
+              struct hmap *lr_ports);
 
 #endif /* NORTHD_H */
