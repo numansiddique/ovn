@@ -5262,20 +5262,29 @@ fail:
 bool
 northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *sbrec_port_binding_table,
-    struct hmap *ls_ports)
+    struct hmap *ls_ports, struct hmap *lr_ports)
 {
     const struct sbrec_port_binding *pb;
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, sbrec_port_binding_table) {
         struct ovn_port *op = ovn_port_find(ls_ports, pb->logical_port);
+        bool is_router_port = false;
         if (op && !op->lsp_can_be_inc_processed) {
             return false;
         }
+
+        if (!op) {
+            is_router_port = is_pb_router_type(pb);
+            if (is_router_port) {
+                op = ovn_port_find(lr_ports, pb->logical_port);
+            }
+        }
+
         if (sbrec_port_binding_is_new(pb)) {
             /* Most likely the PB was created by northd and this is the
              * notification of that trasaction. So we just update the sb
              * pointer in northd data. Fallback to recompute otherwise. */
-            if (!op) {
+            if (!op && !is_router_port) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is created but the "
                             "LSP is not found.", pb->logical_port);
                 return false;
@@ -5288,7 +5297,7 @@ northd_handle_sb_port_binding_changes(
              * sb idl pointers and other unexpected behavior. */
             if (op) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is deleted but the "
-                            "LSP still exists.", pb->logical_port);
+                            "LSP/LRP still exists.", pb->logical_port);
                 return false;
             }
         } else {
@@ -5296,7 +5305,7 @@ northd_handle_sb_port_binding_changes(
              * to/from a chassis, and we can ignore the change (updating NB
              * "up" will be handled in the engine node "sync_from_sb").
              * Fallback to recompute for anything unexpected. */
-            if (!op) {
+            if (!op && !is_router_port) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is updated but the "
                             "LSP is not found.", pb->logical_port);
                 return false;
