@@ -10346,3 +10346,52 @@ CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 AT_CLEANUP
 ])
+
+OVN_FOR_EACH_NORTHD_NO_HV([
+AT_SETUP([SB port binding incremental processing])
+ovn_start
+
+check ovn-nbctl ls-add sw0
+check ovn-nbctl lsp-add sw0 sw0-port1
+check ovn-nbctl lsp-set-addresses sw0-port1 "50:54:00:00:00:03 10.0.0.3"
+
+# Create a logical router and attach both logical switches
+check ovn-nbctl lr-add lr0
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb lrp-add lr0 lr0-sw0 00:00:00:00:ff:01 10.0.0.1/24
+# northd engine node should have only one recompute count.
+node_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$node_recompute_ct" -eq "1"
+lflow_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats lflow recompute)
+check test "$node_recompute_ct" -eq "1"
+
+# Add a gw port to lr0
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+ovn-nbctl --wait=sb sync
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl --wait=sb lrp-add lr0 lr0-public 00:00:00:00:ff:01 10.0.0.1/24
+
+node_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$node_recompute_ct" -eq "1"
+lflow_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats lflow recompute)
+check test "$node_recompute_ct" -eq "1"
+
+as northd ovn-appctl -t NORTHD_TYPE vlog/set dbg
+
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl lrp-set-gateway-chassis lr0-public gw1 10
+node_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+# recompute count would be 2 because we don't handle SB HA_Chassis_Group changes.
+check test "$node_recompute_ct" -eq "2"
+lflow_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats lflow recompute)
+check test "$node_recompute_ct" -eq "2"
+
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check ovn-nbctl set logical_router_port lr0-public options:foo=bar
+node_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats northd recompute)
+check test "$node_recompute_ct" -eq "1"
+lflow_recompute_ct=$(as northd ovn-appctl -t NORTHD_TYPE inc-engine/show-stats lflow recompute)
+check test "$node_recompute_ct" -eq "1"
+
+AT_CLEANUP
+])

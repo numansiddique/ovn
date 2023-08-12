@@ -394,7 +394,8 @@ bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct lflow_input *lflow_input,
                                     struct lflow_data *lflow_data);
 bool northd_handle_sb_port_binding_changes(
-    const struct sbrec_port_binding_table *, struct hmap *ls_ports);
+    const struct sbrec_port_binding_table *, struct hmap *ls_ports,
+    struct hmap *lr_ports);
 
 struct tracked_lb_data;
 bool northd_handle_lb_data_changes_pre_od(struct tracked_lb_data *,
@@ -426,6 +427,7 @@ const char *northd_get_svc_monitor_mac(void);
 void sync_lbs(struct ovsdb_idl_txn *, const struct sbrec_load_balancer_table *,
               struct ovn_datapaths *ls_datapaths, struct hmap *lbs);
 
-void sync_pbs(struct ovsdb_idl_txn *, struct hmap *ls_ports);
+void sync_pbs(struct ovsdb_idl_txn *, struct hmap *ls_ports,
+              struct hmap *lr_ports);
 
 #endif /* NORTHD_H */
