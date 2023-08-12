@@ -5271,6 +5271,13 @@ northd_handle_sb_port_binding_changes(
         if (op && !op->lsp_can_be_inc_processed) {
             return false;
         }
+
+        if (!op) {
+            if (is_pb_router_type(pb)) {
+                return false;
+            }
+        }
+
         if (sbrec_port_binding_is_new(pb)) {
             /* Most likely the PB was created by northd and this is the
              * notification of that trasaction. So we just update the sb
