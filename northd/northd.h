@@ -342,7 +342,8 @@ bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_ls_changes *,
                                     struct lflow_input *, struct hmap *lflows);
 bool northd_handle_sb_port_binding_changes(
-    const struct sbrec_port_binding_table *, struct hmap *ls_ports);
+    const struct sbrec_port_binding_table *, struct hmap *ls_ports,
+    struct hmap *lr_ports);
 
 void build_bfd_table(struct ovsdb_idl_txn *ovnsb_txn,
                      const struct nbrec_bfd_table *,
