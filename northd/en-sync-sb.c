@@ -22,6 +22,7 @@
 #include "openvswitch/util.h"
 
 #include "en-lr-nat.h"
+#include "en-global-config.h"
 #include "en-lr-stateful.h"
 #include "en-sync-sb.h"
 #include "lib/inc-proc-eng.h"
@@ -42,7 +43,8 @@ static void sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
                            const struct nbrec_address_set_table *,
                            const struct nbrec_port_group_table *,
                            const struct sbrec_address_set_table *,
-                           const struct lr_stateful_table *);
+                           const struct lr_stateful_table *,
+                           const char *svc_monitor_macp);
 static const struct sbrec_address_set *sb_address_set_lookup_by_name(
     struct ovsdb_idl_index *, const char *name);
 static void update_sb_addr_set(struct sorted_array *,
@@ -90,9 +92,12 @@ en_sync_to_sb_addr_set_run(struct engine_node *node, void *data OVS_UNUSED)
     const struct engine_context *eng_ctx = engine_get_context();
     const struct ed_type_lr_stateful *lr_stateful_data =
         engine_get_input_data("lr_stateful", node);
+    struct ed_type_global_config *global_config =
+        engine_get_input_data("global_config", node);
     sync_addr_sets(eng_ctx->ovnsb_idl_txn, nb_address_set_table,
                    nb_port_group_table, sb_address_set_table,
-                   &lr_stateful_data->lr_sful_table);
+                   &lr_stateful_data->lr_sful_table,
+                   global_config->svc_monitor_mac);
 
     engine_set_node_state(node, EN_UPDATED);
 }
@@ -218,12 +223,14 @@ en_sync_to_sb_lb_run(struct engine_node *node, void *data OVS_UNUSED)
 {
     const struct sbrec_load_balancer_table *sb_load_balancer_table =
         EN_OVSDB_GET(engine_get_input("SB_load_balancer", node));
+    struct ed_type_global_config *global_config =
+        engine_get_input_data("global_config", node);
     const struct engine_context *eng_ctx = engine_get_context();
     struct northd_data *northd_data = engine_get_input_data("northd", node);
 
     sync_lbs(eng_ctx->ovnsb_idl_txn, sb_load_balancer_table,
              &northd_data->ls_datapaths, &northd_data->lr_datapaths,
-             &northd_data->lb_datapaths_map, &northd_data->features);
+             &northd_data->lb_datapaths_map, &global_config->features);
     engine_set_node_state(node, EN_UPDATED);
 }
 
@@ -369,7 +376,8 @@ sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
                const struct nbrec_address_set_table *nb_address_set_table,
                const struct nbrec_port_group_table *nb_port_group_table,
                const struct sbrec_address_set_table *sb_address_set_table,
-               const struct lr_stateful_table *lr_statefuls)
+               const struct lr_stateful_table *lr_statefuls,
+               const char *svc_monitor_macp)
 {
     struct shash sb_address_sets = SHASH_INITIALIZER(&sb_address_sets);
 
@@ -380,8 +388,10 @@ sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
     }
 
     /* Service monitor MAC. */
-    const char *svc_monitor_macp = northd_get_svc_monitor_mac();
-    struct sorted_array svc = sorted_array_create(&svc_monitor_macp, 1, false);
+    struct sorted_array svc = {
+            .arr = &svc_monitor_macp,
+            .n = 1,
+    };
     sync_addr_set(ovnsb_txn, "svc_monitor_mac", &svc, &sb_address_sets);
     sorted_array_destroy(&svc);
 
