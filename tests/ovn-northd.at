@@ -10573,17 +10573,22 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
+echo "NUMAN 11111"
 # Test load balancer group now
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 lbg1_uuid=$(ovn-nbctl create load_balancer_group name=lbg1)
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute nocompute
+
+echo "NUMAN 22222"
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 
 lb1_uuid=$(fetch_column nb:Load_Balancer _uuid)
+
+echo "NUMAN 333333"
 
 # Add lb to the lbg1 group
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10591,6 +10596,8 @@ check ovn-nbctl add load_balancer_group . load_Balancer $lb1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow recompute nocompute
+
+echo "NUMAN 44444"
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl clear load_balancer_group . load_Balancer
@@ -10605,6 +10612,8 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow recompute nocompute
 
+echo "NUMAN 555555"
+
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10612,6 +10621,8 @@ check ovn-nbctl add logical_switch sw0 load_balancer_group $lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow recompute nocompute
+
+echo "NUMAN 66666"
 
 # Update lb and this should not result in northd recompute
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10737,7 +10748,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 lbg1_uuid=$(ovn-nbctl create load_balancer_group name=lbg1)
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute nocompute
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl set load_balancer_group . load_balancer="$lb2_uuid,$lb3_uuid,$lb4_uuid"
