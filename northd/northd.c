@@ -4894,21 +4894,20 @@ sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports)
 }
 
 /* Sync the SB Port bindings for the added and updated logical switch ports
- *  of the tracked logical switches (from the northd engine node). */
+ * of the tracked northd engine data. */
 bool
-sync_pbs_for_northd_ls_changes(struct tracked_ls_changes *ls_changes)
+sync_pbs_for_northd_changed_ovn_ports( struct tracked_ovn_ports *trk_ovn_ports)
 {
-    struct ls_change *ls_change;
-    LIST_FOR_EACH (ls_change, list_node, &ls_changes->updated) {
-        struct ovn_port *op;
+    struct hmapx_node *hmapx_node;
+    struct ovn_port *op;
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->created) {
+        op = hmapx_node->data;
+        sync_pb_for_op(op);
+    }
 
-        LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-            sync_pb_for_op(op);
-        }
-
-        LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-            sync_pb_for_op(op);
-        }
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->updated) {
+        op = hmapx_node->data;
+        sync_pb_for_op(op);
     }
 
     return true;
@@ -5110,34 +5109,95 @@ build_ports(struct ovsdb_idl_txn *ovnsb_txn,
 }
 
 static void
-destroy_tracked_ls_change(struct ls_change *ls_change)
+destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
 {
-    struct ovn_port *op;
-    LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-        ovs_list_remove(&op->list);
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH_SAFE (hmapx_node, &trk_ovn_ports->deleted) {
+        ovn_port_destroy_orphan(hmapx_node->data);
+        hmapx_delete(&trk_ovn_ports->deleted, hmapx_node);
     }
-    LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-        ovs_list_remove(&op->list);
+
+    hmapx_clear(&trk_ovn_ports->created);
+    hmapx_clear(&trk_ovn_ports->updated);
+}
+
+static void
+destroy_tracked_lbs(struct tracked_lbs *trk_lbs)
+{
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH_SAFE (hmapx_node, &trk_lbs->deleted) {
+        ovn_lb_datapaths_destroy(hmapx_node->data);
+        hmapx_delete(&trk_lbs->deleted, hmapx_node);
     }
-    LIST_FOR_EACH_SAFE (op, list, &ls_change->deleted_ports) {
-        ovs_list_remove(&op->list);
-        ovn_port_destroy_orphan(op);
-    }
+
+    hmapx_clear(&trk_lbs->crupdated);
+}
+
+static void
+add_op_to_northd_tracked_ports(struct hmapx *tracked_ovn_ports,
+                               struct ovn_port *op)
+{
+    hmapx_add(tracked_ovn_ports, op);
 }
 
 void
 destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
-    struct ls_change *ls_change;
-    LIST_FOR_EACH_SAFE (ls_change, list_node,
-                        &nd->tracked_ls_changes.updated) {
-        destroy_tracked_ls_change(ls_change);
-        ovs_list_remove(&ls_change->list_node);
-        free(ls_change);
-    }
-
+    struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
+    destroy_tracked_ovn_ports(&trk_changes->trk_ovn_ports);
+    destroy_tracked_lbs(&trk_changes->trk_lbs);
     nd->change_tracked = false;
-    nd->lb_changed = false;
+}
+
+static void
+init_northd_tracked_data(struct northd_data *nd)
+{
+    struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
+    hmapx_init(&trk_changes->trk_ovn_ports.created);
+    hmapx_init(&trk_changes->trk_ovn_ports.updated);
+    hmapx_init(&trk_changes->trk_ovn_ports.deleted);
+    hmapx_init(&trk_changes->trk_lbs.crupdated);
+    hmapx_init(&trk_changes->trk_lbs.deleted);
+}
+
+static void
+destroy_northd_tracked_data(struct northd_data *nd)
+{
+    struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
+    hmapx_destroy(&trk_changes->trk_ovn_ports.created);
+    hmapx_destroy(&trk_changes->trk_ovn_ports.updated);
+    hmapx_destroy(&trk_changes->trk_ovn_ports.deleted);
+    hmapx_destroy(&trk_changes->trk_lbs.crupdated);
+    hmapx_destroy(&trk_changes->trk_lbs.deleted);
+}
+
+
+bool
+northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
+{
+    return (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted));
+}
+
+bool
+northd_has_only_ports_in_tracked_data(
+    struct northd_tracked_data *trk_nd_changes)
+{
+    return (hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
+            && hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
+            && (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)));
+}
+
+bool
+northd_has_lbs_in_tracked_data(struct northd_tracked_data *trk_nd_changes)
+{
+    return (!hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted));
 }
 
 /* Check if a changed LSP can be handled incrementally within the I-P engine
@@ -5344,12 +5404,12 @@ check_lsp_changes_other_than_up(const struct nbrec_logical_switch_port *nbsp)
  */
 static bool
 ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
-                                const struct nbrec_logical_switch *changed_ls,
-                                const struct northd_input *ni,
-                                struct northd_data *nd,
-                                struct ovn_datapath *od,
-                                struct ls_change *ls_change,
-                                bool *updated)
+                      const struct nbrec_logical_switch *changed_ls,
+                      const struct northd_input *ni,
+                      struct northd_data *nd,
+                      struct ovn_datapath *od,
+                      struct tracked_ovn_ports *trk_ports,
+                      bool *updated)
 {
     bool ls_ports_changed = false;
     if (!nbrec_logical_switch_is_updated(changed_ls,
@@ -5370,7 +5430,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
         return true;
     }
 
-    ls_change->had_only_router_ports = (od->n_router_ports
+    bool ls_had_only_router_ports = (od->n_router_ports
             && (od->n_router_ports == hmap_count(&od->ports)));
 
     struct ovn_port *op;
@@ -5396,8 +5456,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             if (!op) {
                 goto fail;
             }
-            ovs_list_push_back(&ls_change->added_ports,
-                                &op->list);
+            add_op_to_northd_tracked_ports(&trk_ports->created, op);
         } else if (ls_port_has_changed(op->nbsp, new_nbsp)) {
             /* Existing port updated */
             bool temp = false;
@@ -5433,7 +5492,7 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             if (!op) {
                 goto fail;
             }
-            ovs_list_push_back(&ls_change->updated_ports, &op->list);
+            add_op_to_northd_tracked_ports(&trk_ports->updated, op);
         }
         op->visited = true;
     }
@@ -5442,15 +5501,14 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
     HMAP_FOR_EACH_SAFE (op, dp_node, &od->ports) {
         if (!op->visited) {
             if (!op->lsp_can_be_inc_processed) {
-                goto fail_clean_deleted;
+                goto fail;
             }
             if (sset_contains(&nd->svc_monitor_lsps, op->key)) {
                 /* This port was used for svc monitor, which may be
                  * impacted by this deletion. Fallback to recompute. */
-                goto fail_clean_deleted;
+                goto fail;
             }
-            ovs_list_push_back(&ls_change->deleted_ports,
-                                &op->list);
+            add_op_to_northd_tracked_ports(&trk_ports->deleted, op);
             hmap_remove(&nd->ls_ports, &op->key_node);
             hmap_remove(&od->ports, &op->dp_node);
             sbrec_port_binding_delete(op->sb);
@@ -5459,20 +5517,29 @@ ls_handle_lsp_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
         }
     }
 
-    if (!ovs_list_is_empty(&ls_change->added_ports) ||
-        !ovs_list_is_empty(&ls_change->updated_ports) ||
-        !ovs_list_is_empty(&ls_change->deleted_ports)) {
+    bool ls_has_only_router_ports = (od->n_router_ports
+            && (od->n_router_ports == hmap_count(&od->ports)));
+
+    /* If there were only router ports before the change or if there are only
+     * router ports after the change, then add the router ports of the
+     * logical switch to the tracked 'updated' ovn ports. */
+    if (ls_had_only_router_ports != ls_has_only_router_ports) {
+        for (size_t i = 0; i < od->n_router_ports; i++) {
+            op = od->router_ports[i];
+            add_op_to_northd_tracked_ports(&trk_ports->updated, op);
+        }
+    }
+
+    if (!hmapx_is_empty(&trk_ports->created) ||
+        !hmapx_is_empty(&trk_ports->updated) ||
+        !hmapx_is_empty(&trk_ports->deleted)) {
         *updated = true;
     }
 
     return true;
 
-fail_clean_deleted:
-    LIST_FOR_EACH_POP (op, list, &ls_change->deleted_ports) {
-        ovn_port_destroy_orphan(op);
-    }
-
 fail:
+    destroy_tracked_ovn_ports(trk_ports);
     return false;
 }
 
@@ -5490,7 +5557,7 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                          struct northd_data *nd)
 {
     const struct nbrec_logical_switch *changed_ls;
-    struct ls_change *ls_change = NULL;
+    struct northd_tracked_data *trk_nd_changes = &nd->trk_northd_changes;
 
     NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
                                              ni->nbrec_logical_switch_table) {
@@ -5514,31 +5581,16 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
             goto fail;
         }
 
-        ls_change = xzalloc(sizeof *ls_change);
-        ls_change->od = od;
-        ovs_list_init(&ls_change->added_ports);
-        ovs_list_init(&ls_change->deleted_ports);
-        ovs_list_init(&ls_change->updated_ports);
-
         bool updated = false;
         if (!ls_handle_lsp_changes(ovnsb_idl_txn, changed_ls,
-                                   ni, nd, od, ls_change,
+                                   ni, nd, od, &trk_nd_changes->trk_ovn_ports,
                                    &updated)) {
-            destroy_tracked_ls_change(ls_change);
-            free(ls_change);
             goto fail;
         }
 
         if (updated) {
-            ovs_list_push_back(&nd->tracked_ls_changes.updated,
-                               &ls_change->list_node);
-        } else {
-            free(ls_change);
+            nd->change_tracked = true;
         }
-    }
-
-    if (!ovs_list_is_empty(&nd->tracked_ls_changes.updated)) {
-        nd->change_tracked = true;
     }
 
     return true;
@@ -5715,7 +5767,8 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                               struct ovn_datapaths *ls_datapaths,
                               struct ovn_datapaths *lr_datapaths,
                               struct hmap *lb_datapaths_map,
-                              struct hmap *lbgrp_datapaths_map)
+                              struct hmap *lbgrp_datapaths_map,
+                              struct northd_tracked_data *nd_changes)
 {
     if (trk_lb_data->has_health_checks) {
         /* Fall back to recompute since a tracked load balancer
@@ -5778,7 +5831,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
         }
 
         hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
-        ovn_lb_datapaths_destroy(lb_dps);
+
+        /* Add the deleted lb to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_lbs.deleted, lb_dps);
     }
 
     /* Create the 'lb_dps' if not already created for each
@@ -5795,6 +5850,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             hmap_insert(lb_datapaths_map, &lb_dps->hmap_node,
                         uuid_hash(lb_uuid));
         }
+
+        /* Add the updated lb to the northd tracked data. */
+        hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
     }
 
     struct ovn_lb_group_datapaths *lbgrp_dps;
@@ -5825,6 +5883,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &uuidnode->uuid);
             ovs_assert(lb_dps);
             ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
 
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbgrps) {
@@ -5840,6 +5901,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                 lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
                 ovs_assert(lb_dps);
                 ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+
+                /* Add the lb to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
             }
         }
 
@@ -5860,6 +5924,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             /* Add the lb_ips of lb_dps to the od. */
             build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
             build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
 
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbgrps) {
@@ -5879,6 +5946,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                 /* Add the lb_ips of lb_dps to the od. */
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
                 build_lrouter_lb_reachable_ips(od, lb_dps->lb);
+
+                /* Add the lb to the northd tracked data. */
+                hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
             }
         }
 
@@ -5957,6 +6027,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                 /* Re-evaluate 'od->has_lb_vip' */
                 init_lb_for_datapath(od);
             }
+
+            /* Add the lb to the northd tracked data. */
+            hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
         }
     }
 
@@ -16996,149 +17069,125 @@ delete_lflow_for_lsp(struct ovn_port *op, bool is_update,
     return true;
 }
 
-bool lflow_handle_northd_ls_changes(struct ovsdb_idl_txn *ovnsb_txn,
-                                    struct tracked_ls_changes *ls_changes,
-                                    struct lflow_input *lflow_input,
-                                    struct hmap *lflows)
+bool
+lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                 struct tracked_ovn_ports *trk_ovn_ports,
+                                 struct lflow_input *lflow_input,
+                                 struct hmap *lflows)
 {
-    struct ls_change *ls_change;
+    struct hmapx_node *hmapx_node;
+    struct ovn_port *op;
 
-    LIST_FOR_EACH (ls_change, list_node, &ls_changes->updated) {
-        const struct sbrec_multicast_group *sbmc_flood =
-            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_FLOOD, ls_change->od->sb);
-        const struct sbrec_multicast_group *sbmc_flood_l2 =
-            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_FLOOD_L2, ls_change->od->sb);
-        const struct sbrec_multicast_group *sbmc_unknown =
-            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
-                               MC_UNKNOWN, ls_change->od->sb);
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->deleted) {
+        op = hmapx_node->data;
+        /* We don't support lflow handling for deleted logical router
+         * ports yet. */
+        ovs_assert(op->nbsp);
 
-        struct ovn_port *op;
-        LIST_FOR_EACH (op, list, &ls_change->deleted_ports) {
-            if (!delete_lflow_for_lsp(op, false,
-                                      lflow_input->sbrec_logical_flow_table,
-                                      lflows)) {
+        if (!delete_lflow_for_lsp(op, false,
+                                  lflow_input->sbrec_logical_flow_table,
+                                  lflows)) {
                 return false;
             }
 
-            /* No need to update SB multicast groups, thanks to weak
-             * references. */
+        /* No need to update SB multicast groups, thanks to weak
+         * references. */
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->updated) {
+        op = hmapx_node->data;
+        /* We don't support lflow handling for updated logical router
+         * ports yet. */
+        ovs_assert(op->nbsp);
+
+        /* Delete old lflows. */
+        if (!delete_lflow_for_lsp(op, true,
+                                  lflow_input->sbrec_logical_flow_table,
+                                  lflows)) {
+            return false;
         }
 
-        LIST_FOR_EACH (op, list, &ls_change->updated_ports) {
-            /* Delete old lflows. */
-            if (!delete_lflow_for_lsp(op, true,
-                                      lflow_input->sbrec_logical_flow_table,
-                                      lflows)) {
-                return false;
-            }
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+        build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
+                                                 lflow_input->lr_ports,
+                                                 lflow_input->meter_groups,
+                                                 &match, &actions,
+                                                 lflows);
+        ds_destroy(&match);
+        ds_destroy(&actions);
 
-            /* Generate new lflows. */
-            struct ds match = DS_EMPTY_INITIALIZER;
-            struct ds actions = DS_EMPTY_INITIALIZER;
-            build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
-                                                     lflow_input->lr_ports,
-                                                     lflow_input->meter_groups,
-                                                     &match, &actions,
-                                                     lflows);
-            ds_destroy(&match);
-            ds_destroy(&actions);
+        /* SB port_binding is not deleted, so don't update SB multicast
+         * groups. */
 
-            /* SB port_binding is not deleted, so don't update SB multicast
-             * groups. */
-
-            /* Sync the new flows to SB. */
-            struct lflow_ref_node *lfrn;
-            LIST_FOR_EACH (lfrn, lflow_list_node, &op->lflows) {
-                sync_lsp_lflows_to_sb(ovnsb_txn, lflow_input, lflows,
-                                      lfrn->lflow);
-            }
-        }
-
-        LIST_FOR_EACH (op, list, &ls_change->added_ports) {
-            struct ds match = DS_EMPTY_INITIALIZER;
-            struct ds actions = DS_EMPTY_INITIALIZER;
-            build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
-                                                     lflow_input->lr_ports,
-                                                     lflow_input->meter_groups,
-                                                     &match, &actions,
-                                                     lflows);
-            ds_destroy(&match);
-            ds_destroy(&actions);
-
-            /* Update SB multicast groups for the new port. */
-            if (!sbmc_flood) {
-                sbmc_flood = create_sb_multicast_group(ovnsb_txn,
-                    ls_change->od->sb, MC_FLOOD, OVN_MCAST_FLOOD_TUNNEL_KEY);
-            }
-            sbrec_multicast_group_update_ports_addvalue(sbmc_flood, op->sb);
-
-            if (!sbmc_flood_l2) {
-                sbmc_flood_l2 = create_sb_multicast_group(ovnsb_txn,
-                    ls_change->od->sb, MC_FLOOD_L2,
-                    OVN_MCAST_FLOOD_L2_TUNNEL_KEY);
-            }
-            sbrec_multicast_group_update_ports_addvalue(sbmc_flood_l2, op->sb);
-
-            if (op->has_unknown) {
-                if (!sbmc_unknown) {
-                    sbmc_unknown = create_sb_multicast_group(ovnsb_txn,
-                        ls_change->od->sb, MC_UNKNOWN,
-                        OVN_MCAST_UNKNOWN_TUNNEL_KEY);
-                }
-                sbrec_multicast_group_update_ports_addvalue(sbmc_unknown,
-                                                            op->sb);
-            }
-
-            /* Sync the newly added flows to SB. */
-            struct lflow_ref_node *lfrn;
-            LIST_FOR_EACH (lfrn, lflow_list_node, &op->lflows) {
-                sync_lsp_lflows_to_sb(ovnsb_txn, lflow_input, lflows,
-                                      lfrn->lflow);
-            }
-        }
-
-        bool ls_has_only_router_ports = (ls_change->od->n_router_ports &&
-                                         (ls_change->od->n_router_ports ==
-                                          hmap_count(&ls_change->od->ports)));
-
-        if (ls_change->had_only_router_ports != ls_has_only_router_ports) {
-            /* There are lflows related to router ports that depends on whether
-             * there are switch ports on the logical switch (see
-             * build_lswitch_rport_arp_req_flow() for more details). Since this
-             * dependency changed, we need to regenerate lflows for each router
-             * port on this logical switch. */
-            for (size_t i = 0; i < ls_change->od->n_router_ports; i++) {
-                op = ls_change->od->router_ports[i];
-
-                /* Delete old lflows. */
-                if (!delete_lflow_for_lsp(op, "affected router",
-                                      lflow_input->sbrec_logical_flow_table,
-                                      lflows)) {
-                    return false;
-                }
-
-                /* Generate new lflows. */
-                struct ds match = DS_EMPTY_INITIALIZER;
-                struct ds actions = DS_EMPTY_INITIALIZER;
-                build_lswitch_and_lrouter_iterate_by_lsp(op,
-                    lflow_input->ls_ports, lflow_input->lr_ports,
-                    lflow_input->meter_groups, &match, &actions, lflows);
-                ds_destroy(&match);
-                ds_destroy(&actions);
-
-                /* Sync the new flows to SB. */
-                struct lflow_ref_node *lfrn;
-                LIST_FOR_EACH (lfrn, lflow_list_node, &op->lflows) {
-                    sync_lsp_lflows_to_sb(ovnsb_txn, lflow_input, lflows,
-                                          lfrn->lflow);
-                }
-            }
+        /* Sync the new flows to SB. */
+        struct lflow_ref_node *lfrn;
+        LIST_FOR_EACH (lfrn, lflow_list_node, &op->lflows) {
+            sync_lsp_lflows_to_sb(ovnsb_txn, lflow_input, lflows,
+                                  lfrn->lflow);
         }
     }
-    return true;
 
+    HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->created) {
+        op = hmapx_node->data;
+        /* We don't support lflow handling for created logical router
+         * ports yet. */
+        ovs_assert(op->nbsp);
+
+        const struct sbrec_multicast_group *sbmc_flood =
+            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
+                               MC_FLOOD, op->od->sb);
+        const struct sbrec_multicast_group *sbmc_flood_l2 =
+            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
+                               MC_FLOOD_L2, op->od->sb);
+        const struct sbrec_multicast_group *sbmc_unknown =
+            mcast_group_lookup(lflow_input->sbrec_mcast_group_by_name_dp,
+                               MC_UNKNOWN, op->od->sb);
+
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+        build_lswitch_and_lrouter_iterate_by_lsp(op, lflow_input->ls_ports,
+                                                    lflow_input->lr_ports,
+                                                    lflow_input->meter_groups,
+                                                    &match, &actions,
+                                                    lflows);
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* Update SB multicast groups for the new port. */
+        if (!sbmc_flood) {
+            sbmc_flood = create_sb_multicast_group(ovnsb_txn,
+                op->od->sb, MC_FLOOD, OVN_MCAST_FLOOD_TUNNEL_KEY);
+        }
+        sbrec_multicast_group_update_ports_addvalue(sbmc_flood, op->sb);
+
+        if (!sbmc_flood_l2) {
+            sbmc_flood_l2 = create_sb_multicast_group(ovnsb_txn,
+                op->od->sb, MC_FLOOD_L2,
+                OVN_MCAST_FLOOD_L2_TUNNEL_KEY);
+        }
+        sbrec_multicast_group_update_ports_addvalue(sbmc_flood_l2, op->sb);
+
+        if (op->has_unknown) {
+            if (!sbmc_unknown) {
+                sbmc_unknown = create_sb_multicast_group(ovnsb_txn,
+                    op->od->sb, MC_UNKNOWN,
+                    OVN_MCAST_UNKNOWN_TUNNEL_KEY);
+            }
+            sbrec_multicast_group_update_ports_addvalue(sbmc_unknown,
+                                                        op->sb);
+        }
+
+        /* Sync the newly added flows to SB. */
+        struct lflow_ref_node *lfrn;
+        LIST_FOR_EACH (lfrn, lflow_list_node, &op->lflows) {
+            sync_lsp_lflows_to_sb(ovnsb_txn, lflow_input, lflows,
+                                    lfrn->lflow);
+        }
+    }
+
+    return true;
 }
 
 static bool
@@ -17771,7 +17820,7 @@ northd_init(struct northd_data *data)
     sset_init(&data->svc_monitor_lsps);
     hmap_init(&data->svc_monitor_map);
     data->change_tracked = false;
-    ovs_list_init(&data->tracked_ls_changes.updated);
+    init_northd_tracked_data(data);
 }
 
 void
@@ -17811,6 +17860,7 @@ northd_destroy(struct northd_data *data)
     destroy_debug_config();
 
     sset_destroy(&data->svc_monitor_lsps);
+    destroy_northd_tracked_data(data);
 }
 
 void

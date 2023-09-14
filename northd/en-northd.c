@@ -230,15 +230,16 @@ northd_lb_data_handler(struct engine_node *node, void *data)
                                        &nd->ls_datapaths,
                                        &nd->lr_datapaths,
                                        &nd->lb_datapaths_map,
-                                       &nd->lb_group_datapaths_map)) {
+                                       &nd->lb_group_datapaths_map,
+                                       &nd->trk_northd_changes)) {
         return false;
     }
 
-    /* Indicate the depedendant engine nodes that load balancer/group
-     * related data has changed (including association to logical
-     * switch/router). */
-    nd->lb_changed = true;
-    engine_set_node_state(node, EN_UPDATED);
+    if (northd_has_lbs_in_tracked_data(&nd->trk_northd_changes)) {
+        nd->change_tracked = true;
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
     return true;
 }
 
