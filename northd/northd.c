@@ -3419,6 +3419,9 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
 {
     sbrec_port_binding_set_datapath(op->sb, op->od->sb);
     if (op->nbrp) {
+        /* Note: SB port binding options for router ports are set in
+         * sync_pbs(). */
+
         /* If the router is for l3 gateway, it resides on a chassis
          * and its port type is "l3gateway". */
         const char *chassis_name = smap_get(&op->od->nbr->options, "chassis");
@@ -3430,15 +3433,11 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
             sbrec_port_binding_set_type(op->sb, "patch");
         }
 
-        struct smap new;
-        smap_init(&new);
         if (is_cr_port(op)) {
             ovs_assert(sbrec_chassis_by_name);
             ovs_assert(sbrec_chassis_by_hostname);
             ovs_assert(sbrec_ha_chassis_grp_by_name);
             ovs_assert(active_ha_chassis_grps);
-            const char *redirect_type = smap_get(&op->nbrp->options,
-                                                 "redirect-type");
 
             if (op->nbrp->ha_chassis_group) {
                 if (op->nbrp->n_gateway_chassis) {
@@ -3480,48 +3479,7 @@ ovn_port_update_sbrec(struct ovsdb_idl_txn *ovnsb_txn,
                 /* Delete the legacy gateway_chassis from the pb. */
                 sbrec_port_binding_set_gateway_chassis(op->sb, NULL, 0);
             }
-            smap_add(&new, "distributed-port", op->nbrp->name);
-
-            bool always_redirect =
-                !op->od->has_distributed_nat &&
-                !l3dgw_port_has_associated_vtep_lports(op->l3dgw_port);
-
-            if (redirect_type) {
-                smap_add(&new, "redirect-type", redirect_type);
-                /* XXX Why can't we enable always-redirect when redirect-type
-                 * is bridged? */
-                if (!strcmp(redirect_type, "bridged")) {
-                    always_redirect = false;
-                }
-            }
-
-            if (always_redirect) {
-                smap_add(&new, "always-redirect", "true");
-            }
-        } else {
-            if (op->peer) {
-                smap_add(&new, "peer", op->peer->key);
-                if (op->nbrp->ha_chassis_group ||
-                    op->nbrp->n_gateway_chassis) {
-                    char *redirect_name =
-                        ovn_chassis_redirect_name(op->nbrp->name);
-                    smap_add(&new, "chassis-redirect-port", redirect_name);
-                    free(redirect_name);
-                }
-            }
-            if (chassis_name) {
-                smap_add(&new, "l3gateway-chassis", chassis_name);
-            }
         }
-
-        const char *ipv6_pd_list = smap_get(&op->sb->options,
-                                            "ipv6_ra_pd_list");
-        if (ipv6_pd_list) {
-            smap_add(&new, "ipv6_ra_pd_list", ipv6_pd_list);
-        }
-
-        sbrec_port_binding_set_options(op->sb, &new);
-        smap_destroy(&new);
 
         sbrec_port_binding_set_parent_port(op->sb, NULL);
         sbrec_port_binding_set_tag(op->sb, NULL, 0);
@@ -4752,12 +4710,14 @@ check_sb_lb_duplicates(const struct sbrec_load_balancer_table *table)
     return duplicates;
 }
 
-/* Syncs the SB port binding for the ovn_port 'op'.  Caller should make sure
- * that the OVN SB IDL txn is not NULL.  Presently it only syncs the nat
- * column of port binding corresponding to the 'op->nbsp' */
+/* Syncs the SB port binding for the ovn_port 'op' of a logical switch port.
+ * Caller should make sure that the OVN SB IDL txn is not NULL.  Presently it
+ * only syncs the nat column of port binding corresponding to the 'op->nbsp' */
 static void
-sync_pb_for_op(struct ovn_port *op)
+sync_pb_for_lsp(struct ovn_port *op)
 {
+    ovs_assert(op->nbsp);
+
     if (lsp_is_router(op->nbsp)) {
         const char *chassis = NULL;
         if (op->peer && op->peer->od && op->peer->od->nbr) {
@@ -4879,18 +4839,87 @@ sync_pb_for_op(struct ovn_port *op)
     }
 }
 
+/* Syncs the SB port binding for the ovn_port 'op' of a logical router port.
+ * Caller should make sure that the OVN SB IDL txn is not NULL.  Presently it
+ * only sets the port binding options column for the router ports */
+static void
+sync_pb_for_lrp(struct ovn_port *op)
+{
+    ovs_assert(op->nbrp);
+
+    struct smap new;
+    smap_init(&new);
+
+    const char *chassis_name = smap_get(&op->od->nbr->options, "chassis");
+    if (is_cr_port(op)) {
+        smap_add(&new, "distributed-port", op->nbrp->name);
+
+        bool always_redirect =
+            !op->od->has_distributed_nat &&
+            !l3dgw_port_has_associated_vtep_lports(op->l3dgw_port);
+
+        const char *redirect_type = smap_get(&op->nbrp->options,
+                                            "redirect-type");
+        if (redirect_type) {
+            smap_add(&new, "redirect-type", redirect_type);
+            /* XXX Why can't we enable always-redirect when redirect-type
+                * is bridged? */
+            if (!strcmp(redirect_type, "bridged")) {
+                always_redirect = false;
+            }
+        }
+
+        if (always_redirect) {
+            smap_add(&new, "always-redirect", "true");
+        }
+    } else {
+        if (op->peer) {
+            smap_add(&new, "peer", op->peer->key);
+            if (op->nbrp->ha_chassis_group ||
+                op->nbrp->n_gateway_chassis) {
+                char *redirect_name =
+                    ovn_chassis_redirect_name(op->nbrp->name);
+                smap_add(&new, "chassis-redirect-port", redirect_name);
+                free(redirect_name);
+            }
+        }
+        if (chassis_name) {
+            smap_add(&new, "l3gateway-chassis", chassis_name);
+        }
+    }
+
+    const char *ipv6_pd_list = smap_get(&op->sb->options,
+                                        "ipv6_ra_pd_list");
+    if (ipv6_pd_list) {
+        smap_add(&new, "ipv6_ra_pd_list", ipv6_pd_list);
+    }
+
+    sbrec_port_binding_set_options(op->sb, &new);
+    smap_destroy(&new);
+}
+
+static void ovn_update_ipv6_options(struct hmap *lr_ports);
+static void ovn_update_ipv6_opt_for_op(struct ovn_port *op);
+
 /* Sync the SB Port bindings which needs to be updated.
  * Presently it syncs the nat column of port bindings corresponding to
  * the logical switch ports. */
 void
-sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports)
+sync_pbs(struct ovsdb_idl_txn *ovnsb_idl_txn, struct hmap *ls_ports,
+         struct hmap *lr_ports)
 {
     ovs_assert(ovnsb_idl_txn);
 
     struct ovn_port *op;
     HMAP_FOR_EACH (op, key_node, ls_ports) {
-        sync_pb_for_op(op);
+        sync_pb_for_lsp(op);
     }
+
+    HMAP_FOR_EACH (op, key_node, lr_ports) {
+        sync_pb_for_lrp(op);
+    }
+
+    ovn_update_ipv6_options(lr_ports);
 }
 
 /* Sync the SB Port bindings for the added and updated logical switch ports
@@ -4902,12 +4931,22 @@ sync_pbs_for_northd_changed_ovn_ports( struct tracked_ovn_ports *trk_ovn_ports)
     struct ovn_port *op;
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->created) {
         op = hmapx_node->data;
-        sync_pb_for_op(op);
+        if (op->nbsp) {
+            sync_pb_for_lsp(op);
+        } else {
+            sync_pb_for_lrp(op);
+            ovn_update_ipv6_opt_for_op(op);
+        }
     }
 
     HMAPX_FOR_EACH (hmapx_node, &trk_ovn_ports->updated) {
         op = hmapx_node->data;
-        sync_pb_for_op(op);
+        if (op->nbsp) {
+            sync_pb_for_lsp(op);
+        } else {
+            sync_pb_for_lrp(op);
+            ovn_update_ipv6_opt_for_op(op);
+        }
     }
 
     return true;
@@ -5703,20 +5742,21 @@ fail:
 bool
 northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *sbrec_port_binding_table,
-    struct hmap *ls_ports)
+    struct hmap *ls_ports, struct hmap *lr_ports)
 {
     const struct sbrec_port_binding *pb;
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, sbrec_port_binding_table) {
-        /* Return false if the 'pb' belongs to a router port.  We don't handle
-         * I-P for router ports yet. */
-        if (is_pb_router_type(pb)) {
-            return false;
-        }
+        bool is_router_port = is_pb_router_type(pb);
+        struct ovn_port *op;
 
-        struct ovn_port *op = ovn_port_find(ls_ports, pb->logical_port);
-        if (op && !op->lsp_can_be_inc_processed) {
-            return false;
+        if (is_router_port) {
+            op = ovn_port_find(lr_ports, pb->logical_port);
+        } else {
+            op = ovn_port_find(ls_ports, pb->logical_port);
+            if (op && !op->lsp_can_be_inc_processed) {
+                return false;
+            }
         }
 
         if (sbrec_port_binding_is_new(pb)) {
@@ -5725,7 +5765,8 @@ northd_handle_sb_port_binding_changes(
              * pointer in northd data. Fallback to recompute otherwise. */
             if (!op) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is created but the "
-                            "LSP is not found.", pb->logical_port);
+                            "%s is not found.", pb->logical_port,
+                            is_router_port ? "LRP" : "LSP");
                 return false;
             }
             op->sb = pb;
@@ -5736,7 +5777,7 @@ northd_handle_sb_port_binding_changes(
              * sb idl pointers and other unexpected behavior. */
             if (op) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is deleted but the "
-                            "LSP still exists.", pb->logical_port);
+                            "LSP/LRP still exists.", pb->logical_port);
                 return false;
             }
         } else {
@@ -5746,7 +5787,8 @@ northd_handle_sb_port_binding_changes(
              * Fallback to recompute for anything unexpected. */
             if (!op) {
                 VLOG_WARN_RL(&rl, "A port-binding for %s is updated but the "
-                            "LSP is not found.", pb->logical_port);
+                            "%s is not found.", pb->logical_port,
+                            is_router_port ? "LRP" : "LSP");
                 return false;
             }
             if (op->sb != pb) {
@@ -7895,67 +7937,72 @@ static void
 copy_ra_to_sb(struct ovn_port *op, const char *address_mode);
 
 static void
+ovn_update_ipv6_opt_for_op(struct ovn_port *op)
+{
+    if (op->nbrp->peer || !op->peer) {
+        return;
+    }
+
+    if (!op->lrp_networks.n_ipv6_addrs) {
+        return;
+    }
+
+    struct smap options;
+    smap_clone(&options, &op->sb->options);
+
+    /* enable IPv6 prefix delegation */
+    bool prefix_delegation = smap_get_bool(&op->nbrp->options,
+                                        "prefix_delegation", false);
+    if (!lrport_is_enabled(op->nbrp)) {
+        prefix_delegation = false;
+    }
+    if (smap_get_bool(&options, "ipv6_prefix_delegation",
+                      false) != prefix_delegation) {
+        smap_add(&options, "ipv6_prefix_delegation",
+                 prefix_delegation ? "true" : "false");
+    }
+
+    bool ipv6_prefix = smap_get_bool(&op->nbrp->options,
+                                     "prefix", false);
+    if (!lrport_is_enabled(op->nbrp)) {
+        ipv6_prefix = false;
+    }
+    if (smap_get_bool(&options, "ipv6_prefix", false) != ipv6_prefix) {
+        smap_add(&options, "ipv6_prefix",
+                    ipv6_prefix ? "true" : "false");
+    }
+    sbrec_port_binding_set_options(op->sb, &options);
+
+    smap_destroy(&options);
+
+    const char *address_mode = smap_get(
+        &op->nbrp->ipv6_ra_configs, "address_mode");
+
+    if (!address_mode) {
+        return;
+    }
+    if (strcmp(address_mode, "slaac") &&
+        strcmp(address_mode, "dhcpv6_stateful") &&
+        strcmp(address_mode, "dhcpv6_stateless")) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+        VLOG_WARN_RL(&rl, "Invalid address mode [%s] defined",
+                        address_mode);
+        return;
+    }
+
+    if (smap_get_bool(&op->nbrp->ipv6_ra_configs, "send_periodic",
+                      false)) {
+        copy_ra_to_sb(op, address_mode);
+    }
+}
+
+static void
 ovn_update_ipv6_options(struct hmap *lr_ports)
 {
     struct ovn_port *op;
     HMAP_FOR_EACH (op, key_node, lr_ports) {
         ovs_assert(op->nbrp);
-
-        if (op->nbrp->peer || !op->peer) {
-            continue;
-        }
-
-        if (!op->lrp_networks.n_ipv6_addrs) {
-            continue;
-        }
-
-        struct smap options;
-        smap_clone(&options, &op->sb->options);
-
-        /* enable IPv6 prefix delegation */
-        bool prefix_delegation = smap_get_bool(&op->nbrp->options,
-                                           "prefix_delegation", false);
-        if (!lrport_is_enabled(op->nbrp)) {
-            prefix_delegation = false;
-        }
-        if (smap_get_bool(&options, "ipv6_prefix_delegation",
-                          false) != prefix_delegation) {
-            smap_add(&options, "ipv6_prefix_delegation",
-                     prefix_delegation ? "true" : "false");
-        }
-
-        bool ipv6_prefix = smap_get_bool(&op->nbrp->options,
-                                     "prefix", false);
-        if (!lrport_is_enabled(op->nbrp)) {
-            ipv6_prefix = false;
-        }
-        if (smap_get_bool(&options, "ipv6_prefix", false) != ipv6_prefix) {
-            smap_add(&options, "ipv6_prefix",
-                     ipv6_prefix ? "true" : "false");
-        }
-        sbrec_port_binding_set_options(op->sb, &options);
-
-        smap_destroy(&options);
-
-        const char *address_mode = smap_get(
-            &op->nbrp->ipv6_ra_configs, "address_mode");
-
-        if (!address_mode) {
-            continue;
-        }
-        if (strcmp(address_mode, "slaac") &&
-            strcmp(address_mode, "dhcpv6_stateful") &&
-            strcmp(address_mode, "dhcpv6_stateless")) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
-            VLOG_WARN_RL(&rl, "Invalid address mode [%s] defined",
-                         address_mode);
-            continue;
-        }
-
-        if (smap_get_bool(&op->nbrp->ipv6_ra_configs, "send_periodic",
-                          false)) {
-            copy_ra_to_sb(op, address_mode);
-        }
+        ovn_update_ipv6_opt_for_op(op);
     }
 }
 
@@ -18027,8 +18074,6 @@ ovnnb_db_run(struct northd_input *input_data,
         &data->lr_ports);
     stopwatch_stop(BUILD_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
     stopwatch_start(CLEAR_LFLOWS_CTX_STOPWATCH_NAME, time_msec());
-    ovn_update_ipv6_options(&data->lr_ports);
-    ovn_update_ipv6_prefix(&data->lr_ports);
 
     sync_mirrors(ovnsb_txn, input_data->nbrec_mirror_table,
                  input_data->sbrec_mirror_table);
@@ -18359,6 +18404,8 @@ ovnsb_db_run(struct ovsdb_idl_txn *ovnnb_txn,
                                        &ha_ref_chassis_map);
     }
     shash_destroy(&ha_ref_chassis_map);
+
+    ovn_update_ipv6_prefix(lr_ports);
 }
 
 const char *
