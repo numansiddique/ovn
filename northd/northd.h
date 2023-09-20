@@ -113,6 +113,13 @@ struct tracked_lbs {
 struct northd_tracked_data {
     struct tracked_ovn_ports trk_lsps;
     struct tracked_lbs trk_lbs;
+    /* Tracked logical switches whose load balancers have changed.
+     * hmapx node is 'struct ovn_datapath *'. */
+    struct hmapx ls_with_changed_lbs;
+
+    /* Tracked logical routers whose load balancers have changed.
+     * hmapx node is 'struct ovn_datapath *'. */
+    struct hmapx lr_with_changed_lbs;
 };
 
 struct northd_data {
