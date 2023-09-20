@@ -107,12 +107,24 @@ struct tracked_lbs {
     struct hmapx deleted;
 };
 
+/* Tracked logical switches whose load balancers have changed. */
+struct tracked_lswitches_with_changed_lbs {
+    struct hmapx crupdated;
+};
+
+/* Tracked logical routers whose load balancers have changed. */
+struct tracked_lrouters_with_changed_lbs {
+    struct hmapx crupdated;
+};
+
 /* Track what's changed in the northd engine node.
  * Now only tracks ovn_ports (of vif type) - created, updated
  * and deleted. */
 struct northd_tracked_data {
     struct tracked_ovn_ports trk_ovn_ports;
     struct tracked_lbs trk_lbs;
+    struct tracked_lswitches_with_changed_lbs ls_with_changed_lbs;
+    struct tracked_lrouters_with_changed_lbs lr_with_changed_lbs;
 };
 
 struct northd_data {
