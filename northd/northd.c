@@ -5054,6 +5054,8 @@ destroy_northd_data_tracked_changes(struct northd_data *nd)
     struct northd_tracked_data *trk_changes = &nd->trk_northd_changes;
     destroy_tracked_ovn_ports(&trk_changes->trk_ovn_ports);
     destroy_tracked_lbs(&trk_changes->trk_lbs);
+    hmapx_clear(&trk_changes->ls_with_changed_lbs.crupdated);
+    hmapx_clear(&trk_changes->lr_with_changed_lbs.crupdated);
     nd->change_tracked = false;
 }
 
@@ -5066,6 +5068,8 @@ init_northd_tracked_data(struct northd_data *nd)
     hmapx_init(&trk_changes->trk_ovn_ports.deleted);
     hmapx_init(&trk_changes->trk_lbs.crupdated);
     hmapx_init(&trk_changes->trk_lbs.deleted);
+    hmapx_init(&trk_changes->ls_with_changed_lbs.crupdated);
+    hmapx_init(&trk_changes->lr_with_changed_lbs.crupdated);
 }
 
 static void
@@ -5077,6 +5081,8 @@ destroy_northd_tracked_data(struct northd_data *nd)
     hmapx_destroy(&trk_changes->trk_ovn_ports.deleted);
     hmapx_destroy(&trk_changes->trk_lbs.crupdated);
     hmapx_destroy(&trk_changes->trk_lbs.deleted);
+    hmapx_destroy(&trk_changes->ls_with_changed_lbs.crupdated);
+    hmapx_destroy(&trk_changes->lr_with_changed_lbs.crupdated);
 }
 
 
@@ -5087,7 +5093,10 @@ northd_has_tracked_data(struct northd_tracked_data *trk_nd_changes)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)
             || !hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
-            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted));
+            || !hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
+            || !hmapx_is_empty(&trk_nd_changes->ls_with_changed_lbs.crupdated)
+            || !hmapx_is_empty(&trk_nd_changes->lr_with_changed_lbs.crupdated)
+            );
 }
 
 bool
@@ -5096,6 +5105,8 @@ northd_has_only_ports_in_tracked_data(
 {
     return (hmapx_is_empty(&trk_nd_changes->trk_lbs.crupdated)
             && hmapx_is_empty(&trk_nd_changes->trk_lbs.deleted)
+            && hmapx_is_empty(&trk_nd_changes->ls_with_changed_lbs.crupdated)
+            && hmapx_is_empty(&trk_nd_changes->lr_with_changed_lbs.crupdated)
             && (!hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.created)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.updated)
             || !hmapx_is_empty(&trk_nd_changes->trk_ovn_ports.deleted)));
@@ -5736,6 +5747,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                            lb_dps->nb_ls_map) {
             od = ls_datapaths->array[index];
             init_lb_for_datapath(od);
+
+            /* Add the ls datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->ls_with_changed_lbs.crupdated, od);
         }
 
         hmap_remove(lb_datapaths_map, &lb_dps->hmap_node);
@@ -5817,6 +5831,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
 
         /* Re-evaluate 'od->has_lb_vip' */
         init_lb_for_datapath(od);
+
+        /* Add the ls datapath to the northd tracked data. */
+        hmapx_add(&nd_changes->ls_with_changed_lbs.crupdated, od);
     }
 
     LIST_FOR_EACH (codlb, list_node, &trk_lb_data->crupdated_lr_lbs) {
@@ -5862,6 +5879,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
 
         /* Re-evaluate 'od->has_lb_vip' */
         init_lb_for_datapath(od);
+
+        /* Add the lr datapath to the northd tracked data. */
+        hmapx_add(&nd_changes->lr_with_changed_lbs.crupdated, od);
     }
 
     HMAP_FOR_EACH (clb, hmap_node, &trk_lb_data->crupdated_lbs) {
@@ -5876,6 +5896,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             od = ls_datapaths->array[index];
             /* Re-evaluate 'od->has_lb_vip' */
             init_lb_for_datapath(od);
+
+            /* Add the ls datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->ls_with_changed_lbs.crupdated, od);
         }
 
         BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths),
@@ -5899,6 +5922,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             add_neigh_ips_to_lrouter(od, lb->neigh_mode,
                                      &clb->inserted_vips_v4,
                                      &clb->inserted_vips_v6);
+
+            /* Add the lr datapath to the northd tracked data. */
+            hmapx_add(&nd_changes->lr_with_changed_lbs.crupdated, od);
         }
     }
 
@@ -5926,6 +5952,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
 
                 /* Add the lb_ips of lb_dps to the od. */
                 build_lrouter_lb_ips(od->lb_ips, lb_dps->lb);
+
+                /* Add the lr datapath to the northd tracked data. */
+                hmapx_add(&nd_changes->lr_with_changed_lbs.crupdated, od);
             }
 
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
@@ -5934,6 +5963,9 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
 
                 /* Re-evaluate 'od->has_lb_vip' */
                 init_lb_for_datapath(od);
+
+                /* Add the ls datapath to the northd tracked data. */
+                hmapx_add(&nd_changes->ls_with_changed_lbs.crupdated, od);
             }
 
             /* Add the lb to the northd tracked data. */
