@@ -20,6 +20,7 @@
 
 #include "en-lflow.h"
 #include "en-lr-nat.h"
+#include "en-lr-lb-nat-data.h"
 #include "en-northd.h"
 #include "en-meters.h"
 
@@ -43,6 +44,8 @@ lflow_get_input_data(struct engine_node *node,
         engine_get_input_data("sync_meters", node);
     struct ed_type_lr_nat_data *lr_nat_data =
         engine_get_input_data("lr_nat", node);
+    struct ed_type_lr_lb_nat_data *lr_lb_nat_data =
+        engine_get_input_data("lr_lb_nat_data", node);
 
     lflow_input->nbrec_bfd_table =
         EN_OVSDB_GET(engine_get_input("NB_bfd", node));
@@ -66,6 +69,7 @@ lflow_get_input_data(struct engine_node *node,
     lflow_input->lr_ports = &northd_data->lr_ports;
     lflow_input->ls_port_groups = &pg_data->ls_port_groups;
     lflow_input->lr_nats = &lr_nat_data->lr_nats;
+    lflow_input->lr_lbnats = &lr_lb_nat_data->lr_lbnats;
     lflow_input->meter_groups = &sync_meters_data->meter_groups;
     lflow_input->lb_datapaths_map = &northd_data->lb_datapaths_map;
     lflow_input->svc_monitor_map = &northd_data->svc_monitor_map;
