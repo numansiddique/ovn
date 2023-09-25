@@ -89,6 +89,9 @@ struct lr_nat_table {
 const struct lr_nat_record * lr_nat_table_find_by_index(
     const struct lr_nat_table *, size_t od_index);
 
+#define LR_NAT_TABLE_FOR_EACH(LR_NAT_REC, TABLE) \
+    HMAP_FOR_EACH (LR_NAT_REC, key_node, &(TABLE)->entries)
+
 /* Incremental processing implementation. */
 struct lr_nat_input {
     /* Northbound table references. */
