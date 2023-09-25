@@ -22,6 +22,7 @@
 #include "openvswitch/util.h"
 
 #include "en-lr-nat.h"
+#include "en-lr-lb-nat-data.h"
 #include "en-sync-sb.h"
 #include "lib/inc-proc-eng.h"
 #include "lib/lb.h"
@@ -41,7 +42,7 @@ static void sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
                            const struct nbrec_address_set_table *,
                            const struct nbrec_port_group_table *,
                            const struct sbrec_address_set_table *,
-                           const struct ovn_datapaths *lr_datapaths);
+                           const struct lr_lb_nat_data_table *);
 static const struct sbrec_address_set *sb_address_set_lookup_by_name(
     struct ovsdb_idl_index *, const char *name);
 static void update_sb_addr_set(struct sorted_array *,
@@ -87,11 +88,11 @@ en_sync_to_sb_addr_set_run(struct engine_node *node, void *data OVS_UNUSED)
         EN_OVSDB_GET(engine_get_input("SB_address_set", node));
 
     const struct engine_context *eng_ctx = engine_get_context();
-    struct northd_data *northd_data = engine_get_input_data("northd", node);
-
+    const struct ed_type_lr_lb_nat_data *lr_lb_nat_data =
+        engine_get_input_data("lr_lb_nat_data", node);
     sync_addr_sets(eng_ctx->ovnsb_idl_txn, nb_address_set_table,
                    nb_port_group_table, sb_address_set_table,
-                   &northd_data->lr_datapaths);
+                   &lr_lb_nat_data->lr_lbnats);
 
     engine_set_node_state(node, EN_UPDATED);
 }
@@ -288,10 +289,12 @@ en_sync_to_sb_pb_run(struct engine_node *node, void *data OVS_UNUSED)
 {
     const struct engine_context *eng_ctx = engine_get_context();
     struct northd_data *northd_data = engine_get_input_data("northd", node);
-    struct ed_type_lr_nat_data *lr_nat_data =
-        engine_get_input_data("lr_nat", node);
+    struct ed_type_lr_lb_nat_data *lr_lb_nat_data =
+        engine_get_input_data("lr_lb_nat_data", node);
+
     sync_pbs(eng_ctx->ovnsb_idl_txn, &northd_data->ls_ports,
-             &northd_data->lr_ports, &lr_nat_data->lr_nats);
+             &northd_data->lr_ports,
+             &lr_lb_nat_data->lr_lbnats);
     engine_set_node_state(node, EN_UPDATED);
 }
 
@@ -316,11 +319,12 @@ sync_to_sb_pb_northd_handler(struct engine_node *node, void *data OVS_UNUSED)
         return false;
     }
 
-    struct ed_type_lr_nat_data *lr_nat_data =
-        engine_get_input_data("lr_nat", node);
+    struct ed_type_lr_lb_nat_data *lr_lb_nat_data =
+        engine_get_input_data("lr_lb_nat_data", node);
 
     if (!sync_pbs_for_northd_changed_ovn_ports(
-            &nd->trk_northd_changes.trk_ovn_ports, &lr_nat_data->lr_nats)) {
+            &nd->trk_northd_changes.trk_ovn_ports,
+            &lr_lb_nat_data->lr_lbnats)) {
         return false;
     }
 
@@ -366,7 +370,7 @@ sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
                const struct nbrec_address_set_table *nb_address_set_table,
                const struct nbrec_port_group_table *nb_port_group_table,
                const struct sbrec_address_set_table *sb_address_set_table,
-               const struct ovn_datapaths *lr_datapaths)
+               const struct lr_lb_nat_data_table *lr_lbnats)
 {
     struct shash sb_address_sets = SHASH_INITIALIZER(&sb_address_sets);
 
@@ -410,16 +414,14 @@ sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
     }
 
     /* Sync router load balancer VIP generated address sets. */
-    struct ovn_datapath *od;
-    HMAP_FOR_EACH (od, key_node, &lr_datapaths->datapaths) {
-        ovs_assert(od->nbr);
-
-        if (sset_count(&od->lb_ips->ips_v4_reachable)) {
-            char *ipv4_addrs_name = lr_lb_address_set_name(od->tunnel_key,
-                                                           AF_INET);
+    const struct lr_lb_nat_data_record *lrlb_rec;
+    LR_LB_NAT_DATA_TABLE_FOR_EACH (lrlb_rec, lr_lbnats) {
+        if (sset_count(&lrlb_rec->lb_ips->ips_v4_reachable)) {
+            char *ipv4_addrs_name =
+                lr_lb_address_set_name(lrlb_rec->od->tunnel_key, AF_INET);
 
             struct sorted_array ipv4_addrs_sorted =
-                    sorted_array_from_sset(&od->lb_ips->ips_v4_reachable);
+                sorted_array_from_sset(&lrlb_rec->lb_ips->ips_v4_reachable);
 
             sync_addr_set(ovnsb_txn, ipv4_addrs_name,
                           &ipv4_addrs_sorted, &sb_address_sets);
@@ -427,11 +429,11 @@ sync_addr_sets(struct ovsdb_idl_txn *ovnsb_txn,
             free(ipv4_addrs_name);
         }
 
-        if (sset_count(&od->lb_ips->ips_v6_reachable)) {
-            char *ipv6_addrs_name = lr_lb_address_set_name(od->tunnel_key,
-                                                           AF_INET6);
-            struct sorted_array ipv6_addrs_sorted =
-                    sorted_array_from_sset(&od->lb_ips->ips_v6_reachable);
+        if (sset_count(&lrlb_rec->lb_ips->ips_v6_reachable)) {
+            char *ipv6_addrs_name =
+                lr_lb_address_set_name(lrlb_rec->od->tunnel_key, AF_INET6);
+            struct sorted_array ipv6_addrs_sorted = sorted_array_from_sset(
+                &lrlb_rec->lb_ips->ips_v6_reachable);
 
             sync_addr_set(ovnsb_txn, ipv6_addrs_name,
                           &ipv6_addrs_sorted, &sb_address_sets);

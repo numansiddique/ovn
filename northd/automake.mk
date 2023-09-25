@@ -26,6 +26,8 @@ northd_ovn_northd_SOURCES = \
 	northd/en-lb-data.h \
 	northd/en-lr-nat.c \
 	northd/en-lr-nat.h \
+	northd/en-lr-lb-nat-data.c \
+	northd/en-lr-lb-nat-data.h \
 	northd/inc-proc-northd.c \
 	northd/inc-proc-northd.h \
 	northd/ipam.c \
