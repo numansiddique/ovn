@@ -83,6 +83,9 @@ struct lr_nat_table {
     struct hmap entries; /* Stores struct lr_nat_record. */
 };
 
+#define LR_NAT_TABLE_FOR_EACH(LR_NAT_REC, TABLE) \
+    HMAP_FOR_EACH (LR_NAT_REC, key_node, &(TABLE)->entries)
+
 const struct lr_nat_record * lr_nat_table_find(const struct lr_nat_table *,
                                         const struct nbrec_logical_router *);
 
