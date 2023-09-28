@@ -178,7 +178,6 @@ struct lflow_input {
     const struct hmap *ls_ports;
     const struct hmap *lr_ports;
     const struct ls_port_group_table *ls_port_groups;
-    const struct lr_nat_table *lr_nats;
     const struct lr_lb_nat_data_table *lr_lbnats;
     const struct shash *meter_groups;
     const struct hmap *lb_datapaths_map;
