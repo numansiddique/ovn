@@ -56,6 +56,10 @@ struct lr_lb_nat_data_table {
 #define LR_LB_NAT_DATA_TABLE_FOR_EACH(LR_LB_NAT_REC, TABLE) \
     HMAP_FOR_EACH (LR_LB_NAT_REC, key_node, &(TABLE)->entries)
 
+#define LR_LB_NAT_DATA_TABLE_FOR_EACH_IN_P(LR_LB_NAT_REC, JOBID, TABLE) \
+    HMAP_FOR_EACH_IN_PARALLEL (LR_LB_NAT_REC, key_node, JOBID, \
+                               &(TABLE)->entries)
+
 struct lr_lb_nat_data_tracked_data {
     /* Created or updated logical router with LB data. */
     struct hmapx crupdated; /* Stores 'struct lr_lb_nat_data_record'. */
