@@ -49,6 +49,8 @@ struct lr_stateful_record {
     const struct ovn_datapath *od;
     const struct lr_nat_record *lrnat_rec;
 
+    bool has_lb_vip;
+
     /* Load Balancer vIPs relevant for this datapath. */
     struct ovn_lb_ip_set *lb_ips;
 

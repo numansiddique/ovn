@@ -295,7 +295,9 @@ lr_stateful_lb_data_handler(struct engine_node *node, void *data_)
         /* For all the modified lr_stateful records (re)build the
          * vip nats. */
         HMAPX_FOR_EACH (hmapx_node, &data->trk_data.crupdated) {
-            lr_stateful_build_vip_nats(hmapx_node->data);
+            struct lr_stateful_record *lr_stateful_rec = hmapx_node->data;
+            lr_stateful_build_vip_nats(lr_stateful_rec);
+            lr_stateful_rec->has_lb_vip = od_has_lb_vip(lr_stateful_rec->od);
         }
 
         engine_set_node_state(node, EN_UPDATED);
@@ -510,6 +512,8 @@ lr_stateful_record_init(struct lr_stateful_record *lr_stateful_rec,
     if (nbr->n_nat) {
         lr_stateful_build_vip_nats(lr_stateful_rec);
     }
+
+    lr_stateful_rec->has_lb_vip = od_has_lb_vip(lr_stateful_rec->od);
 }
 
 static struct lr_stateful_input
