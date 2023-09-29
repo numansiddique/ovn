@@ -9223,9 +9223,7 @@ build_dhcpv4_options_flows(struct ovn_port *op,
                     &op->nbsp->dhcpv4_options->options, "lease_time");
                 ovs_assert(server_id && server_mac && lease_time);
                 const char *dhcp_actions =
-                    (op->od->has_stateful_acl || op->od->has_lb_vip)
-                     ? REGBIT_ACL_VERDICT_ALLOW" = 1; ct_commit; next;"
-                     : REGBIT_ACL_VERDICT_ALLOW" = 1; next;";
+                    REGBIT_ACL_VERDICT_ALLOW" = 1; next;";
                 ds_clear(&match);
                 ds_put_format(&match, "outport == %s && eth.src == %s "
                               "&& ip4.src == %s && udp && udp.src == 67 "
@@ -9308,9 +9306,7 @@ build_dhcpv6_options_flows(struct ovn_port *op,
                 ipv6_string_mapped(server_ip, &lla);
 
                 const char *dhcp6_actions =
-                    (op->od->has_stateful_acl || op->od->has_lb_vip)
-                        ? REGBIT_ACL_VERDICT_ALLOW" = 1; ct_commit; next;"
-                        : REGBIT_ACL_VERDICT_ALLOW" = 1; next;";
+                    REGBIT_ACL_VERDICT_ALLOW" = 1; next;";
                 ds_clear(&match);
                 ds_put_format(&match, "outport == %s && eth.src == %s "
                               "&& ip6.src == %s && udp && udp.src == 547 "
