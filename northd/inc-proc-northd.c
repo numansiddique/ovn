@@ -33,6 +33,7 @@
 #include "en-lb-data.h"
 #include "en-lr-lb-nat-data.h"
 #include "en-lr-nat.h"
+#include "en-ls-lb-acls.h"
 #include "en-northd.h"
 #include "en-lflow.h"
 #include "en-northd-output.h"
@@ -150,6 +151,7 @@ static ENGINE_NODE(sync_to_sb_pb, "sync_to_sb_pb");
 static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lb_data, "lb_data");
 static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lr_nat, "lr_nat");
 static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(lr_lb_nat_data, "lr_lb_nat_data");
+static ENGINE_NODE_WITH_CLEAR_TRACK_DATA(ls_lbacls, "ls_lbacls");
 
 void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
                           struct ovsdb_idl_loop *sb)
@@ -205,6 +207,12 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_lr_lb_nat_data, &en_lb_data,
                      lr_lb_nat_data_lb_data_handler);
 
+    engine_add_input(&en_ls_lbacls, &en_northd, ls_lbacls_northd_handler);
+    engine_add_input(&en_ls_lbacls, &en_port_group,
+                     ls_lbacls_port_group_handler);
+    engine_add_input(&en_ls_lbacls, &en_nb_logical_switch,
+                     ls_lbacls_logical_switch_handler);
+
     engine_add_input(&en_mac_binding_aging, &en_nb_nb_global, NULL);
     engine_add_input(&en_mac_binding_aging, &en_sb_mac_binding, NULL);
     engine_add_input(&en_mac_binding_aging, &en_northd, NULL);
@@ -229,6 +237,7 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_lflow, &en_northd, lflow_northd_handler);
     engine_add_input(&en_lflow, &en_port_group, lflow_port_group_handler);
     engine_add_input(&en_lflow, &en_lr_lb_nat_data, NULL);
+    engine_add_input(&en_lflow, &en_ls_lbacls, NULL);
 
     engine_add_input(&en_sync_to_sb_addr_set, &en_nb_address_set,
                      sync_to_sb_addr_set_nb_address_set_handler);
