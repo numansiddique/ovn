@@ -299,7 +299,9 @@ lr_stateful_lb_data_handler(struct engine_node *node, void *data_)
         /* For all the modified lr_stateful records (re)build the
          * vip nats. */
         HMAPX_FOR_EACH (hmapx_node, &data->tracked_data.crupdated) {
-            lr_stateful_build_vip_nats(hmapx_node->data);
+            lr_sful_rec = hmapx_node->data;
+            lr_stateful_build_vip_nats(lr_sful_rec);
+            lr_sful_rec->has_lb_vip = od_has_lb_vip(lr_sful_rec->od);
         }
 
         data->tracked = true;
@@ -521,6 +523,8 @@ lr_stateful_record_init(struct lr_stateful_record *lr_sful_rec,
     if (!nbr->n_nat) {
         lr_stateful_build_vip_nats(lr_sful_rec);
     }
+
+    lr_sful_rec->has_lb_vip = od_has_lb_vip(lr_sful_rec->od);
 }
 
 static struct lr_stateful_input

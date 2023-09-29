@@ -89,6 +89,8 @@ ods_size(const struct ovn_datapaths *datapaths)
     return hmap_count(&datapaths->datapaths);
 }
 
+bool od_has_lb_vip(const struct ovn_datapath *od);
+
 struct tracked_ovn_ports {
     /* tracked created ports.
      * hmapx node data is 'struct ovn_port *' */
@@ -174,6 +176,7 @@ struct lflow_input {
     const struct hmap *lr_ports;
     const struct ls_port_group_table *ls_port_groups;
     const struct lr_stateful_table *lr_sful_table;
+    const struct ls_stateful_table *ls_sful_table;
     const struct shash *meter_groups;
     const struct hmap *lb_datapaths_map;
     const struct hmap *bfd_connections;
@@ -283,11 +286,7 @@ struct ovn_datapath {
     struct hmap port_tnlids;
     uint32_t port_key_hint;
 
-    bool has_stateful_acl;
-    bool has_lb_vip;
     bool has_unknown;
-    bool has_acls;
-    uint64_t max_acl_tier;
     bool has_vtep_lports;
     bool has_arp_proxy_port;
 
