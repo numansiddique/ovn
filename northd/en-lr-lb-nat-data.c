@@ -302,9 +302,11 @@ lr_lb_nat_data_lb_data_handler(struct engine_node *node, void *data_)
     if (!hmapx_is_empty(&data->tracked_data.crupdated)) {
         struct hmapx_node *hmapx_node;
         /* For all the modified lr_lb_nat_data records (re)build the
-         * vip nats. */
+         * vip nats and re-evaluate 'has_lb_vip'. */
         HMAPX_FOR_EACH (hmapx_node, &data->tracked_data.crupdated) {
-            lr_lb_nat_data_build_vip_nats(hmapx_node->data);
+            lr_lbnat_rec = hmapx_node->data;
+            lr_lb_nat_data_build_vip_nats(lr_lbnat_rec);
+            lr_lbnat_rec->has_lb_vip = od_has_lb_vip(lr_lbnat_rec->od);
         }
 
         data->tracked = true;
@@ -504,6 +506,8 @@ lr_lb_nat_data_record_init(struct lr_lb_nat_data_record *lr_lbnat_rec,
     if (!nbr->n_nat) {
         lr_lb_nat_data_build_vip_nats(lr_lbnat_rec);
     }
+
+    lr_lbnat_rec->has_lb_vip = od_has_lb_vip(lr_lbnat_rec->od);
 }
 
 static struct lr_lb_nat_data_input

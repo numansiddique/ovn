@@ -34,5 +34,6 @@
 #define SYNC_METERS_RUN_STOPWATCH_NAME "sync_meters_run"
 #define LR_NAT_RUN_STOPWATCH_NAME "lr_nat_run"
 #define LR_LB_NAT_DATA_RUN_STOPWATCH_NAME "lr_lb_nat_data"
+#define LS_LBACLS_RUN_STOPWATCH_NAME "lr_lb_acls"
 
 #endif
