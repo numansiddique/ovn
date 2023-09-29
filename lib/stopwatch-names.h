@@ -31,5 +31,6 @@
 #define SYNC_METERS_RUN_STOPWATCH_NAME "sync_meters_run"
 #define LR_NAT_RUN_STOPWATCH_NAME "lr_nat_run"
 #define LR_STATEFUL_RUN_STOPWATCH_NAME "lr_stateful"
+#define LS_STATEFUL_RUN_STOPWATCH_NAME "ls_stateful"
 
 #endif
