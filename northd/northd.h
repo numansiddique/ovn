@@ -617,12 +617,12 @@ struct ovn_port {
      * 'lflow_ref' is used to reference generic logical flows generated for
      *  this ovn_port.
      *
-     * 'lbnat_lflow_ref' is used for logical switch ports of type
+     * 'stateful_lflow_ref' is used for logical switch ports of type
      * 'patch/router' to referenece logical flows generated fo this ovn_port
-     *  from the 'lr_lb_nat_data_table' record of the peer port's datapath.
+     *  from the 'lr_stateful' record of the peer port's datapath.
      */
     struct lflow_ref *lflow_ref;
-    struct lflow_ref *lbnat_lflow_ref;
+    struct lflow_ref *stateful_lflow_ref;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
