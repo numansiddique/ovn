@@ -93,6 +93,30 @@ struct ovn_lb_datapaths {
 
     size_t n_nb_lr;
     unsigned long *nb_lr_map;
+
+    /* Reference of lflows generated for this load balancer.
+     *
+     * This data is initialized and destroyed by the en_northd node, but
+     * populated and used only by the en_lflow node. Ideally this data should
+     * be maintained as part of en_lflow's data (struct lflow_data): a hash
+     * index from ovn_port key to lflows.  However, it would be less efficient
+     * and more complex:
+     *
+     * 1. It would require an extra search (using the index) to find the
+     * lflows.
+     *
+     * 2. Building the index needs to be thread-safe, using either a global
+     * lock which is obviously less efficient, or hash-based lock array which
+     * is more complex.
+     *
+     * Maintaining the lflow_ref here is more straightforward. The drawback is
+     * that we need to keep in mind that this data belongs to en_lflow node,
+     * so never access it from any other nodes.
+     *
+     * 'lflow_ref' is used to reference logical flows generated for this
+     *  load balancer.
+     */
+    struct lflow_ref *lflow_ref;
 };
 
 struct ovn_lb_group_datapaths {
@@ -687,6 +711,10 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                       struct tracked_ovn_ports *,
                                       struct lflow_input *,
                                       struct lflow_table *lflows);
+bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                    struct tracked_lbs *,
+                                    struct lflow_input *,
+                                    struct lflow_table *lflows);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports,
     struct hmap *lr_ports);

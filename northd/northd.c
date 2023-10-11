@@ -3531,6 +3531,7 @@ ovn_lb_datapaths_create(const struct ovn_northd_lb *lb, size_t n_ls_datapaths,
     lb_dps->lb = lb;
     lb_dps->nb_ls_map = bitmap_allocate(n_ls_datapaths);
     lb_dps->nb_lr_map = bitmap_allocate(n_lr_datapaths);
+    lb_dps->lflow_ref = lflow_ref_alloc(lb->nlb->name);
 
     return lb_dps;
 }
@@ -3540,6 +3541,7 @@ ovn_lb_datapaths_destroy(struct ovn_lb_datapaths *lb_dps)
 {
     bitmap_free(lb_dps->nb_lr_map);
     bitmap_free(lb_dps->nb_ls_map);
+    lflow_ref_destroy(lb_dps->lflow_ref);
     free(lb_dps);
 }
 
@@ -16056,11 +16058,11 @@ build_lflows_thread(void *arg)
                                                          lsi->lflows,
                                                          &lsi->match,
                                                          &lsi->actions,
-                                                         NULL);
+                                                         lb_dps->lflow_ref);
                     build_lrouter_defrag_flows_for_lb(lb_dps, lsi->lflows,
                                                       lsi->lr_datapaths,
                                                       &lsi->match,
-                                                      NULL);
+                                                      lb_dps->lflow_ref);
                     build_lrouter_flows_for_lb(lb_dps, lsi->lflows,
                                                lsi->meter_groups,
                                                lsi->lr_datapaths,
@@ -16068,14 +16070,14 @@ build_lflows_thread(void *arg)
                                                lsi->features,
                                                lsi->svc_monitor_map,
                                                &lsi->match, &lsi->actions,
-                                               NULL);
+                                               lb_dps->lflow_ref);
                     build_lswitch_flows_for_lb(lb_dps, lsi->lflows,
                                                lsi->meter_groups,
                                                lsi->ls_datapaths,
                                                lsi->features,
                                                lsi->svc_monitor_map,
                                                &lsi->match, &lsi->actions,
-                                               NULL);
+                                               lb_dps->lflow_ref);
                 }
             }
             for (bnum = control->id;
@@ -16290,20 +16292,20 @@ build_lswitch_and_lrouter_flows(const struct ovn_datapaths *ls_datapaths,
             build_lswitch_arp_nd_service_monitor(lb_dps->lb, lsi.ls_ports,
                                                  lsi.lflows, &lsi.actions,
                                                  &lsi.match,
-                                                 NULL);
+                                                 lb_dps->lflow_ref);
             build_lrouter_defrag_flows_for_lb(lb_dps, lsi.lflows,
                                               lsi.lr_datapaths, &lsi.match,
-                                              NULL);
+                                              lb_dps->lflow_ref);
             build_lrouter_flows_for_lb(lb_dps, lsi.lflows, lsi.meter_groups,
                                        lsi.lr_datapaths, lsi.lr_lbnats,
                                        lsi.features, lsi.svc_monitor_map,
                                        &lsi.match, &lsi.actions,
-                                       NULL);
+                                       lb_dps->lflow_ref);
             build_lswitch_flows_for_lb(lb_dps, lsi.lflows, lsi.meter_groups,
                                        lsi.ls_datapaths, lsi.features,
                                        lsi.svc_monitor_map,
                                        &lsi.match, &lsi.actions,
-                                       NULL);
+                                       lb_dps->lflow_ref);
         }
         stopwatch_stop(LFLOWS_LBS_STOPWATCH_NAME, time_msec());
 
@@ -16602,6 +16604,79 @@ lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
 
         /* Sync the newly added flows to SB. */
         lflow_ref_sync_lflows_to_sb(op->lflow_ref, lflows, ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
+    }
+
+    return true;
+}
+
+bool
+lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                               struct tracked_lbs *trk_lbs,
+                               struct lflow_input *lflow_input,
+                               struct lflow_table *lflows)
+{
+    struct ovn_lb_datapaths *lb_dps;
+    struct hmapx_node *hmapx_node;
+    HMAPX_FOR_EACH (hmapx_node, &trk_lbs->deleted) {
+        lb_dps = hmapx_node->data;
+
+        lflow_ref_clear_lflows_for_all_dps(lb_dps->lflow_ref,
+                                        ods_size(lflow_input->ls_datapaths),
+                                        ods_size(lflow_input->lr_datapaths),
+                                        lflows);
+        lflow_ref_sync_lflows_to_sb(lb_dps->lflow_ref, lflows, ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
+    }
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_lbs->crupdated) {
+        lb_dps = hmapx_node->data;
+
+        /* unlink old lflows. */
+        lflow_ref_clear_lflows_for_all_dps(lb_dps->lflow_ref,
+                                        ods_size(lflow_input->ls_datapaths),
+                                        ods_size(lflow_input->lr_datapaths),
+                                        lflows);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_lswitch_arp_nd_service_monitor(lb_dps->lb, lflow_input->ls_ports,
+                                             lflows, &actions,
+                                             &match, lb_dps->lflow_ref);
+        build_lrouter_defrag_flows_for_lb(lb_dps, lflows,
+                                          lflow_input->lr_datapaths, &match,
+                                          lb_dps->lflow_ref);
+        build_lrouter_flows_for_lb(lb_dps, lflows,
+                                   lflow_input->meter_groups,
+                                   lflow_input->lr_datapaths,
+                                   lflow_input->lr_lbnats,
+                                   lflow_input->features,
+                                   lflow_input->svc_monitor_map,
+                                   &match, &actions,
+                                   lb_dps->lflow_ref);
+        build_lswitch_flows_for_lb(lb_dps, lflows,
+                                   lflow_input->meter_groups,
+                                   lflow_input->ls_datapaths,
+                                   lflow_input->features,
+                                   lflow_input->svc_monitor_map,
+                                   &match, &actions,
+                                   lb_dps->lflow_ref);
+
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* Sync the new flows to SB. */
+        lflow_ref_sync_lflows_to_sb(lb_dps->lflow_ref, lflows, ovnsb_txn,
                              lflow_input->ls_datapaths,
                              lflow_input->lr_datapaths,
                              lflow_input->ovn_internal_version_changed,
