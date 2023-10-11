@@ -84,6 +84,29 @@ struct ovn_datapaths {
     struct ovn_datapath **array;
 };
 
+struct ovn_lb_datapaths {
+    struct hmap_node hmap_node;
+
+    const struct ovn_northd_lb *lb;
+    size_t n_nb_ls;
+    unsigned long *nb_ls_map;
+
+    size_t n_nb_lr;
+    unsigned long *nb_lr_map;
+};
+
+struct ovn_lb_group_datapaths {
+    struct hmap_node hmap_node;
+
+    const struct ovn_lb_group *lb_group;
+
+    /* Datapaths to which 'lb_group' is applied. */
+    size_t n_ls;
+    struct ovn_datapath **ls;
+    size_t n_lr;
+    struct ovn_datapath **lr;
+};
+
 struct tracked_ovn_ports {
     /* tracked created ports.
      * hmapx node data is 'struct ovn_port *' */
@@ -97,6 +120,11 @@ struct tracked_ovn_ports {
      * hmapx node data is 'struct ovn_port *' */
     struct hmapx deleted;
 };
+
+struct ovn_lb_datapaths *ovn_lb_datapaths_find(const struct hmap *,
+                                               const struct uuid *);
+struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_find(
+    const struct hmap *lb_group_dps, const struct uuid *);
 
 struct tracked_lbs {
     /* Tracked created or updated load balancers.

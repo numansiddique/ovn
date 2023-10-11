@@ -167,63 +167,6 @@ void ovn_lb_group_reinit(
     const struct nbrec_load_balancer_group *,
     const struct hmap *lbs);
 
-struct ovn_lb_datapaths {
-    struct hmap_node hmap_node;
-
-    const struct ovn_northd_lb *lb;
-    size_t n_nb_ls;
-    unsigned long *nb_ls_map;
-
-    size_t n_nb_lr;
-    unsigned long *nb_lr_map;
-};
-
-struct ovn_lb_datapaths *ovn_lb_datapaths_create(const struct ovn_northd_lb *,
-                                                 size_t n_ls_datapaths,
-                                                 size_t n_lr_datapaths);
-struct ovn_lb_datapaths *ovn_lb_datapaths_find(const struct hmap *,
-                                               const struct uuid *);
-void ovn_lb_datapaths_destroy(struct ovn_lb_datapaths *);
-void ovn_lb_datapaths_add_lr(struct ovn_lb_datapaths *, size_t n,
-                             struct ovn_datapath **);
-void ovn_lb_datapaths_add_ls(struct ovn_lb_datapaths *, size_t n,
-                             struct ovn_datapath **);
-
-struct ovn_lb_group_datapaths {
-    struct hmap_node hmap_node;
-
-    const struct ovn_lb_group *lb_group;
-
-    /* Datapaths to which 'lb_group' is applied. */
-    size_t n_ls;
-    struct ovn_datapath **ls;
-    size_t n_lr;
-    struct ovn_datapath **lr;
-};
-
-struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_create(
-    const struct ovn_lb_group *, size_t max_ls_datapaths,
-    size_t max_lr_datapaths);
-
-void ovn_lb_group_datapaths_destroy(struct ovn_lb_group_datapaths *);
-struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_find(
-    const struct hmap *lb_group_dps, const struct uuid *);
-
-static inline void
-ovn_lb_group_datapaths_add_ls(struct ovn_lb_group_datapaths *lbg_dps, size_t n,
-                               struct ovn_datapath **ods)
-{
-    memcpy(&lbg_dps->ls[lbg_dps->n_ls], ods, n * sizeof *ods);
-    lbg_dps->n_ls += n;
-}
-
-static inline void
-ovn_lb_group_datapaths_add_lr(struct ovn_lb_group_datapaths *lbg_dps,
-                               struct ovn_datapath *lr)
-{
-    lbg_dps->lr[lbg_dps->n_lr++] = lr;
-}
-
 struct ovn_controller_lb {
     struct hmap_node hmap_node;
 
