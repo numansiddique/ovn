@@ -54,6 +54,9 @@ struct lflow_ref *lflow_ref_alloc(const char *res_name);
 void lflow_ref_destroy(struct lflow_ref *);
 void lflow_ref_reset(struct lflow_ref *lflow_ref);
 void lflow_ref_clear_lflows(struct lflow_ref *);
+void lflow_ref_clear_lflows_for_all_dps(struct lflow_ref *,
+                                        size_t n_ls_datapaths,
+                                        size_t n_lr_datapaths);
 void lflow_ref_clear_and_sync_lflows(struct lflow_ref *,
                                 struct lflow_table *lflow_table,
                                 struct ovsdb_idl_txn *ovnsb_txn,

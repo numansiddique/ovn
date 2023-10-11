@@ -105,6 +105,10 @@ static void ovn_dp_group_add_with_reference(struct ovn_lflow *,
                                             size_t bitmap_len);
 
 static void unlink_lflows_from_datapath(struct lflow_ref *);
+static void unlink_lflows_from_all_datapaths(struct lflow_ref *,
+                                             size_t n_ls_datapaths,
+                                             size_t n_lr_datapaths);
+
 static void lflow_ref_sync_lflows_to_sb__(struct lflow_ref  *,
                             struct lflow_table *,
                             struct ovsdb_idl_txn *ovnsb_txn,
@@ -395,6 +399,15 @@ lflow_ref_clear_lflows(struct lflow_ref *lflow_ref)
 }
 
 void
+lflow_ref_clear_lflows_for_all_dps(struct lflow_ref *lflow_ref,
+                                   size_t n_ls_datapaths,
+                                   size_t n_lr_datapaths)
+{
+    unlink_lflows_from_all_datapaths(lflow_ref, n_ls_datapaths,
+                                     n_lr_datapaths);
+}
+
+void
 lflow_ref_clear_and_sync_lflows(struct lflow_ref *lflow_ref,
                     struct lflow_table *lflow_table,
                     struct ovsdb_idl_txn *ovnsb_txn,
@@ -462,7 +475,9 @@ lflow_table_add_lflow(struct lflow_table *lflow_table,
             /*  lflow_ref_node for this lflow doesn't exist yet.  Add it. */
             struct lflow_ref_node *ref_node = xzalloc(sizeof *ref_node);
             ref_node->lflow = lflow;
-            ref_node->dp_index = od->index;
+            if (od) {
+                ref_node->dp_index = od->index;
+            }
             ovs_list_insert(&lflow_ref->lflows_ref_list,
                             &ref_node->ref_list_node);
 
@@ -1044,6 +1059,30 @@ unlink_lflows_from_datapath(struct lflow_ref *lflow_ref)
 
     LIST_FOR_EACH (ref_node, ref_list_node, &lflow_ref->lflows_ref_list) {
         bitmap_set0(ref_node->lflow->dpg_bitmap, ref_node->dp_index);
+    }
+}
+
+static void
+unlink_lflows_from_all_datapaths(struct lflow_ref *lflow_ref,
+                                 size_t n_ls_datapaths,
+                                 size_t n_lr_datapaths)
+{
+    struct lflow_ref_node *ref_node;
+    struct ovn_lflow *lflow;
+    LIST_FOR_EACH (ref_node, ref_list_node, &lflow_ref->lflows_ref_list) {
+        size_t n_datapaths;
+        size_t index;
+
+        lflow = ref_node->lflow;
+        if (ovn_stage_to_datapath_type(lflow->stage) == DP_SWITCH) {
+            n_datapaths = n_ls_datapaths;
+        } else {
+            n_datapaths = n_lr_datapaths;
+        }
+
+        BITMAP_FOR_EACH_1 (index, n_datapaths, lflow->dpg_bitmap) {
+            bitmap_set0(lflow->dpg_bitmap, index);
+        }
     }
 }
 
