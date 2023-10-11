@@ -111,6 +111,10 @@ static void unlink_objres_lflows(struct resource_to_objects_node  *,
                                  const struct ovn_datapath *od,
                                  struct lflow_table *,
                                  struct objdep_mgr *);
+static void unlink_all_dps_objres_lflows(struct resource_to_objects_node  *,
+                                         size_t n_ls_datapaths,
+                                         size_t n_lr_datapaths,
+                                         struct lflow_table *);
 static void sync_lflows_from_objres(
     struct resource_to_objects_node  *, struct lflow_table *,
     struct objdep_mgr *, struct ovsdb_idl_txn *,
@@ -385,6 +389,19 @@ lflow_ref_clear_lflows(struct lflow_ref *lflow_ref,
         &lflow_ref->objdep_mgr, OBJDEP_TYPE_LFLOW, lflow_ref->res_name);
 
     unlink_objres_lflows(res_node, od, lflow_table, &lflow_ref->objdep_mgr);
+}
+
+void
+lflow_ref_clear_lflows_for_all_dps(struct lflow_ref *lflow_ref,
+                                   size_t n_ls_datapaths,
+                                   size_t n_lr_datapaths,
+                                   struct lflow_table *lflow_table)
+{
+    struct resource_to_objects_node  *res_node = objdep_mgr_find_objs(
+        &lflow_ref->objdep_mgr, OBJDEP_TYPE_LFLOW, lflow_ref->res_name);
+
+    unlink_all_dps_objres_lflows(res_node, n_ls_datapaths, n_lr_datapaths,
+                                 lflow_table);
 }
 
 void
@@ -1095,6 +1112,38 @@ unlink_objres_lflows(struct resource_to_objects_node  *res_node,
                     bitmap_set0(lflow->dpg_bitmap, index);
                 }
             }
+        }
+    }
+}
+
+static void
+unlink_all_dps_objres_lflows(struct resource_to_objects_node  *res_node,
+                             size_t n_ls_datapaths,
+                             size_t n_lr_datapaths,
+                             struct lflow_table *lflow_table)
+{
+    if (!res_node) {
+        return;
+    }
+
+    struct object_to_resources_list_node *resource_list_node;
+    RESOURCE_FOR_EACH_OBJ (resource_list_node, res_node) {
+        const struct uuid *obj_uuid = &resource_list_node->obj_uuid;
+        struct ovn_lflow *lflow = ovn_lflow_uuid_find(
+            &lflow_table->hash_map, obj_uuid);
+        if (!lflow) {
+            continue;
+        }
+
+        size_t n_datapaths;
+        if (ovn_stage_to_datapath_type(lflow->stage) == DP_SWITCH) {
+            n_datapaths = n_ls_datapaths;
+        } else {
+            n_datapaths = n_lr_datapaths;
+        }
+        size_t index;
+        BITMAP_FOR_EACH_1 (index, n_datapaths, lflow->dpg_bitmap) {
+            bitmap_set0(lflow->dpg_bitmap, index);
         }
     }
 }

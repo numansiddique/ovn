@@ -55,6 +55,10 @@ void lflow_ref_set_od(struct lflow_ref *, const struct ovn_datapath *);
 void lflow_ref_destroy(struct lflow_ref *);
 void lflow_ref_clear_lflows(struct lflow_ref *, const struct ovn_datapath *,
                             struct lflow_table *);
+void lflow_ref_clear_lflows_for_all_dps(struct lflow_ref *,
+                                        size_t n_ls_datapaths,
+                                        size_t n_lr_datapaths,
+                                        struct lflow_table *);
 void lflow_ref_clear_and_sync_lflows(struct lflow_ref *,
                                 const struct ovn_datapath *,
                                 struct lflow_table *lflow_table,
