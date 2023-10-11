@@ -10407,9 +10407,8 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.10:80 10.0.0.3:80
 
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
-
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 
@@ -10417,21 +10416,26 @@ check ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:10.0.0.3=sw0-p1:1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set load_balancer . options:foo=bar
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
+check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 
 check ovn-nbctl --wait=sb -- lb-add lb2 20.0.0.10:80 20.0.0.20:80 -- lb-add lb3 30.0.0.10:80 30.0.0.20:80
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10441,7 +10445,7 @@ check ovn-nbctl --wait=sb -- lb-del lb2 -- lb-del lb3
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10652,8 +10656,9 @@ check ovn-nbctl --wait=sb add load_balancer_group . load_Balancer $lb1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb clear load_balancer_group . load_Balancer
@@ -10668,7 +10673,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb add load_balancer_group . load_Balancer $lb1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10677,6 +10682,7 @@ check ovn-nbctl --wait=sb add logical_switch sw0 load_balancer_group $lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
+check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
 
@@ -10685,6 +10691,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set load_balancer . options:bar=foo
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
+check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
 
@@ -10694,6 +10701,7 @@ check ovn-nbctl --wait=sb set load_balancer lb1 vips:'"10.0.0.10:80"'='"10.0.0.1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
+check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10791,6 +10799,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Add back lb group to logical switch and then delete it.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10800,6 +10809,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb clear logical_switch sw0 load_balancer_group -- \
@@ -10833,14 +10843,17 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute nocompute
 check_engine_stats sync_to_sb_lb norecompute nocompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set load_balancer_group . load_balancer="$lb2_uuid,$lb3_uuid,$lb4_uuid"
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
+check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute nocompute
+CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set logical_switch sw0 load_balancer_group=$lbg1_uuid

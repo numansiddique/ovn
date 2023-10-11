@@ -125,11 +125,6 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
-    /* Fall back to recompute if load balancers have changed. */
-    if (northd_has_lbs_in_tracked_data(&northd_data->trk_northd_changes)) {
-        return false;
-    }
-
     const struct engine_context *eng_ctx = engine_get_context();
     struct lflow_data *lflow_data = data;
 
@@ -138,6 +133,12 @@ lflow_northd_handler(struct engine_node *node,
 
     if (!lflow_handle_northd_port_changes(eng_ctx->ovnsb_idl_txn,
                                 &northd_data->trk_northd_changes.trk_ovn_ports,
+                                &lflow_input, lflow_data->lflow_table)) {
+        return false;
+    }
+
+    if (!lflow_handle_northd_lb_changes(eng_ctx->ovnsb_idl_txn,
+                                &northd_data->trk_northd_changes.trk_lbs,
                                 &lflow_input, lflow_data->lflow_table)) {
         return false;
     }
