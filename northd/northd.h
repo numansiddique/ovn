@@ -93,6 +93,8 @@ struct ovn_lb_datapaths {
 
     size_t n_nb_lr;
     unsigned long *nb_lr_map;
+
+    struct lflow_ref *lflow_ref;
 };
 
 struct ovn_lb_group_datapaths {
@@ -681,6 +683,10 @@ bool lflow_handle_northd_port_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                       struct tracked_ovn_ports *,
                                       struct lflow_input *,
                                       struct lflow_table *lflows);
+bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                    struct tracked_lbs *,
+                                    struct lflow_input *,
+                                    struct lflow_table *lflows);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports,
     struct hmap *lr_ports);
