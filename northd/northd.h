@@ -709,6 +709,7 @@ void northd_indices_create(struct northd_data *data,
 
 struct lflow_table;
 struct lr_lb_nat_data_tracked_data;
+struct ls_lbacls_tracked_data;
 
 void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
                   struct lflow_input *input_data,
@@ -727,6 +728,10 @@ bool lflow_handle_lr_lb_nat_data_changes(struct ovsdb_idl_txn *,
                                          struct lr_lb_nat_data_tracked_data *,
                                          struct lflow_input *,
                                          struct lflow_table *lflows);
+bool lflow_handle_ls_lbacls_changes(struct ovsdb_idl_txn *,
+                                    struct ls_lbacls_tracked_data *,
+                                    struct lflow_input *,
+                                    struct lflow_table *lflows);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports,
     struct hmap *lr_ports);
