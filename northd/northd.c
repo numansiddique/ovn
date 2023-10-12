@@ -15674,15 +15674,15 @@ build_lr_lbnat_data_flows(const struct lr_lb_nat_data_record *lr_lbnat_rec,
 {
     build_lrouter_nat_defrag_and_lb(lr_lbnat_rec, lflows, ls_ports, lr_ports,
                                     match, actions, meter_groups, features,
-                                    NULL);
+                                    lr_lbnat_rec->lflow_ref);
     build_lr_gateway_redirect_flows_for_nats(lr_lbnat_rec->od,
                                              lr_lbnat_rec->lrnat_rec, lflows,
                                              match, actions,
-                                             NULL);
+                                             lr_lbnat_rec->lflow_ref);
     build_lrouter_arp_nd_for_datapath(lr_lbnat_rec->od,
                                       lr_lbnat_rec->lrnat_rec, lflows,
                                       meter_groups,
-                                      NULL);
+                                      lr_lbnat_rec->lflow_ref);
 }
 
 static void
@@ -16577,6 +16577,84 @@ lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                              lflow_input->ovn_internal_version_changed,
                              lflow_input->sbrec_logical_flow_table,
                              lflow_input->sbrec_logical_dp_group_table);
+    }
+
+    return true;
+}
+
+bool
+lflow_handle_lr_lb_nat_data_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                struct lr_lb_nat_data_tracked_data *trk_data,
+                                struct lflow_input *lflow_input,
+                                struct lflow_table *lflows)
+{
+    struct lr_lb_nat_data_record *lr_lbnat_rec;
+    struct hmapx_node *hmapx_node;
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_data->crupdated) {
+        lr_lbnat_rec = hmapx_node->data;
+
+        lflow_ref_clear_lflows(lr_lbnat_rec->lflow_ref, lr_lbnat_rec->od,
+                               lflows);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_lr_lbnat_data_flows(lr_lbnat_rec, lflows, lflow_input->ls_ports,
+                                  lflow_input->lr_ports, &match, &actions,
+                                  lflow_input->meter_groups,
+                                  lflow_input->features);
+
+        /* Sync the new flows to SB. */
+        lflow_ref_sync_lflows_to_sb(lr_lbnat_rec->lflow_ref, lflows, ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
+
+        struct ovn_port *op;
+        HMAP_FOR_EACH (op, dp_node, &lr_lbnat_rec->od->ports) {
+            lflow_ref_clear_lflows(op->lbnat_lflow_ref, lr_lbnat_rec->od,
+                               lflows);
+
+            build_lbnat_lflows_iterate_by_lrp(op, lflow_input->lr_lbnats,
+                                              lflow_input->meter_groups,
+                                              &match, &actions,
+                                              lflows,
+                                              op->lbnat_lflow_ref);
+
+            lflow_ref_sync_lflows_to_sb(op->lbnat_lflow_ref, lflows, ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
+
+            if (op->peer && op->peer->nbsp) {
+                lflow_ref_clear_lflows(op->peer->lbnat_lflow_ref, op->peer->od,
+                                       lflows);
+
+                build_lbnat_lflows_iterate_by_lsp(op->peer,
+                                                  lflow_input->lr_lbnats,
+                                                  lflow_input->lr_ports,
+                                                  &match, &actions,
+                                                  lflows,
+                                                  op->peer->lbnat_lflow_ref);
+
+                lflow_ref_sync_lflows_to_sb(op->peer->lbnat_lflow_ref, lflows,
+                             ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
+            }
+        }
+
+        ds_destroy(&match);
+        ds_destroy(&actions);
     }
 
     return true;

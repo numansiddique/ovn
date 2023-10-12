@@ -39,6 +39,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
+#include "lflow-mgr.h"
 #include "northd.h"
 
 VLOG_DEFINE_THIS_MODULE(en_lr_lb_nat_data);
@@ -424,6 +425,7 @@ lr_lb_nat_data_record_create(struct lr_lb_nat_data_table *table,
     lr_lbnat_rec->od = lrnat_rec->od;
     lr_lb_nat_data_record_init(lr_lbnat_rec, lb_datapaths_map,
                                lbgrp_datapaths_map);
+    lr_lbnat_rec->lflow_ref = lflow_ref_alloc(lr_lbnat_rec->od->nbr->name);
 
     hmap_insert(&table->entries, &lr_lbnat_rec->key_node,
                 uuid_hash(&lr_lbnat_rec->od->nbr->header_.uuid));
@@ -437,6 +439,7 @@ lr_lb_nat_data_record_destroy(struct lr_lb_nat_data_record *lr_lbnat_rec)
     ovn_lb_ip_set_destroy(lr_lbnat_rec->lb_ips);
     lr_lbnat_rec->lb_ips = NULL;
     sset_destroy(&lr_lbnat_rec->vip_nats);
+    lflow_ref_destroy(lr_lbnat_rec->lflow_ref);
     free(lr_lbnat_rec);
 }
 
