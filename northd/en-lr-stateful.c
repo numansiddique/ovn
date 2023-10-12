@@ -40,6 +40,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
+#include "lflow-mgr.h"
 #include "northd.h"
 
 VLOG_DEFINE_THIS_MODULE(en_lr_stateful);
@@ -82,7 +83,7 @@ static void remove_lrouter_lb_reachable_ips(struct lr_stateful_record *,
                                             enum lb_neighbor_responder_mode,
                                             const struct sset *lb_ips_v4,
                                             const struct sset *lb_ips_v6);
-static void lr_stateful_build_vip_nats(struct lr_stateful_record *);
+static bool lr_stateful_build_vip_nats(struct lr_stateful_record *);
 
 /* 'lr_stateful' engine node manages the NB logical router LB data.
  */
@@ -110,6 +111,7 @@ en_lr_stateful_clear_tracked_data(void *data_)
     struct ed_type_lr_stateful *data = data_;
 
     hmapx_clear(&data->trk_data.crupdated);
+    data->trk_data.vip_nats_changed = false;
 }
 
 void
@@ -182,6 +184,10 @@ lr_stateful_lb_data_handler(struct engine_node *node, void *data_)
 
             /* Add the lr_stateful_rec rec to the tracking data. */
             hmapx_add(&data->trk_data.crupdated, lr_stateful_rec);
+
+            if (!sset_is_empty(&lr_stateful_rec->vip_nats)) {
+                data->trk_data.vip_nats_changed = true;
+            }
             continue;
         }
 
@@ -297,7 +303,9 @@ lr_stateful_lb_data_handler(struct engine_node *node, void *data_)
          * vip nats. */
         HMAPX_FOR_EACH (hmapx_node, &data->trk_data.crupdated) {
             struct lr_stateful_record *lr_stateful_rec = hmapx_node->data;
-            lr_stateful_build_vip_nats(lr_stateful_rec);
+            if (lr_stateful_build_vip_nats(lr_stateful_rec)) {
+                data->trk_data.vip_nats_changed = true;
+            }
             lr_stateful_rec->has_lb_vip = od_has_lb_vip(lr_stateful_rec->od);
         }
 
@@ -331,8 +339,13 @@ lr_stateful_lr_nat_handler(struct engine_node *node, void *data_)
                                             lrnat_rec,
                                             input_data.lb_datapaths_map,
                                             input_data.lbgrp_datapaths_map);
+            if (!sset_is_empty(&lr_stateful_rec->vip_nats)) {
+                data->trk_data.vip_nats_changed = true;
+            }
         } else {
-            lr_stateful_build_vip_nats(lr_stateful_rec);
+            if (lr_stateful_build_vip_nats(lr_stateful_rec)) {
+                data->trk_data.vip_nats_changed = true;
+            }
         }
 
         /* Add the lr_stateful_rec rec to the tracking data. */
@@ -432,6 +445,7 @@ lr_stateful_record_create(struct lr_stateful_table *table,
     lr_stateful_rec->od = lrnat_rec->od;
     lr_stateful_record_init(lr_stateful_rec, lb_datapaths_map,
                                lbgrp_datapaths_map);
+    lr_stateful_rec->lflow_ref = lflow_ref_create();
 
     hmap_insert(&table->entries, &lr_stateful_rec->key_node,
                 uuid_hash(&lr_stateful_rec->od->nbr->header_.uuid));
@@ -446,6 +460,7 @@ lr_stateful_record_destroy(struct lr_stateful_record *lr_stateful_rec)
     ovn_lb_ip_set_destroy(lr_stateful_rec->lb_ips);
     lr_stateful_rec->lb_ips = NULL;
     sset_destroy(&lr_stateful_rec->vip_nats);
+    lflow_ref_destroy(lr_stateful_rec->lflow_ref);
     free(lr_stateful_rec);
 }
 
@@ -624,10 +639,12 @@ remove_lrouter_lb_reachable_ips(struct lr_stateful_record *lr_stateful_rec,
     }
 }
 
-static void
+static bool
 lr_stateful_build_vip_nats(struct lr_stateful_record *lr_stateful_rec)
 {
-    sset_clear(&lr_stateful_rec->vip_nats);
+    struct sset old_vip_nats = SSET_INITIALIZER(&old_vip_nats);
+    sset_swap(&lr_stateful_rec->vip_nats, &old_vip_nats);
+
     const char *external_ip;
     SSET_FOR_EACH (external_ip, &lr_stateful_rec->lrnat_rec->external_ips) {
         bool is_vip_nat = false;
@@ -643,4 +660,10 @@ lr_stateful_build_vip_nats(struct lr_stateful_record *lr_stateful_rec)
             sset_add(&lr_stateful_rec->vip_nats, external_ip);
         }
     }
+
+    bool vip_nats_changed = !sset_equals(&lr_stateful_rec->vip_nats,
+                                         &old_vip_nats);
+    sset_destroy(&old_vip_nats);
+
+    return vip_nats_changed;
 }
