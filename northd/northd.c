@@ -15754,12 +15754,14 @@ build_ls_stateful_flows(const struct ls_stateful_record *ls_stateful_rec,
     ovs_assert(ls_stateful_rec->od);
 
     build_ls_stateful_rec_pre_acls(ls_stateful_rec, ls_pgs, lflows,
-                                   NULL);
-    build_ls_stateful_rec_pre_lb(ls_stateful_rec, lflows, NULL);
-    build_acl_hints(ls_stateful_rec, features, lflows, NULL);
+                                   ls_stateful_rec->lflow_ref);
+    build_ls_stateful_rec_pre_lb(ls_stateful_rec, lflows,
+                                 ls_stateful_rec->lflow_ref);
+    build_acl_hints(ls_stateful_rec, features, lflows,
+                    ls_stateful_rec->lflow_ref);
     build_acls(ls_stateful_rec, features, lflows, ls_pgs, meter_groups,
-               NULL);
-    build_lb_hairpin(ls_stateful_rec, lflows, NULL);
+               ls_stateful_rec->lflow_ref);
+    build_lb_hairpin(ls_stateful_rec, lflows, ls_stateful_rec->lflow_ref);
 }
 
 struct lswitch_flow_build_info {
@@ -16433,11 +16435,16 @@ void
 reset_lflow_refs_for_northd_resources(struct lflow_input *lflow_input)
 {
     const struct lr_stateful_record *lr_sful_rec;
+    struct ls_stateful_record *ls_sful_rec;
     struct ovn_lb_datapaths *lb_dps;
     struct ovn_port *op;
 
     LR_STATEFUL_TABLE_FOR_EACH (lr_sful_rec, lflow_input->lr_sful_table) {
         lflow_ref_reset(lr_sful_rec->lflow_ref);
+    }
+
+    LS_STATEFUL_TABLE_FOR_EACH (ls_sful_rec, lflow_input->ls_sful_table) {
+        lflow_ref_reset(ls_sful_rec->lflow_ref);
     }
 
     HMAP_FOR_EACH (op, key_node, lflow_input->ls_ports) {
@@ -16744,6 +16751,45 @@ lflow_handle_lr_stateful_changes(struct ovsdb_idl_txn *ovnsb_txn,
 
         ds_destroy(&match);
         ds_destroy(&actions);
+    }
+
+    return true;
+}
+
+bool
+lflow_handle_ls_stateful_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                struct ls_stateful_tracked_data *trk_data,
+                                struct lflow_input *lflow_input,
+                                struct lflow_table *lflows)
+{
+    struct ls_stateful_record *ls_sful_rec;
+    struct hmapx_node *hmapx_node;
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_data->crupdated) {
+        ls_sful_rec = hmapx_node->data;
+
+        lflow_ref_clear_lflows(ls_sful_rec->lflow_ref);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_ls_stateful_flows(ls_sful_rec, lflow_input->ls_port_groups,
+                                lflow_input->features,
+                                lflow_input->meter_groups,
+                                lflows);
+
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* Sync the new flows to SB. */
+        lflow_ref_sync_lflows_to_sb(ls_sful_rec->lflow_ref, lflows,
+                             ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
     }
 
     return true;

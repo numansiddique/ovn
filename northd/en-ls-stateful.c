@@ -39,6 +39,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
+#include "lflow-mgr.h"
 #include "northd.h"
 
 VLOG_DEFINE_THIS_MODULE(en_ls_stateful);
@@ -298,6 +299,7 @@ ls_stateful_record_create(struct ls_stateful_table *table,
     struct ls_stateful_record *ls_sful_rec = xzalloc(sizeof *ls_sful_rec);
     ls_sful_rec->od = od;
     ls_stateful_record_init(ls_sful_rec, od, NULL, ls_pgs);
+    ls_sful_rec->lflow_ref = lflow_ref_alloc(od->nbs->name);
 
     hmap_insert(&table->entries, &ls_sful_rec->key_node,
                 uuid_hash(&ls_sful_rec->od->nbs->header_.uuid));
@@ -308,6 +310,7 @@ ls_stateful_record_create(struct ls_stateful_table *table,
 static void
 ls_stateful_record_destroy(struct ls_stateful_record *ls_sful_rec)
 {
+    lflow_ref_destroy(ls_sful_rec->lflow_ref);
     free(ls_sful_rec);
 }
 
