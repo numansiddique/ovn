@@ -39,6 +39,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
+#include "lflow-mgr.h"
 #include "northd.h"
 
 VLOG_DEFINE_THIS_MODULE(en_ls_lbacls);
@@ -356,6 +357,7 @@ ls_lbacls_record_create(struct ls_lbacls_table *table,
     struct ls_lbacls_record *ls_lbacls_rec = xzalloc(sizeof *ls_lbacls_rec);
     ls_lbacls_rec->od = od;
     ls_lbacls_record_init(ls_lbacls_rec, od, NULL, ls_pgs);
+    ls_lbacls_rec->lflow_ref = lflow_ref_alloc(od->nbs->name);
 
     hmap_insert(&table->entries, &ls_lbacls_rec->key_node,
                 uuid_hash(&ls_lbacls_rec->od->nbs->header_.uuid));
@@ -366,6 +368,7 @@ ls_lbacls_record_create(struct ls_lbacls_table *table,
 static void
 ls_lbacls_record_destroy(struct ls_lbacls_record *ls_lbacls_rec)
 {
+    lflow_ref_destroy(ls_lbacls_rec->lflow_ref);
     free(ls_lbacls_rec);
 }
 
