@@ -32,6 +32,7 @@
 
 struct ovn_datapath;
 struct lr_nat_record;
+struct lflow_ref;
 
 struct lr_lb_nat_data_record {
     struct hmap_node key_node; /* Index on 'nbr->header_.uuid'. */
@@ -46,6 +47,8 @@ struct lr_lb_nat_data_record {
 
     /* sset of vips which are also part of lr nats. */
     struct sset vip_nats;
+
+    struct lflow_ref *lflow_ref;
 };
 
 struct lr_lb_nat_data_table {
@@ -65,6 +68,10 @@ struct lr_lb_nat_data_tracked_data {
 
     /* Deleted logical router with LB data. */
     struct hmapx deleted; /* Stores 'struct lr_lb_nat_data_record'. */
+
+    /* Indicates if any router's NATs changed which were also LB vips
+     * or vice versa. */
+    bool vip_nats_changed;
 };
 
 struct ed_type_lr_lb_nat_data {
