@@ -944,6 +944,50 @@ trim_zeros() {
     sed 's/\(00\)\{1,\}$//'
 }
 
+# Checks if the provided engine node recomputed or not
+# and if it computed or not.
+# 1st argument is the engine node.
+# 2nd argument is the expected recompute state.
+# Possible values are - "norecompute" and "recompute".
+# 3rd argument is the expected compute state.
+# Possible values are - "nocompute" and "compute".
+#
+# Eg. 'check_engine_stats lflow recompute nocompute' will verify
+# that if the lflow engine node recompute stat is > 0 and
+# compute stat is equal to 0.  It fails otherwise.
+check_engine_stats() {
+  node=$1
+  recompute=$2
+  compute=$3
+
+  echo "Checking engine stats for node $node : recompute - \
+$recompute : compute - $compute"
+
+  node_stat=$(as northd ovn-appctl -t ovn-northd inc-engine/show-stats $node)
+  # node_stat will be of this format :
+  #     - Node: lflow - recompute: 3 - compute: 0 - abort: 0
+  node_recompute_ct=$(echo $node_stat | cut -d '-' -f2 | cut -d ':' -f2)
+  node_compute_ct=$(echo $node_stat | cut -d '-' -f3 | cut -d ':' -f2)
+
+  if [[ "$recompute" == "norecompute" ]]; then
+    # node should not be recomputed
+    echo "Expecting $node recompute count - $node_recompute_ct to be 0"
+    check test "$node_recompute_ct" -eq "0"
+  else
+    echo "Expecting $node recompute count - $node_recompute_ct not to be 0"
+    check test "$node_recompute_ct" -ne "0"
+  fi
+
+  if [[ "$compute" == "nocompute" ]]; then
+    # node should not be computed
+    echo "Expecting $node compute count - $node_compute_ct to be 0"
+    check test "$node_compute_ct" -eq "0"
+  else
+    echo "Expecting $node compute count - $node_compute_ct not to be 0"
+    check test "$node_compute_ct" -ne "0"
+  fi
+}
+
 OVS_END_SHELL_HELPERS
 
 m4_define([OVN_POPULATE_ARP], [AT_CHECK(ovn_populate_arp__, [0], [ignore])])
