@@ -442,7 +442,7 @@ lflow_ref_unlink_lflows(struct lflow_ref *lflow_ref)
             BITMAP_FOR_EACH_1 (index, lrn->dpgrp_bitmap_len,
                                lrn->dpgrp_bitmap) {
                 if (dec_dp_refcnt(&lrn->lflow->dp_refcnts_map, index)) {
-                    bitmap_set0(lrn->lflow->dpg_bitmap, lrn->dp_index);
+                    bitmap_set0(lrn->lflow->dpg_bitmap, index);
                 }
             }
         } else {
