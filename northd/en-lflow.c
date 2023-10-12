@@ -192,6 +192,36 @@ lflow_lr_lb_nat_data_handler(struct engine_node *node, void *data)
     return true;
 }
 
+bool
+lflow_ls_lbacls_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_ls_lbacls *ls_lbacls_data =
+        engine_get_input_data("ls_lbacls", node);
+
+    if (!ls_lbacls_data->tracked ||
+            !hmapx_is_empty(&ls_lbacls_data->tracked_data.deleted)) {
+        return false;
+    }
+
+    const struct engine_context *eng_ctx = engine_get_context();
+    struct lflow_data *lflow_data = data;
+
+    struct lflow_input lflow_input;
+    lflow_get_input_data(node, &lflow_input);
+
+    if (!lflow_handle_ls_lbacls_changes(eng_ctx->ovnsb_idl_txn,
+                                        &ls_lbacls_data->tracked_data,
+                                        &lflow_input,
+                                        lflow_data->lflow_table)) {
+        return false;
+    }
+
+
+    engine_set_node_state(node, EN_UPDATED);
+
+    return true;
+}
+
 void *en_lflow_init(struct engine_node *node OVS_UNUSED,
                      struct engine_arg *arg OVS_UNUSED)
 {
