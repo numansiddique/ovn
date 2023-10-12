@@ -31,6 +31,8 @@
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
 
+struct lflow_ref;
+
 struct ls_lbacls_record {
     struct hmap_node key_node;
 
@@ -39,6 +41,8 @@ struct ls_lbacls_record {
     bool has_lb_vip;
     bool has_acls;
     uint64_t max_acl_tier;
+
+    struct lflow_ref *lflow_ref;
 };
 
 struct ls_lbacls_table {

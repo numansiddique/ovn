@@ -15747,13 +15747,14 @@ build_ls_lbacls_flows(const struct ls_lbacls_record *ls_lbacls_rec,
     ovs_assert(ls_lbacls_rec->od);
 
     build_ls_lbacls_rec_pre_acls(ls_lbacls_rec, ls_pgs, lflows,
-                                 NULL);
+                                 ls_lbacls_rec->lflow_ref);
     build_ls_lbacls_rec_pre_lb(ls_lbacls_rec, lflows,
-                               NULL);
-    build_acl_hints(ls_lbacls_rec, features, lflows, NULL);
+                               ls_lbacls_rec->lflow_ref);
+    build_acl_hints(ls_lbacls_rec, features, lflows,
+                    ls_lbacls_rec->lflow_ref);
     build_acls(ls_lbacls_rec, features, lflows, ls_pgs, meter_groups,
-               NULL);
-    build_lb_hairpin(ls_lbacls_rec, lflows, NULL);
+               ls_lbacls_rec->lflow_ref);
+    build_lb_hairpin(ls_lbacls_rec, lflows, ls_lbacls_rec->lflow_ref);
 }
 
 struct lswitch_flow_build_info {
@@ -16716,6 +16717,45 @@ lflow_handle_lr_lb_nat_data_changes(struct ovsdb_idl_txn *ovnsb_txn,
 
         ds_destroy(&match);
         ds_destroy(&actions);
+    }
+
+    return true;
+}
+
+bool
+lflow_handle_ls_lbacls_changes(struct ovsdb_idl_txn *ovnsb_txn,
+                                struct ls_lbacls_tracked_data *trk_data,
+                                struct lflow_input *lflow_input,
+                                struct lflow_table *lflows)
+{
+    struct ls_lbacls_record *ls_lbacls_rec;
+    struct hmapx_node *hmapx_node;
+
+    HMAPX_FOR_EACH (hmapx_node, &trk_data->crupdated) {
+        ls_lbacls_rec = hmapx_node->data;
+
+        lflow_ref_clear_lflows(ls_lbacls_rec->lflow_ref, ls_lbacls_rec->od,
+                               lflows);
+
+        /* Generate new lflows. */
+        struct ds match = DS_EMPTY_INITIALIZER;
+        struct ds actions = DS_EMPTY_INITIALIZER;
+
+        build_ls_lbacls_flows(ls_lbacls_rec, lflow_input->ls_port_groups,
+                              lflow_input->features, lflow_input->meter_groups,
+                              lflows);
+
+        ds_destroy(&match);
+        ds_destroy(&actions);
+
+        /* Sync the new flows to SB. */
+        lflow_ref_sync_lflows_to_sb(ls_lbacls_rec->lflow_ref, lflows,
+                             ovnsb_txn,
+                             lflow_input->ls_datapaths,
+                             lflow_input->lr_datapaths,
+                             lflow_input->ovn_internal_version_changed,
+                             lflow_input->sbrec_logical_flow_table,
+                             lflow_input->sbrec_logical_dp_group_table);
     }
 
     return true;
