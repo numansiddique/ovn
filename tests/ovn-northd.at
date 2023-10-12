@@ -12,6 +12,7 @@ m4_define([_DUMP_DB_TABLES], [
     ovn-sbctl list meter >> $1
     ovn-sbctl list meter_band >> $1
     ovn-sbctl list port_group >> $1
+    ovn-sbctl dump-flows > lflows_$1
 ])
 
 # CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10586,7 +10587,7 @@ check ovn-nbctl --wait=sb lr-lb-add lr0 lb1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10596,7 +10597,7 @@ check ovn-nbctl --wait=sb set load_balancer lb1 vips:'"10.0.0.10:80"'='"10.0.0.1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10606,7 +10607,7 @@ check ovn-nbctl --wait=sb clear load_Balancer lb1 vips
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10616,7 +10617,7 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.10:80 10.0.0.3:80
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10626,7 +10627,7 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.20:80 10.0.0.30:8080
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10634,6 +10635,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb lr-lb-del lr0 lb1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
+check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats lflow recompute nocompute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10748,7 +10750,7 @@ check ovn-nbctl add logical_router lr0 load_balancer_group $lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10758,7 +10760,7 @@ check ovn-nbctl --wait=sb set load_balancer lb1 vips:'"10.0.0.10:80"'='"10.0.0.1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10768,7 +10770,7 @@ check ovn-nbctl --wait=sb clear load_Balancer lb1 vips
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10778,7 +10780,7 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.10:80 10.0.0.3:80
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10788,7 +10790,7 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.20:80 10.0.0.30:8080
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10869,7 +10871,7 @@ check ovn-nbctl --wait=sb set logical_router lr1 load_balancer_group=$lbg1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -10897,7 +10899,7 @@ check ovn-nbctl --wait=sb lr-lb-add lr1 lb2
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11141,7 +11143,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb lr-nat-add lr0 dnat_and_snat  172.168.0.110 10.0.0.4
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11150,7 +11152,7 @@ check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb set NAT . options:foo=bar
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11160,7 +11162,7 @@ check ovn-nbctl --wait=sb set NAT . external_ip=172.168.0.120
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11170,7 +11172,7 @@ check ovn-nbctl --wait=sb set NAT . logical_ip=10.0.0.10
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11180,7 +11182,7 @@ check ovn-nbctl --wait=sb set NAT . type=snat
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11190,7 +11192,7 @@ check ovn-nbctl --wait=sb lr-nat-add lr0 dnat_and_snat 172.168.0.110 10.0.0.4 sw
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11201,7 +11203,7 @@ check ovn-nbctl --wait=sb set NAT $nat2_uuid external_mac='"30:54:00:00:00:04"'
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11222,6 +11224,8 @@ check_engine_stats sync_to_sb_pb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
+# lflow engine should recompute since the nat ip 172.168.0.150
+# is a lb vip.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb lr-nat-add lr0 dnat_and_snat 172.168.0.150 10.0.0.41
 check_engine_stats northd norecompute compute
@@ -11231,6 +11235,8 @@ check_engine_stats sync_to_sb_pb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
+# lflow engine should recompute since the deleted nat ip 172.168.0.150
+# is a lb vip.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb lr-nat-del lr0 dnat_and_snat 172.168.0.150
 check_engine_stats northd norecompute compute
@@ -11240,6 +11246,8 @@ check_engine_stats sync_to_sb_pb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
+# lflow engine should recompute since the deleted nat ip 172.168.0.140
+# is a lb vip.
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 check ovn-nbctl --wait=sb lr-nat-del lr0 dnat_and_snat 172.168.0.140
 check_engine_stats northd norecompute compute
@@ -11255,7 +11263,7 @@ check ovn-nbctl --wait=sb clear logical_router lr0 nat
 check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
-check_engine_stats lflow recompute nocompute
+check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 

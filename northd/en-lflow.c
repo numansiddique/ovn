@@ -165,6 +165,36 @@ lflow_port_group_handler(struct engine_node *node, void *data OVS_UNUSED)
     return true;
 }
 
+bool
+lflow_lr_lb_nat_data_handler(struct engine_node *node, void *data)
+{
+    struct ed_type_lr_lb_nat_data *lr_lb_nat_data =
+        engine_get_input_data("lr_lb_nat_data", node);
+
+    if (!lr_lb_nat_data->tracked
+        || lr_lb_nat_data->tracked_data.vip_nats_changed
+        || !hmapx_is_empty(&lr_lb_nat_data->tracked_data.deleted)) {
+        return false;
+    }
+
+    const struct engine_context *eng_ctx = engine_get_context();
+    struct lflow_data *lflow_data = data;
+
+    struct lflow_input lflow_input;
+    lflow_get_input_data(node, &lflow_input);
+
+    if (!lflow_handle_lr_lb_nat_data_changes(eng_ctx->ovnsb_idl_txn,
+                                             &lr_lb_nat_data->tracked_data,
+                                             &lflow_input,
+                                             lflow_data->lflow_table)) {
+        return false;
+    }
+
+    engine_set_node_state(node, EN_UPDATED);
+
+    return true;
+}
+
 void *en_lflow_init(struct engine_node *node OVS_UNUSED,
                      struct engine_arg *arg OVS_UNUSED)
 {

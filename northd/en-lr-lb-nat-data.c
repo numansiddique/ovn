@@ -39,6 +39,7 @@
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "lib/stopwatch-names.h"
+#include "lflow-mgr.h"
 #include "northd.h"
 
 VLOG_DEFINE_THIS_MODULE(en_lr_lb_nat_data);
@@ -81,7 +82,7 @@ static void remove_lrouter_lb_reachable_ips(struct lr_lb_nat_data_record *,
                                             enum lb_neighbor_responder_mode,
                                             const struct sset *lb_ips_v4,
                                             const struct sset *lb_ips_v6);
-static void lr_lb_nat_data_build_vip_nats(struct lr_lb_nat_data_record *);
+static bool lr_lb_nat_data_build_vip_nats(struct lr_lb_nat_data_record *);
 
 /* 'lr_lb_nat_data' engine node manages the NB logical router LB data.
  */
@@ -119,6 +120,7 @@ en_lr_lb_nat_data_clear_tracked_data(void *data_)
     }
 
     hmapx_clear(&data->tracked_data.crupdated);
+    data->tracked_data.vip_nats_changed = false;
     data->tracked = false;
 }
 
@@ -186,7 +188,6 @@ lr_lb_nat_data_lb_data_handler(struct engine_node *node, void *data_)
             const struct lr_nat_record *lrnat_rec = lr_nat_table_find_by_index(
                 input_data.lr_nats, od->index);
             ovs_assert(lrnat_rec);
-
             lr_lbnat_rec = lr_lb_nat_data_record_create(&data->lr_lbnats,
                                             lrnat_rec,
                                             input_data.lb_datapaths_map,
@@ -194,6 +195,10 @@ lr_lb_nat_data_lb_data_handler(struct engine_node *node, void *data_)
 
             /* Add the lr_lbnat_rec rec to the tracking data. */
             hmapx_add(&data->tracked_data.crupdated, lr_lbnat_rec);
+
+            if (!sset_is_empty(&lr_lbnat_rec->vip_nats)) {
+                data->tracked_data.vip_nats_changed = true;
+            }
             continue;
         }
 
@@ -302,7 +307,9 @@ lr_lb_nat_data_lb_data_handler(struct engine_node *node, void *data_)
          * vip nats and re-evaluate 'has_lb_vip'. */
         HMAPX_FOR_EACH (hmapx_node, &data->tracked_data.crupdated) {
             lr_lbnat_rec = hmapx_node->data;
-            lr_lb_nat_data_build_vip_nats(lr_lbnat_rec);
+            if (lr_lb_nat_data_build_vip_nats(lr_lbnat_rec)) {
+                data->tracked_data.vip_nats_changed = true;
+            }
             lr_lbnat_rec->has_lb_vip = od_has_lb_vip(lr_lbnat_rec->od);
         }
 
@@ -341,8 +348,13 @@ lr_lb_nat_data_lr_nat_handler(struct engine_node *node, void *data_)
                                             lrnat_rec,
                                             input_data.lb_datapaths_map,
                                             input_data.lbgrp_datapaths_map);
+            if (!sset_is_empty(&lr_lbnat_rec->vip_nats)) {
+                data->tracked_data.vip_nats_changed = true;
+            }
         } else {
-            lr_lb_nat_data_build_vip_nats(lr_lbnat_rec);
+            if (lr_lb_nat_data_build_vip_nats(lr_lbnat_rec)) {
+                data->tracked_data.vip_nats_changed = true;
+            }
         }
 
         /* Add the lr_lbnat_rec rec to the tracking data. */
@@ -442,6 +454,7 @@ lr_lb_nat_data_record_create(struct lr_lb_nat_data_table *table,
     lr_lbnat_rec->od = lrnat_rec->od;
     lr_lb_nat_data_record_init(lr_lbnat_rec, lb_datapaths_map,
                                lbgrp_datapaths_map);
+    lr_lbnat_rec->lflow_ref = lflow_ref_alloc(lr_lbnat_rec->od->nbr->name);
 
     hmap_insert(&table->entries, &lr_lbnat_rec->key_node,
                 uuid_hash(&lr_lbnat_rec->od->nbr->header_.uuid));
@@ -456,6 +469,7 @@ lr_lb_nat_data_record_destroy(struct lr_lb_nat_data_record *lr_lbnat_rec)
     ovn_lb_ip_set_destroy(lr_lbnat_rec->lb_ips);
     lr_lbnat_rec->lb_ips = NULL;
     sset_destroy(&lr_lbnat_rec->vip_nats);
+    lflow_ref_destroy(lr_lbnat_rec->lflow_ref);
     free(lr_lbnat_rec);
 }
 
@@ -522,7 +536,7 @@ lr_lb_nat_data_record_init(struct lr_lb_nat_data_record *lr_lbnat_rec,
 
     sset_init(&lr_lbnat_rec->vip_nats);
 
-    if (!nbr->n_nat) {
+    if (nbr->n_nat) {
         lr_lb_nat_data_build_vip_nats(lr_lbnat_rec);
     }
 
@@ -636,10 +650,13 @@ remove_lrouter_lb_reachable_ips(struct lr_lb_nat_data_record *lr_lbnat_rec,
     }
 }
 
-static void
+/* Builds the vip nats and returns true if the lr_lbnat_rec->vip_nats
+ * changed, false otherwise. */
+static bool
 lr_lb_nat_data_build_vip_nats(struct lr_lb_nat_data_record *lr_lbnat_rec)
 {
-    sset_clear(&lr_lbnat_rec->vip_nats);
+    struct sset old_vip_nats = SSET_INITIALIZER(&old_vip_nats);
+    sset_swap(&lr_lbnat_rec->vip_nats, &old_vip_nats);
     const char *external_ip;
     SSET_FOR_EACH (external_ip, &lr_lbnat_rec->lrnat_rec->external_ips) {
         bool is_vip_nat = false;
@@ -655,4 +672,14 @@ lr_lb_nat_data_build_vip_nats(struct lr_lb_nat_data_record *lr_lbnat_rec)
             sset_add(&lr_lbnat_rec->vip_nats, external_ip);
         }
     }
+
+    bool vip_nats_changed =
+        sset_count(&lr_lbnat_rec->vip_nats) != sset_count(&old_vip_nats);
+    if (!vip_nats_changed) {
+        vip_nats_changed = !sset_equals(&lr_lbnat_rec->vip_nats,
+                                        &old_vip_nats);
+    }
+    sset_destroy(&old_vip_nats);
+
+    return vip_nats_changed;
 }

@@ -677,9 +677,13 @@ struct ovn_port {
      * 'lbnat_lflow_ref' is used for logical switch ports of type
      * 'patch/router' to referenece logical flows generated fo this ovn_port
      *  from the 'lr_lb_nat_data_table' record of the peer port's datapath.
+     *
+     * 'routable_lflow_ref' is used to reference logical flows generated for
+     * the routable ips of a logical router port.
      */
     struct lflow_ref *lflow_ref;
     struct lflow_ref *lbnat_lflow_ref;
+    struct lflow_ref *routable_lflow_ref;
 };
 
 void ovnnb_db_run(struct northd_input *input_data,
@@ -704,6 +708,8 @@ void northd_indices_create(struct northd_data *data,
                            struct ovsdb_idl *ovnsb_idl);
 
 struct lflow_table;
+struct lr_lb_nat_data_tracked_data;
+
 void build_lflows(struct ovsdb_idl_txn *ovnsb_txn,
                   struct lflow_input *input_data,
                   struct lflow_table *);
@@ -717,6 +723,10 @@ bool lflow_handle_northd_lb_changes(struct ovsdb_idl_txn *ovnsb_txn,
                                     struct tracked_lbs *,
                                     struct lflow_input *,
                                     struct lflow_table *lflows);
+bool lflow_handle_lr_lb_nat_data_changes(struct ovsdb_idl_txn *,
+                                         struct lr_lb_nat_data_tracked_data *,
+                                         struct lflow_input *,
+                                         struct lflow_table *lflows);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports,
     struct hmap *lr_ports);

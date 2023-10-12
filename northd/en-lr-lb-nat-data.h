@@ -32,6 +32,7 @@
 
 struct ovn_datapath;
 struct lr_nat_record;
+struct lflow_ref;
 
 struct lr_lb_nat_data_record {
     struct hmap_node key_node; /* Index on 'nbr->header_.uuid'. */
@@ -46,6 +47,27 @@ struct lr_lb_nat_data_record {
 
     /* sset of vips which are also part of lr nats. */
     struct sset vip_nats;
+
+    /* 'lflow_ref' is used to reference logical flows generated for
+     * this lr_lb_nat_data record.
+     *
+     * This data is initialized and destroyed by the en_lr_lb_nat_data node,
+     * but populated and used only by the en_lflow node. Ideally this data
+     * should be maintained as part of en_lflow's data.  However, it would
+     * be less efficient and more complex:
+     *
+     * 1. It would require an extra search (using the index) to find the
+     * lflows.
+     *
+     * 2. Building the index needs to be thread-safe, using either a global
+     * lock which is obviously less efficient, or hash-based lock array which
+     * is more complex.
+     *
+     * Adding the lflow_ref here is more straightforward. The drawback is that
+     * we need to keep in mind that this data belongs to en_lflow node, so
+     * never access it from any other nodes.
+     */
+    struct lflow_ref *lflow_ref;
 };
 
 struct lr_lb_nat_data_table {
@@ -68,6 +90,10 @@ struct lr_lb_nat_data_tracked_data {
 
     /* Deleted logical router with LB data. */
     struct hmapx deleted; /* Stores 'struct lr_lb_nat_data_record'. */
+
+    /* Indicates if any router's NATs changed which were also LB vips
+     * or vice versa. */
+    bool vip_nats_changed;
 };
 
 struct ed_type_lr_lb_nat_data {
