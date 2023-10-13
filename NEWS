@@ -1,5 +1,6 @@
 Post v23.09.0
 -------------
+  - introduce the capability to support arbitrarily large multicast groups
 
 OVN v23.09.0 - 15 Sep 2023
 --------------------------
