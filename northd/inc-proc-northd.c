@@ -185,7 +185,6 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_northd, &en_sb_mirror, NULL);
     engine_add_input(&en_northd, &en_sb_meter, NULL);
     engine_add_input(&en_northd, &en_sb_datapath_binding, NULL);
-    engine_add_input(&en_northd, &en_sb_mac_binding, NULL);
     engine_add_input(&en_northd, &en_sb_dns, NULL);
     engine_add_input(&en_northd, &en_sb_ha_chassis_group, NULL);
     engine_add_input(&en_northd, &en_sb_ip_multicast, NULL);
@@ -195,6 +194,14 @@ void inc_proc_northd_init(struct ovsdb_idl_loop *nb,
     engine_add_input(&en_northd, &en_sb_chassis_template_var, NULL);
     engine_add_input(&en_northd, &en_global_config,
                      northd_global_config_handler);
+
+    /* northd engine node uses the sb mac binding table to
+     * cleanup mac binding entries for deleted logical ports
+     * and datapaths. Any update to to SB mac binding doesn't
+     * change the northd engine node state or data.  Hence
+     * it is ok to add a noop_handler here. */
+    engine_add_input(&en_northd, &en_sb_mac_binding,
+                     engine_noop_handler);
 
     engine_add_input(&en_northd, &en_sb_port_binding,
                      northd_sb_port_binding_handler);
