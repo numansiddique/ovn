@@ -2930,12 +2930,16 @@ sw1_sb_uuid=$(fetch_column datapath_binding _uuid external_ids:name=sw1)
 echo "$sw0_sb_uuid" > sw_sb_uuids
 echo "$sw1_sb_uuid" >> sw_sb_uuids
 
+lb0_dp_group=$(fetch_column sb:load_balancer ls_datapath_group name=lb0)
+
 echo
 echo "__file__:__line__: Check that SB lb0 has sw0 and sw1 in datapaths column."
 AT_CHECK_UNQUOTED([ovn-sbctl --bare --columns _uuid,datapaths find Logical_DP_Group dnl
                     | grep -A1 $lb0_dp_group | tail -1 | tr ' ' '\n' | sort], [0], [dnl
 $(cat sw_sb_uuids | sort)
 ])
+
+lbg0_dp_group=$(fetch_column sb:load_balancer ls_datapath_group name=lbg0)
 
 echo
 echo "__file__:__line__: Check that SB lbg0 has sw0 and sw1 in datapaths column."
@@ -10402,7 +10406,7 @@ check ovn-nbctl --wait=sb lb-add lb1 10.0.0.10:80 10.0.0.3:80
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 
@@ -10411,7 +10415,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10421,7 +10425,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
 
@@ -10430,7 +10434,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10440,7 +10444,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10498,7 +10502,7 @@ check_engine_stats lr_lb_nat_data norecompute compute
 # A LB applied to a switch/router triggers:
 # - a recompute in the first iteration (handling northd change)
 # - a compute in the second iteration (handling SB update)
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
@@ -10511,7 +10515,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Cleanup the vip of lb1.
@@ -10522,7 +10526,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Set the vips of lb1 back
@@ -10533,7 +10537,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Add another vip to lb1
@@ -10544,7 +10548,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Disassociate lb1 from sw0. There should be a full recompute of northd engine node.
@@ -10567,7 +10571,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10588,7 +10592,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Modify the backend of the lb1 vip
@@ -10598,7 +10602,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Cleanup the vip of lb1.
@@ -10608,7 +10612,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Set the vips of lb1 back
@@ -10618,7 +10622,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Add another vip to lb1
@@ -10628,7 +10632,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10646,6 +10650,7 @@ lbg1_uuid=$(ovn-nbctl --wait=sb create load_balancer_group name=lbg1)
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow norecompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10659,7 +10664,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10676,7 +10681,7 @@ check ovn-nbctl --wait=sb add load_balancer_group . load_Balancer $lb1_uuid
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10686,7 +10691,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 
 # Update lb and this should not result in northd recompute
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10696,7 +10701,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 
 # Modify the backend of the lb1 vip
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10706,7 +10711,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Cleanup the vip of lb1.
@@ -10717,7 +10722,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Set the vips of lb1 back
@@ -10728,7 +10733,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Add another vip to lb1
@@ -10739,7 +10744,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10755,7 +10760,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Modify the backend of the lb1 vip
@@ -10765,7 +10770,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Cleanup the vip of lb1.
@@ -10775,7 +10780,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Set the vips of lb1 back
@@ -10785,7 +10790,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Add another vip to lb1
@@ -10795,7 +10800,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10815,7 +10820,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10859,7 +10864,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10869,7 +10874,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10878,7 +10883,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10888,7 +10893,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10898,7 +10903,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10908,7 +10913,7 @@ check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -10939,7 +10944,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Deleting lb2 should result in lflow recompute as it is
@@ -10951,7 +10956,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats ls_lbacls norecompute compute
 check_engine_stats lflow norecompute compute
-check_engine_stats sync_to_sb_lb recompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -11018,6 +11023,7 @@ check ovn-nbctl --wait=sb ls-lb-add sw0 lb1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow norecompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Clear the VIPs of lb1
@@ -11026,6 +11032,7 @@ check ovn-nbctl --wait=sb clear load_balancer . vips
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd norecompute compute
 check_engine_stats lflow norecompute compute
+check_engine_stats sync_to_sb_lb norecompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 check as northd ovn-appctl -t NORTHD_TYPE inc-engine/clear-stats
@@ -11033,6 +11040,7 @@ check ovn-nbctl --wait=sb lb-del lb1
 check_engine_stats lb_data norecompute compute
 check_engine_stats northd recompute nocompute
 check_engine_stats lflow recompute nocompute
+check_engine_stats sync_to_sb_lb recompute compute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 AT_CLEANUP
@@ -11093,6 +11101,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11106,6 +11115,7 @@ check_engine_stats northd recompute compute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11118,6 +11128,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11144,6 +11155,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11156,6 +11168,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Update the NAT options column
@@ -11165,6 +11178,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Update the NAT external_ip column
@@ -11175,6 +11189,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Update the NAT logical_ip column
@@ -11185,6 +11200,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Update the NAT type
@@ -11195,6 +11211,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Create a dnat_and_snat NAT with external_mac and logical_port
@@ -11205,6 +11222,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 nat2_uuid=$(ovn-nbctl --bare --columns _uuid find nat logical_ip=10.0.0.4)
@@ -11216,6 +11234,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Create a load balancer and add the lb vip as NAT
@@ -11232,6 +11251,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11243,6 +11263,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11254,6 +11275,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11265,6 +11287,7 @@ check_engine_stats northd norecompute compute
 check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11276,6 +11299,7 @@ check_engine_stats lr_nat norecompute compute
 check_engine_stats lr_lb_nat_data norecompute compute
 check_engine_stats lflow norecompute compute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb norecompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 # Create router Policy
@@ -11285,6 +11309,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
@@ -11294,6 +11319,7 @@ check_engine_stats northd recompute nocompute
 check_engine_stats lr_nat recompute nocompute
 check_engine_stats lr_lb_nat_data recompute nocompute
 check_engine_stats sync_to_sb_pb recompute nocompute
+check_engine_stats sync_to_sb_lb recompute nocompute
 check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
