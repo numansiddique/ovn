@@ -1576,6 +1576,22 @@ consider_vif_lport_(const struct sbrec_port_binding *pb,
             if_status_mgr_remove_ovn_installed(b_ctx_out->if_mgr,
                                b_lport->lbinding->iface->name,
                                &b_lport->lbinding->iface->header_.uuid);
+
+            struct binding_lport *tmp_b_lport = b_lport;
+            LIST_FOR_EACH (tmp_b_lport, list_node,
+                          &tmp_b_lport->lbinding->binding_lports) {
+                /* release children lports of type container if the primary
+                 * binding lport cannot be bind to this chassis.
+                 */
+                if (tmp_b_lport->type == LP_CONTAINER) {
+                    if (!release_lport(tmp_b_lport->pb, b_ctx_in->chassis_rec,
+                                       !b_ctx_in->ovnsb_idl_txn,
+                                       b_ctx_out->tracked_dp_bindings,
+                                       b_ctx_out->if_mgr)) {
+                        return false;
+                    }
+                }
+            }
         }
 
         if (!lbinding_set || !can_bind) {
@@ -1710,6 +1726,9 @@ consider_container_lport(const struct sbrec_port_binding *pb,
 
     ovs_assert(parent_b_lport && parent_b_lport->pb);
     bool can_bind = lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec, pb);
+    /* cannot bind to this chassis if the parent_port cannot be bounded. */
+    can_bind &= lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec,
+                                               parent_b_lport->pb);
 
     return consider_vif_lport_(pb, can_bind, b_ctx_in, b_ctx_out,
                                container_b_lport);
