@@ -149,6 +149,7 @@ enum ovn_stage {
     PIPELINE_STAGE(SWITCH, IN,  EXTERNAL_PORT, 26, "ls_in_external_port") \
     PIPELINE_STAGE(SWITCH, IN,  L2_LKUP,       27, "ls_in_l2_lkup")       \
     PIPELINE_STAGE(SWITCH, IN,  L2_UNKNOWN,    28, "ls_in_l2_unknown")    \
+    PIPELINE_STAGE(SWITCH, IN,  ICMP_NEED_FRG, 32, "ls_in_icmp_need_frag") \
                                                                           \
     /* Logical switch egress stages. */                                   \
     PIPELINE_STAGE(SWITCH, OUT, PRE_ACL,      0, "ls_out_pre_acl")        \
@@ -186,6 +187,7 @@ enum ovn_stage {
     PIPELINE_STAGE(ROUTER, IN,  LARGER_PKTS,     19, "lr_in_larger_pkts")     \
     PIPELINE_STAGE(ROUTER, IN,  GW_REDIRECT,     20, "lr_in_gw_redirect")     \
     PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST,     21, "lr_in_arp_request")     \
+    PIPELINE_STAGE(ROUTER, IN,  ICMP_NEED_FRG,   32, "lr_in_icmp_need_frag")  \
                                                                       \
     /* Logical router egress stages. */                               \
     PIPELINE_STAGE(ROUTER, OUT, CHECK_DNAT_LOCAL,   0,                       \
@@ -8758,6 +8760,14 @@ build_lrouter_lb_affinity_default_flows(struct ovn_datapath *od,
 }
 
 static void
+build_lrouter_icmp_need_frag_lflows(struct ovn_datapath *od,
+                                    struct hmap *lflows)
+{
+    ovn_lflow_add(lflows, od, S_ROUTER_IN_ICMP_NEED_FRG, 0, "1",
+                  "output;");
+}
+
+static void
 build_lb_rules(struct hmap *lflows, struct ovn_lb_datapaths *lb_dps,
                const struct ovn_datapaths *ls_datapaths,
                const struct chassis_features *features, struct ds *match,
@@ -9721,6 +9731,14 @@ build_lswitch_lflows_l2_unknown(struct ovn_datapath *od,
                       "outport == \"none\"",  debug_drop_action());
     }
     ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_UNKNOWN, 0, "1",
+                  "output;");
+}
+
+static void
+build_lswitch_icmp_need_frag_lflows(struct ovn_datapath *od,
+                                    struct hmap *lflows)
+{
+    ovn_lflow_add(lflows, od, S_SWITCH_IN_ICMP_NEED_FRG, 0, "1",
                   "output;");
 }
 
@@ -12868,6 +12886,31 @@ build_lrouter_force_snat_flows_op(struct ovn_port *op,
 }
 
 static void
+build_icmp_need_frag_flows_for_lrp(struct ovn_port *op, struct hmap *lflows,
+                                   struct ds *match, struct ds *actions)
+{
+    if (!op->peer || !is_l3dgw_port(op)) {
+        return;
+    }
+
+    ds_clear(match);
+    ds_put_format(match, "outport == %s && !is_chassis_resident(%s) && "
+                         "eth.dst == %s && "
+                         "((icmp4.type == 3 && icmp4.code == 4) || "
+                         "(icmp6.type == 2 && icmp6.code == 0))",
+                  op->cr_port->json_key, op->cr_port->json_key,
+                  op->lrp_networks.ea_s);
+    ds_clear(actions);
+    ds_put_format(actions, "inport = %s; "
+                           "next(pipeline=ingress, table=%d);",
+                  op->json_key, ovn_stage_get_table(S_ROUTER_IN_IP_ROUTING));
+    ovn_lflow_add_with_hint(lflows, op->od,
+                            S_ROUTER_IN_ICMP_NEED_FRG, 100,
+                            ds_cstr(match),ds_cstr(actions),
+                            &op->nbrp->header_);
+}
+
+static void
 build_lrouter_bfd_flows(struct hmap *lflows, struct ovn_port *op,
                         const struct shash *meter_groups)
 {
@@ -13987,6 +14030,31 @@ build_arp_resolve_flows_for_lsp(
             }
         }
     }
+}
+
+static void
+build_icmp_need_frag_flows_for_lsp(struct ovn_port *op, struct hmap *lflows,
+                                   const struct hmap *lr_ports,
+                                   struct ds *match)
+{
+    if (!lsp_is_router(op->nbsp)) {
+        return;
+    }
+
+    struct ovn_port *router_port = ovn_port_get_peer(lr_ports, op);
+    if (!router_port || !router_port->nbrp) {
+        return;
+    }
+
+    ds_clear(match);
+    ds_put_format(match, "inport == %s && eth.dst == %s && "
+                         "((icmp4.type == 3 && icmp4.code == 4) || "
+                         "(icmp6.type == 2 && icmp6.code == 0))",
+                  op->json_key, router_port->lrp_networks.ea_s);
+    ovn_lflow_add_with_hint(lflows, op->od,
+                            S_SWITCH_IN_ICMP_NEED_FRG, 100,
+                            ds_cstr(match), "inport <-> outport; output;",
+                            &op->nbsp->header_);
 }
 
 static void
@@ -16099,6 +16167,7 @@ build_lswitch_and_lrouter_iterate_by_ls(struct ovn_datapath *od,
     build_lswitch_output_port_sec_od(od, lsi->lflows);
     build_lswitch_lb_affinity_default_flows(od, lsi->lflows);
     build_lswitch_lflows_l2_unknown(od, lsi->lflows);
+    build_lswitch_icmp_need_frag_lflows(od, lsi->lflows);
 }
 
 /* Helper function to combine all lflow generation which is iterated by
@@ -16135,6 +16204,7 @@ build_lswitch_and_lrouter_iterate_by_lr(struct ovn_datapath *od,
                                     &lsi->actions, lsi->meter_groups,
                                     lsi->features);
     build_lrouter_lb_affinity_default_flows(od, lsi->lflows);
+    build_lrouter_icmp_need_frag_lflows(od, lsi->lflows);
 }
 
 /* Helper function to combine all lflow generation which is iterated by logical
@@ -16165,6 +16235,7 @@ build_lswitch_and_lrouter_iterate_by_lsp(struct ovn_port *op,
     /* Build Logical Router Flows. */
     build_ip_routing_flows_for_router_type_lsp(op, lr_ports, lflows);
     build_arp_resolve_flows_for_lsp(op, lflows, lr_ports, match, actions);
+    build_icmp_need_frag_flows_for_lsp(op, lflows, lr_ports, match);
 
     link_ovn_port_to_lflows(op, &collected_lflows);
     end_collecting_lflows();
@@ -16197,6 +16268,8 @@ build_lswitch_and_lrouter_iterate_by_lrp(struct ovn_port *op,
                                 &lsi->match, &lsi->actions, lsi->meter_groups);
     build_lrouter_force_snat_flows_op(op, lsi->lflows, &lsi->match,
                                       &lsi->actions);
+    build_icmp_need_frag_flows_for_lrp(op, lsi->lflows, &lsi->match,
+                                       &lsi->actions);
 }
 
 static void *
