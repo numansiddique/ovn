@@ -48,7 +48,7 @@ static char *ovn_lflow_hint(const struct ovsdb_idl_row *row);
 
 static struct ovn_lflow *do_ovn_lflow_add(
     struct lflow_table *, const struct ovn_datapath *,
-    const unsigned long *dp_bitmap, size_t dp_bitmap_len, uint32_t hash,
+    size_t dp_bitmap_len, uint32_t hash,
     enum ovn_stage stage, uint16_t priority, const char *match,
     const char *actions, const char *io_port,
     const char *ctrl_meter,
@@ -649,6 +649,7 @@ lflow_ref_sync_lflows(struct lflow_ref *lflow_ref,
  * then it may corrupt the hmap.  Caller should ensure thread safety
  * for such scenarios.
  */
+
 void
 lflow_table_add_lflow(struct lflow_table *lflow_table,
                       const struct ovn_datapath *od,
@@ -674,7 +675,7 @@ lflow_table_add_lflow(struct lflow_table *lflow_table,
 
     hash_lock = lflow_hash_lock(&lflow_table->entries, hash);
     struct ovn_lflow *lflow =
-        do_ovn_lflow_add(lflow_table, od, dp_bitmap,
+        do_ovn_lflow_add(lflow_table, od,
                          dp_bitmap_len, hash, stage,
                          priority, match, actions,
                          io_port, ctrl_meter, stage_hint, where);
@@ -690,21 +691,33 @@ lflow_table_add_lflow(struct lflow_table *lflow_table,
             if (lrn->dpgrp_lflow) {
                 lrn->dpgrp_bitmap = bitmap_clone(dp_bitmap, dp_bitmap_len);
                 lrn->dpgrp_bitmap_len = dp_bitmap_len;
-
-                size_t index;
-                BITMAP_FOR_EACH_1 (index, dp_bitmap_len, dp_bitmap) {
-                    dp_refcnt_use(&lflow->dp_refcnts_map, index);
-                }
             } else {
                 lrn->dp_index = od->index;
-                dp_refcnt_use(&lflow->dp_refcnts_map, lrn->dp_index);
             }
             ovs_list_insert(&lflow->referenced_by, &lrn->ref_list_node);
             hmap_insert(&lflow_ref->lflow_ref_nodes, &lrn->ref_node, hash);
         }
 
+        if (!lrn->linked) {
+            if (lrn->dpgrp_lflow) {
+                ovs_assert(lrn->dpgrp_bitmap_len == dp_bitmap_len);
+                size_t index;
+                BITMAP_FOR_EACH_1 (index, dp_bitmap_len, dp_bitmap) {
+                    if (bitmap_is_set(lflow->dpg_bitmap, index)) {
+                        dp_refcnt_use(&lflow->dp_refcnts_map, index);
+                    }
+                }
+            } else {
+                if (bitmap_is_set(lflow->dpg_bitmap, od->index)) {
+                    dp_refcnt_use(&lflow->dp_refcnts_map, lrn->dp_index);
+                }
+            }
+        }
+
         lrn->linked = true;
     }
+
+    ovn_dp_group_add_with_reference(lflow, od, dp_bitmap, dp_bitmap_len);
 
     lflow_hash_unlock(hash_lock);
 
@@ -943,7 +956,7 @@ ovn_lflow_destroy(struct lflow_table *lflow_table, struct ovn_lflow *lflow)
 static struct ovn_lflow *
 do_ovn_lflow_add(struct lflow_table *lflow_table,
                  const struct ovn_datapath *od,
-                 const unsigned long *dp_bitmap, size_t dp_bitmap_len,
+                 size_t dp_bitmap_len,
                  uint32_t hash, enum ovn_stage stage, uint16_t priority,
                  const char *match, const char *actions,
                  const char *io_port, const char *ctrl_meter,
@@ -960,8 +973,6 @@ do_ovn_lflow_add(struct lflow_table *lflow_table,
     old_lflow = ovn_lflow_find(&lflow_table->entries, stage,
                                priority, match, actions, ctrl_meter, hash);
     if (old_lflow) {
-        ovn_dp_group_add_with_reference(old_lflow, od, dp_bitmap,
-                                        bitmap_len);
         return old_lflow;
     }
 
@@ -974,8 +985,6 @@ do_ovn_lflow_add(struct lflow_table *lflow_table,
                    io_port ? xstrdup(io_port) : NULL,
                    nullable_xstrdup(ctrl_meter),
                    ovn_lflow_hint(stage_hint), where);
-
-    ovn_dp_group_add_with_reference(lflow, od, dp_bitmap, bitmap_len);
 
     if (parallelization_state != STATE_USE_PARALLELIZATION) {
         hmap_insert(&lflow_table->entries, &lflow->hmap_node, hash);
@@ -1345,8 +1354,10 @@ dp_refcnt_use(struct hmap *dp_refcnts_map, size_t dp_index)
     struct dp_refcnt *dp_refcnt = dp_refcnt_find(dp_refcnts_map, dp_index);
 
     if (!dp_refcnt) {
-        dp_refcnt = xzalloc(sizeof *dp_refcnt);
+        dp_refcnt = xmalloc(sizeof *dp_refcnt);
         dp_refcnt->dp_index = dp_index;
+        /* Allocation is happening on the second (!) use. */
+        dp_refcnt->refcnt = 1;
 
         hmap_insert(dp_refcnts_map, &dp_refcnt->key_node, dp_index);
     }
