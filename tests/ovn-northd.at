@@ -11650,7 +11650,7 @@ check as northd ovn-appctl -t ovn-northd inc-engine/clear-stats
 
 check ovn-nbctl ls-lb-add sw0 lb3
 check ovn-nbctl --wait=sb ls-lb-add sw1 lb3
-check_engine_stats lflow norecompute compute
+check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 lb_lflow_uuid=$(fetch_column Logical_flow _uuid match='"ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80"')
@@ -11675,7 +11675,7 @@ AT_CHECK([echo $dpgrp_dps | grep $sw5_uuid], [0], [ignore])
 # should have reference to sw0 and sw1, but not to sw2.
 check as northd ovn-appctl -t ovn-northd inc-engine/clear-stats
 check ovn-nbctl --wait=sb clear load_balancer lb1 vips
-check_engine_stats lflow norecompute compute
+check_engine_stats lflow recompute nocompute
 CHECK_NO_CHANGE_AFTER_RECOMPUTE
 
 lb_lflow_dp=$(ovn-sbctl --bare --columns logical_datapath list logical_flow $lb_lflow_uuid)

@@ -17,6 +17,7 @@
 #include <config.h>
 
 /* OVS includes */
+#include "coverage.h"
 #include "include/openvswitch/thread.h"
 #include "lib/bitmap.h"
 #include "openvswitch/vlog.h"
@@ -27,6 +28,8 @@
 #include "lib/ovn-parallel-hmap.h"
 
 VLOG_DEFINE_THIS_MODULE(lflow_mgr);
+
+COVERAGE_DEFINE(lflow_cant_be_synced);
 
 /* Static function declarations. */
 struct ovn_lflow;
@@ -48,7 +51,7 @@ static char *ovn_lflow_hint(const struct ovsdb_idl_row *row);
 
 static struct ovn_lflow *do_ovn_lflow_add(
     struct lflow_table *, const struct ovn_datapath *,
-    const unsigned long *dp_bitmap, size_t dp_bitmap_len, uint32_t hash,
+    size_t dp_bitmap_len, uint32_t hash,
     enum ovn_stage stage, uint16_t priority, const char *match,
     const char *actions, const char *io_port,
     const char *ctrl_meter,
@@ -100,12 +103,6 @@ static bool sync_lflow_to_sb(struct ovn_lflow *,
 extern int parallelization_state;
 extern thread_local size_t thread_lflow_counter;
 
-struct dp_refcnt;
-static struct dp_refcnt *dp_refcnt_find(struct hmap *dp_refcnts_map,
-                                        size_t dp_index);
-static void dp_refcnt_use(struct hmap *dp_refcnts_map, size_t dp_index);
-static bool dp_refcnt_release(struct hmap *dp_refcnts_map, size_t dp_index);
-static void ovn_lflow_clear_dp_refcnts_map(struct ovn_lflow *);
 static struct lflow_ref_node *lflow_ref_node_find(struct hmap *lflow_ref_nodes,
                                                   struct ovn_lflow *lflow,
                                                   uint32_t lflow_hash);
@@ -177,9 +174,8 @@ struct ovn_lflow {
 
     struct uuid sb_uuid;         /* SB DB row uuid, specified by northd. */
     struct ovs_list referenced_by;  /* List of struct lflow_ref_node. */
-    struct hmap dp_refcnts_map; /* Maintains the number of times this ovn_lflow
-                                 * is referenced by a given datapath.
-                                 * Contains 'struct dp_refcnt' in the map. */
+
+    bool cant_be_synced;
 };
 
 /* Logical flow table. */
@@ -582,15 +578,10 @@ lflow_ref_unlink_lflows(struct lflow_ref *lflow_ref)
             size_t index;
             BITMAP_FOR_EACH_1 (index, lrn->dpgrp_bitmap_len,
                                lrn->dpgrp_bitmap) {
-                if (dp_refcnt_release(&lrn->lflow->dp_refcnts_map, index)) {
-                    bitmap_set0(lrn->lflow->dpg_bitmap, index);
-                }
+                bitmap_set0(lrn->lflow->dpg_bitmap, index);
             }
         } else {
-            if (dp_refcnt_release(&lrn->lflow->dp_refcnts_map,
-                                  lrn->dp_index)) {
-                bitmap_set0(lrn->lflow->dpg_bitmap, lrn->dp_index);
-            }
+            bitmap_set0(lrn->lflow->dpg_bitmap, lrn->dp_index);
         }
 
         lrn->linked = false;
@@ -674,10 +665,9 @@ lflow_table_add_lflow(struct lflow_table *lflow_table,
 
     hash_lock = lflow_hash_lock(&lflow_table->entries, hash);
     struct ovn_lflow *lflow =
-        do_ovn_lflow_add(lflow_table, od, dp_bitmap,
-                         dp_bitmap_len, hash, stage,
-                         priority, match, actions,
-                         io_port, ctrl_meter, stage_hint, where);
+        do_ovn_lflow_add(lflow_table, od, dp_bitmap_len, hash, stage, priority,
+                         match, actions, io_port, ctrl_meter,
+                         stage_hint, where);
 
     if (lflow_ref) {
         struct lflow_ref_node *lrn =
@@ -693,19 +683,27 @@ lflow_table_add_lflow(struct lflow_table *lflow_table,
 
                 size_t index;
                 BITMAP_FOR_EACH_1 (index, dp_bitmap_len, dp_bitmap) {
-                    dp_refcnt_use(&lflow->dp_refcnts_map, index);
+                    if (bitmap_is_set(lflow->dpg_bitmap, index)) {
+                        lflow->cant_be_synced = true;
+                    }
                 }
             } else {
                 lrn->dp_index = od->index;
-                dp_refcnt_use(&lflow->dp_refcnts_map, lrn->dp_index);
+                if (bitmap_is_set(lflow->dpg_bitmap, od->index)) {
+                    lflow->cant_be_synced = true;
+                }
             }
             ovs_list_insert(&lflow->referenced_by, &lrn->ref_list_node);
             hmap_insert(&lflow_ref->lflow_ref_nodes, &lrn->ref_node, hash);
+        } else {
+            if (lrn->dpgrp_lflow) {
+                ovs_assert(lrn->dpgrp_bitmap_len == dp_bitmap_len);
+            }
         }
-
         lrn->linked = true;
     }
 
+    ovn_dp_group_add_with_reference(lflow, od, dp_bitmap, dp_bitmap_len);
     lflow_hash_unlock(hash_lock);
 
 }
@@ -856,7 +854,6 @@ ovn_lflow_init(struct ovn_lflow *lflow, struct ovn_datapath *od,
     lflow->dpg = NULL;
     lflow->where = where;
     lflow->sb_uuid = UUID_ZERO;
-    hmap_init(&lflow->dp_refcnts_map);
     ovs_list_init(&lflow->referenced_by);
 }
 
@@ -932,7 +929,6 @@ ovn_lflow_destroy(struct lflow_table *lflow_table, struct ovn_lflow *lflow)
     free(lflow->io_port);
     free(lflow->stage_hint);
     free(lflow->ctrl_meter);
-    ovn_lflow_clear_dp_refcnts_map(lflow);
     struct lflow_ref_node *lrn;
     LIST_FOR_EACH_SAFE (lrn, ref_list_node, &lflow->referenced_by) {
         lflow_ref_node_destroy(lrn);
@@ -943,7 +939,7 @@ ovn_lflow_destroy(struct lflow_table *lflow_table, struct ovn_lflow *lflow)
 static struct ovn_lflow *
 do_ovn_lflow_add(struct lflow_table *lflow_table,
                  const struct ovn_datapath *od,
-                 const unsigned long *dp_bitmap, size_t dp_bitmap_len,
+                 size_t dp_bitmap_len,
                  uint32_t hash, enum ovn_stage stage, uint16_t priority,
                  const char *match, const char *actions,
                  const char *io_port, const char *ctrl_meter,
@@ -960,8 +956,6 @@ do_ovn_lflow_add(struct lflow_table *lflow_table,
     old_lflow = ovn_lflow_find(&lflow_table->entries, stage,
                                priority, match, actions, ctrl_meter, hash);
     if (old_lflow) {
-        ovn_dp_group_add_with_reference(old_lflow, od, dp_bitmap,
-                                        bitmap_len);
         return old_lflow;
     }
 
@@ -974,8 +968,6 @@ do_ovn_lflow_add(struct lflow_table *lflow_table,
                    io_port ? xstrdup(io_port) : NULL,
                    nullable_xstrdup(ctrl_meter),
                    ovn_lflow_hint(stage_hint), where);
-
-    ovn_dp_group_add_with_reference(lflow, od, dp_bitmap, bitmap_len);
 
     if (parallelization_state != STATE_USE_PARALLELIZATION) {
         hmap_insert(&lflow_table->entries, &lflow->hmap_node, hash);
@@ -1271,6 +1263,19 @@ lflow_ref_sync_lflows__(struct lflow_ref  *lflow_ref,
     struct ovn_lflow *lflow;
     HMAP_FOR_EACH_SAFE (lrn, ref_node, &lflow_ref->lflow_ref_nodes) {
         lflow = lrn->lflow;
+
+        if (lflow->cant_be_synced) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+            VLOG_WARN_RL(&rl, "Logical flow with match [%s], actions [%s] "
+                         "stage [%s], priority [%u], where [%s] is added "
+                         "more than once for a datapath.  Fall back to full "
+                         "recompute", lflow->match,
+                         lflow->actions, ovn_stage_to_str(lflow->stage),
+                         lflow->priority, lflow->where);
+            COVERAGE_INC(lflow_cant_be_synced);
+            return false;
+        }
+
         const struct sbrec_logical_flow *sblflow =
             sbrec_logical_flow_table_get_for_uuid(sbflow_table,
                                                   &lflow->sb_uuid);
@@ -1286,7 +1291,6 @@ lflow_ref_sync_lflows__(struct lflow_ref  *lflow_ref,
         }
 
         size_t n_ods = bitmap_count1(lflow->dpg_bitmap, n_datapaths);
-
         if (n_ods) {
             if (!sync_lflow_to_sb(lflow, ovnsb_txn, lflow_table, ls_datapaths,
                                   lr_datapaths, ovn_internal_version_changed,
@@ -1309,80 +1313,6 @@ lflow_ref_sync_lflows__(struct lflow_ref  *lflow_ref,
     }
 
     return true;
-}
-
-/* Used for the datapath reference counting for a given 'struct ovn_lflow'.
- * See the hmap 'dp_refcnts_map in 'struct ovn_lflow'.
- * For a given lflow L(M, A) with match - M and actions - A, it can be
- * referenced by multiple lflow_refs for the same datapath
- * Eg. Two lflow_ref's - op->lflow_ref and op->stateful_lflow_ref of a
- * datapath can have a reference to the same lflow L (M, A).  In this it
- * is important to maintain this reference count so that the sync to the
- * SB DB logical_flow is correct. */
-struct dp_refcnt {
-    struct hmap_node key_node;
-
-    size_t dp_index; /* datapath index.  Also used as hmap key. */
-    size_t refcnt;   /* reference counter. */
-};
-
-static struct dp_refcnt *
-dp_refcnt_find(struct hmap *dp_refcnts_map, size_t dp_index)
-{
-    struct dp_refcnt *dp_refcnt;
-    HMAP_FOR_EACH_WITH_HASH (dp_refcnt, key_node, dp_index, dp_refcnts_map) {
-        if (dp_refcnt->dp_index == dp_index) {
-            return dp_refcnt;
-        }
-    }
-
-    return NULL;
-}
-
-static void
-dp_refcnt_use(struct hmap *dp_refcnts_map, size_t dp_index)
-{
-    struct dp_refcnt *dp_refcnt = dp_refcnt_find(dp_refcnts_map, dp_index);
-
-    if (!dp_refcnt) {
-        dp_refcnt = xzalloc(sizeof *dp_refcnt);
-        dp_refcnt->dp_index = dp_index;
-
-        hmap_insert(dp_refcnts_map, &dp_refcnt->key_node, dp_index);
-    }
-
-    dp_refcnt->refcnt++;
-}
-
-/* Decrements the datapath's refcnt from the 'dp_refcnts_map' if it exists
- * and returns true if the refcnt is 0 or if the dp refcnt doesn't exist. */
-static bool
-dp_refcnt_release(struct hmap *dp_refcnts_map, size_t dp_index)
-{
-    struct dp_refcnt *dp_refcnt = dp_refcnt_find(dp_refcnts_map, dp_index);
-    if (!dp_refcnt) {
-        return true;
-    }
-
-    if (!--dp_refcnt->refcnt) {
-        hmap_remove(dp_refcnts_map, &dp_refcnt->key_node);
-        free(dp_refcnt);
-        return true;
-    }
-
-    return false;
-}
-
-static void
-ovn_lflow_clear_dp_refcnts_map(struct ovn_lflow *lflow)
-{
-    struct dp_refcnt *dp_refcnt;
-
-    HMAP_FOR_EACH_POP (dp_refcnt, key_node, &lflow->dp_refcnts_map) {
-        free(dp_refcnt);
-    }
-
-    hmap_destroy(&lflow->dp_refcnts_map);
 }
 
 static struct lflow_ref_node *

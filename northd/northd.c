@@ -431,6 +431,7 @@ ovn_datapath_create(struct hmap *datapaths, const struct uuid *key,
     hmap_insert(datapaths, &od->key_node, uuid_hash(&od->key));
     od->lr_group = NULL;
     hmap_init(&od->ports);
+    sset_init(&od->router_ips);
     return od;
 }
 
@@ -459,6 +460,7 @@ ovn_datapath_destroy(struct hmap *datapaths, struct ovn_datapath *od)
         free(od->l3dgw_ports);
         destroy_mcast_info_for_datapath(od);
         destroy_ports_for_datapath(od);
+        sset_destroy(&od->router_ips);
         free(od);
     }
 }
@@ -2190,6 +2192,16 @@ join_logical_ports(const struct sbrec_port_binding_table *sbrec_pb_table,
 
             op->lrp_networks = lrp_networks;
             op->od = od;
+
+            for (size_t j = 0; j < op->lrp_networks.n_ipv4_addrs; j++) {
+                sset_add(&op->od->router_ips,
+                         op->lrp_networks.ipv4_addrs[j].addr_s);
+            }
+            for (size_t j = 1; j < op->lrp_networks.n_ipv6_addrs; j++) {
+                sset_add(&op->od->router_ips,
+                         op->lrp_networks.ipv6_addrs[j].addr_s);
+            }
+
             hmap_insert(&od->ports, &op->dp_node,
                         hmap_node_hash(&op->key_node));
 
@@ -8308,7 +8320,7 @@ build_lswitch_rport_arp_req_flows_for_lbnats(
          * expect ARP requests/NS for the SNAT external_ip.
          */
         if (nat_entry_is_v6(nat_entry)) {
-            if (!lr_stateful_rec ||
+            if (!sset_contains(&op->od->router_ips, nat->external_ip) &&
                 !sset_contains(&lr_stateful_rec->lb_ips->ips_v6,
                                nat->external_ip)) {
                 build_lswitch_rport_arp_req_flow(
@@ -8316,7 +8328,7 @@ build_lswitch_rport_arp_req_flows_for_lbnats(
                     stage_hint, lflow_ref);
             }
         } else {
-            if (!lr_stateful_rec ||
+            if (!sset_contains(&op->od->router_ips, nat->external_ip) &&
                 !sset_contains(&lr_stateful_rec->lb_ips->ips_v4,
                                nat->external_ip)) {
                 build_lswitch_rport_arp_req_flow(
@@ -13529,9 +13541,6 @@ build_egress_delivery_flows_for_lrouter_port(
     ds_put_format(match, "outport == %s", op->json_key);
     ovn_lflow_add(lflows, op->od, S_ROUTER_OUT_DELIVERY, 100,
                   ds_cstr(match), "output;", lflow_ref);
-
-    ovn_lflow_add_default_drop(lflows, op->od, S_ROUTER_OUT_DELIVERY,
-                               lflow_ref);
 }
 
 static void
@@ -14897,9 +14906,9 @@ lrouter_check_nat_entry(const struct ovn_datapath *od,
 }
 
 /* NAT, Defrag and load balancing. */
-static void build_lr_nat_defrag_and_lb_default_flows(struct ovn_datapath *od,
-                                                struct lflow_table *lflows,
-                                                struct lflow_ref *lflow_ref)
+static void build_lr_nat_defrag_and_lb_default_flows(
+    struct ovn_datapath *od, struct lflow_table *lflows,
+    struct lflow_ref *lflow_ref)
 {
     ovs_assert(od->nbr);
 
@@ -14917,6 +14926,8 @@ static void build_lr_nat_defrag_and_lb_default_flows(struct ovn_datapath *od,
                   lflow_ref);
     ovn_lflow_add(lflows, od, S_ROUTER_OUT_EGR_LOOP, 0, "1", "next;",
                   lflow_ref);
+    ovn_lflow_add_default_drop(lflows, od, S_ROUTER_OUT_DELIVERY,
+                               lflow_ref);
     ovn_lflow_add(lflows, od, S_ROUTER_IN_ECMP_STATEFUL, 0, "1", "next;",
                   lflow_ref);
 
