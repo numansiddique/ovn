@@ -14934,6 +14934,8 @@ static void build_lr_nat_defrag_and_lb_default_flows(
                   lflow_ref);
     ovn_lflow_add(lflows, od, S_ROUTER_OUT_EGR_LOOP, 0, "1", "next;",
                   lflow_ref);
+    ovn_lflow_add_default_drop(lflows, od, S_ROUTER_OUT_DELIVERY,
+                               lflow_ref);
     ovn_lflow_add(lflows, od, S_ROUTER_IN_ECMP_STATEFUL, 0, "1", "next;",
                   lflow_ref);
 
