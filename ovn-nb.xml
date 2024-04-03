@@ -839,6 +839,33 @@
         forwarded to all routers and therefor the mac bindings of the routers
         are no longer updated.
       </column>
+
+      <column name="other_config" key="overlay_provider_network"
+          type='{"type": "boolean"}'>
+        <p>
+          Determines if the logical switch is an overlay provider network or
+          not. If set to true, then this logical switch can be connected to a
+          logical router via a gateway router port and NAT options can be
+          configured on its subnets.  In order for OVN to consider this
+          logical switch as an overlay provider network, following conditions
+          needs to be satisfied.
+        </p>
+
+        <ul>
+          <li>
+            Logical router port connecting to this logical switch should be
+            a gateway router port.
+          </li>
+
+          <li>
+            The logical router should have only one gateway router port.
+          </li>
+
+          <li>
+            The logical switch should not have any localnet ports.
+          </li>
+        </ul>
+      </column>
     </group>
 
     <group title="Common Columns">

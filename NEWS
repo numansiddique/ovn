@@ -21,6 +21,8 @@ Post v24.03.0
     MAC addresses configured on the LSP with "unknown", are learnt via the
     OVN native FDB.
   - Add support for ovsdb-server `--config-file` option in ovn-ctl.
+  - Added Overlay provider network support to a logical switch if
+    the config "overlay_provider_network" is set to true.
 
 OVN v24.03.0 - 01 Mar 2024
 --------------------------
