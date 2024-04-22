@@ -295,6 +295,21 @@ patch_run(struct ovsdb_idl_txn *ovs_idl_txn,
             || smap_get(&port->external_ids, "ovn-l3gateway-port")
             || smap_get(&port->external_ids, "ovn-logical-patch-port")) {
             shash_add(&existing_ports, port->name, port);
+            /* Also add peer ports to the list. */
+            for (size_t j = 0; j < port->n_interfaces; j++) {
+                struct ovsrec_interface *p_iface = port->interfaces[j];
+                if (strcmp(p_iface->type, "patch")) {
+                    continue;
+                }
+                const char *peer_name = smap_get(&p_iface->options, "peer");
+                if (peer_name) {
+                    const struct ovsrec_port *peer_port =
+                        get_port(ovsrec_port_by_name, peer_name);
+                    if (peer_port) {
+                        shash_add(&existing_ports, peer_port->name, peer_port);
+                    }
+                }
+            }
         }
     }
 
