@@ -1488,6 +1488,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                       const struct if_status_mgr *if_mgr,
                       size_t n_encap_ips,
                       const char **encap_ips,
+                      bool provider_network_overlay,
                       struct ovn_desired_flow_table *flow_table,
                       struct ofpbuf *ofpacts_p)
 {
@@ -1921,7 +1922,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                             binding->header_.uuid.parts[0], &match,
                             ofpacts_p, &binding->header_.uuid);
         }
-    } else if (access_type == PORT_LOCALNET) {
+    } else if (access_type == PORT_LOCALNET && !provider_network_overlay) {
         /* Remote port connected by localnet port */
         /* Table 40, priority 100.
          * =======================
@@ -1929,6 +1930,11 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
          * Implements switching to localnet port. Each flow matches a
          * logical output port on remote hypervisor, switch the output port
          * to connected localnet port and resubmits to same table.
+         *
+         * Note: If 'provider_network_overlay' is true, then
+         * put_remote_port_redirect_overlay() called from below takes care
+         * of adding the flow in OFTABLE_REMOTE_OUTPUT table to tunnel to
+         * the destination chassis.
          */
 
         ofpbuf_clear(ofpacts_p);
@@ -2354,6 +2360,7 @@ physical_eval_port_binding(struct physical_ctx *p_ctx,
                           p_ctx->if_mgr,
                           p_ctx->n_encap_ips,
                           p_ctx->encap_ips,
+                          p_ctx->provider_network_overlay,
                           flow_table, &ofpacts);
     ofpbuf_uninit(&ofpacts);
 }
@@ -2481,6 +2488,7 @@ physical_run(struct physical_ctx *p_ctx,
                               p_ctx->if_mgr,
                               p_ctx->n_encap_ips,
                               p_ctx->encap_ips,
+                              p_ctx->provider_network_overlay,
                               flow_table, &ofpacts);
     }
 
