@@ -2749,15 +2749,6 @@ handle_deleted_lport(const struct sbrec_port_binding *pb,
         return;
     }
 
-    /*
-     * Remove localport that was part of local datapath that is not
-     * considered to be local anymore.
-     */
-    if (!ld && !strcmp(pb->type, "localport") &&
-        sset_find(&b_ctx_out->related_lports->lport_names, pb->logical_port)) {
-        remove_related_lport(pb, b_ctx_out);
-    }
-
     /* If the binding is not local, if 'pb' is a L3 gateway port, we should
      * remove its peer, if that one is local.
      */
@@ -2772,6 +2763,10 @@ handle_deleted_lport(const struct sbrec_port_binding *pb,
         if (if_status_is_port_claimed(b_ctx_out->if_mgr, pb->logical_port)) {
             if_status_mgr_release_iface(b_ctx_out->if_mgr, pb->logical_port);
         }
+    } else {
+        /* Even though the datapath of 'pb' is not local, its possible that the
+         * 'pb' maybe present in the related lports.  Check and remove it. */
+        remove_related_lport(pb, b_ctx_out);
     }
 }
 
