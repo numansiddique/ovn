@@ -6284,13 +6284,6 @@ build_pre_lb(struct ovn_datapath *od, const struct shash *meter_groups,
     ovn_lflow_add(lflows, od, S_SWITCH_OUT_PRE_LB, 110, "eth.mcast", "next;",
                   lflow_ref);
 
-    /* Do not send ND packets to conntrack */
-    ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_LB, 110,
-                  "nd || nd_rs || nd_ra || mldv1 || mldv2",
-                  "next;", lflow_ref);
-    ovn_lflow_add(lflows, od, S_SWITCH_OUT_PRE_LB, 110,
-                  "nd || nd_rs || nd_ra || mldv1 || mldv2",
-                  "next;", lflow_ref);
     /* Do not send icmp packet too big to conntrack in ingress */
     ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_LB, 110,
                   "((ip4 && icmp4.type == 3 && icmp4.code == 4) ||"
@@ -6379,6 +6372,16 @@ build_ls_stateful_rec_pre_lb(const struct ls_stateful_record *ls_stateful_rec,
         ovn_lflow_add(lflows, od, S_SWITCH_OUT_PRE_LB,
                       100, "ip", REGBIT_CONNTRACK_NAT" = 1; next;",
                       lflow_ref);
+    }
+
+    if (ls_stateful_rec->has_stateful_acl || ls_stateful_rec->has_lb_vip) {
+        /* Do not send ND packets to conntrack */
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_PRE_LB, 110,
+                    "nd || nd_rs || nd_ra || mldv1 || mldv2",
+                    "next;", lflow_ref);
+        ovn_lflow_add(lflows, od, S_SWITCH_OUT_PRE_LB, 110,
+                    "nd || nd_rs || nd_ra || mldv1 || mldv2",
+                    "next;", lflow_ref);
     }
 }
 
@@ -7608,27 +7611,29 @@ build_acls(const struct ls_stateful_record *ls_stateful_rec,
                       REGBIT_ACL_HINT_ALLOW_REL" == 1",
                       REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
                       lflow_ref);
-    }
 
-    /* Ingress and Egress ACL Table (Priority 65532).
-     *
-     * Always allow service IPv6 protocols regardless of other ACLs defined.
-     *
-     * Also, don't send them to conntrack because session tracking
-     * for these protocols is not working properly:
-     * https://bugzilla.kernel.org/show_bug.cgi?id=11797. */
-    ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
-                  IPV6_CT_OMIT_MATCH,
-                  REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
-                  lflow_ref);
-    ovn_lflow_add(lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX - 3,
-                  IPV6_CT_OMIT_MATCH,
-                  REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
-                  lflow_ref);
-    ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL, UINT16_MAX - 3,
-                  IPV6_CT_OMIT_MATCH,
-                  REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
-                  lflow_ref);
+        /* Ingress and Egress ACL Table (Priority 65532).
+         *
+         * Always allow service IPv6 protocols regardless of other ACLs.
+         * defined.
+         *
+         * Also, don't send them to conntrack because session tracking
+         * for these protocols is not working properly:
+         * https://bugzilla.kernel.org/show_bug.cgi?id=11797. */
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL_EVAL, UINT16_MAX - 3,
+                      IPV6_CT_OMIT_MATCH,
+                      REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
+                      lflow_ref);
+        ovn_lflow_add(lflows, od, S_SWITCH_OUT_ACL_EVAL, UINT16_MAX - 3,
+                      IPV6_CT_OMIT_MATCH,
+                      REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
+                      lflow_ref);
+        ovn_lflow_add(lflows, od, S_SWITCH_IN_ACL_AFTER_LB_EVAL,
+                      UINT16_MAX - 3,
+                      IPV6_CT_OMIT_MATCH,
+                      REGBIT_ACL_VERDICT_ALLOW " = 1; next;",
+                      lflow_ref);
+    }
 
     build_acl_sample_default_flows(od, lflows, lflow_ref);
 
