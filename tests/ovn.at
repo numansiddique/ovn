@@ -14417,7 +14417,7 @@ test_ns_na() {
     local inport=$1 src_mac=$2 dst_mac=$3 src_ip=$4 dst_ip=$5
 
     packet=$(fmt_pkt "
-        Ether(dst='ff:ff:ff:ff:ff:ff', src='${src_mac}') /
+        Ether(dst='33:33:ff:ff:ff:ff', src='${src_mac}') /
         IPv6(src='${src_ip}', dst='ff02::1:ff00:2') /
         ICMPv6ND_NS(tgt='${dst_ip}')
     ")
