@@ -9638,11 +9638,12 @@ build_lswitch_arp_nd_responder_known_ips(struct ovn_port *op,
              * but always respond with the unicast IPv6 address. */
             for (size_t j = 0; j < op->lsp_addrs[i].n_ipv6_addrs; j++) {
                 ds_clear(match);
-                ds_put_format(match,
-                        "nd_ns && ip6.dst == {%s, %s} && nd.target == %s",
-                        op->lsp_addrs[i].ipv6_addrs[j].addr_s,
-                        op->lsp_addrs[i].ipv6_addrs[j].sn_addr_s,
-                        op->lsp_addrs[i].ipv6_addrs[j].addr_s);
+                ds_put_format(
+                    match,
+                    "nd_ns_mcast && ip6.dst == {%s, %s} && nd.target == %s",
+                    op->lsp_addrs[i].ipv6_addrs[j].addr_s,
+                    op->lsp_addrs[i].ipv6_addrs[j].sn_addr_s,
+                    op->lsp_addrs[i].ipv6_addrs[j].addr_s);
 
                 ds_clear(actions);
                 ds_put_format(actions,

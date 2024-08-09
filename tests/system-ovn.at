@@ -13750,3 +13750,131 @@ OVS_TRAFFIC_VSWITCHD_STOP(["/.*error receiving.*/d
 /.*terminating with signal 15.*/d"])
 AT_CLEANUP
 ])
+
+dnl This test sends IPv6 TCP packets between two lports of the same
+dnl logical switch and checks that the datapath flows don't match on
+dnl IPv6 source and destination addresses.
+OVN_FOR_EACH_NORTHD([
+AT_SETUP([ovn -- IPv6 switching - datapath flows])
+AT_KEYWORDS([IPv6])
+
+ovn_start
+OVS_TRAFFIC_VSWITCHD_START()
+ADD_BR([br-int])
+
+dnl Set external-ids in br-int needed for ovn-controller
+check ovs-vsctl \
+        -- set Open_vSwitch . external-ids:system-id=hv1 \
+        -- set Open_vSwitch . external-ids:ovn-remote=unix:$ovs_base/ovn-sb/ovn-sb.sock \
+        -- set Open_vSwitch . external-ids:ovn-encap-type=geneve \
+        -- set Open_vSwitch . external-ids:ovn-encap-ip=169.0.0.1 \
+        -- set bridge br-int fail-mode=secure other-config:disable-in-band=true
+
+dnl Start ovn-controller
+start_daemon ovn-controller
+
+check ovn-nbctl ls-add sw0
+
+check ovn-nbctl lsp-add sw0 vm0
+check ovn-nbctl lsp-set-addresses vm0 "f0:00:0f:01:02:03 10.0.0.3 1000::3"
+
+check ovn-nbctl lsp-add sw0 vm1
+check ovn-nbctl lsp-set-addresses vm1 "f0:00:0f:01:02:04 10.0.0.4 1000::4"
+
+check ovn-nbctl --wait=hv sync
+
+ovn-sbctl dump-flows sw0 > /tmp/c.txt
+
+ADD_NAMESPACES(vm0)
+ADD_VETH(vm0, vm0, br-int, "1000::3/64", "f0:00:0f:01:02:03", "1000::1", "nodad")
+
+ADD_NAMESPACES(vm1)
+ADD_VETH(vm1, vm1, br-int, "1000::4/64", "f0:00:0f:01:02:04", "1000::1", "nodad")
+
+dnl Checks the datapath flows and makes sure that there are no matches to
+dnl IPv6 src or dst fields.
+check_dp_flows() {
+  ipv6_src_dst_match=$1
+  dnl Dump the flows. Will be helpful while debugging.
+  ovs-appctl dpctl/dump-flows
+
+  eth_match1="eth(src=f0:00:0f:01:02:03,dst=f0:00:0f:01:02:04)"
+  eth_match2="eth(src=f0:00:0f:01:02:04,dst=f0:00:0f:01:02:03)"
+  ipv6_src_match="ipv6(src="
+  ipv6_dst_match="ipv6(dst="
+
+  AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match1" -c], [0], [dnl
+2
+])
+
+  AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match2" -c], [0], [dnl
+2
+])
+
+  if [[ "$ipv6_src_dst_match" == "yes" ]]; then
+    dnl Check that the dp flow for eth(src=f0:00:0f:01:02:03,dst=f0:00:0f:01:02:04)
+    dnl matches on IPv6 src or dst.
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match1" | grep -e "$ipv6_src_match" -e "$ipv6_dst_match" -c], [0], [dnl
+2
+])
+
+    dnl Check that the dp flow for eth(src=f0:00:0f:01:02:04,dst=f0:00:0f:01:02:03)
+    dnl matches on IPv6 src or dst.
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match2" | grep -e "$ipv6_src_match" -e "$ipv6_dst_match" -c], [0], [dnl
+2
+])
+  else
+    dnl Check that the dp flow for eth(src=f0:00:0f:01:02:03,dst=f0:00:0f:01:02:04)
+    dnl doesn't match on IPv6 src or dst.
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match1" | grep "$ipv6_src_match"], [1], [])
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match1" | grep "$ipv6_dst_match"], [1], [])
+
+    dnl Check that the dp flow for eth(src=f0:00:0f:01:02:04,dst=f0:00:0f:01:02:03)
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match2" | grep "$ipv6_src_match"], [1], [])
+    AT_CHECK([ovs-appctl dpctl/dump-flows | grep "$eth_match2" | grep "$ipv6_dst_match"], [1], [])
+  fi
+}
+
+NS_CHECK_EXEC([vm0], [ping6 -q -c 3 -i 0.3 -w 2 1000::4 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# Start IPv6 TCP server on vm0.
+NETNS_DAEMONIZE([vm0], [nc -6 -l -k 1000::3 4242], [nc-vm1-1.pid])
+NS_CHECK_EXEC([vm1], [nc -6 1000::3 4242 -z], [0], [ignore], [ignore])
+
+check_dp_flows no
+
+# Now configure port security on vm0.  dp flows should now match on IPv6 fields.
+check ovn-nbctl lsp-set-port-security vm0 "f0:00:0f:01:02:03 10.0.0.3 1000::3"
+check ovn-nbctl --wait=hv sync
+
+NS_CHECK_EXEC([vm0], [ping6 -q -c 3 -i 0.3 -w 2 1000::4 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# ovs-appctl dpctl/del-flows || :
+NS_CHECK_EXEC([vm1], [nc -6 1000::3 4242 -z], [0], [ignore], [ignore])
+check_dp_flows yes
+
+AT_CHECK([echo hi], [1], [1])
+
+OVS_APP_EXIT_AND_WAIT([ovn-controller])
+
+as ovn-sb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+
+as ovn-nb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+
+as northd
+OVS_APP_EXIT_AND_WAIT([ovn-northd])
+
+as
+OVS_TRAFFIC_VSWITCHD_STOP(["/.*error receiving.*/d
+/failed to query port patch-.*/d
+/.*terminating with signal 15.*/d"])
+AT_CLEANUP
+])
