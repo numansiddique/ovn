@@ -54,6 +54,7 @@ m_central_as () {
 }
 
 check_fake_multinode_setup() {
+    skip_fake_node_multi_az_setup
     check m_as ovn-central-az1-1 ovn-nbctl --wait=sb sync
     AT_CHECK([m_as ovn-chassis-1 ovn-appctl -t ovn-controller version], [0], [ignore])
     AT_CHECK([m_as ovn-chassis-2 ovn-appctl -t ovn-controller version], [0], [ignore])
@@ -187,6 +188,85 @@ m_wait_for_ports_up() {
             m_wait_row_count nb:Logical_Switch_Port 1 up=true name=$port
         done
     fi
+}
+
+skip_fake_node_multi_az_setup() {
+    m_as ovn-central-az3-1 ovn-nbctl --wait=sb sync
+    if [[ $? == 0 ]] ; then
+        AT_CHECK([exit 77])
+    fi
+}
+
+check_fake_node_multi_az_setup() {
+    m_as ovn-central-az3-1 ovn-nbctl --wait=sb sync
+    if [[ $? != 0 ]] ; then
+        AT_CHECK([exit 77])
+    fi
+
+    # Check if the fake multinode setup is using SSL, it will
+    # skip if it is enabled. The cleanup will break the setup,
+    # so it is recommended to use without SSL in order to
+    # test the OVN IC with fake multinode setup.
+    m_as ovn-chassis-1 ovs-vsctl list open | grep "ssl:"
+    if [[ $? == 0 ]] ; then
+        AT_CHECK([exit 77])
+    fi
+}
+
+check_fake_multinode_setup_by_az() {
+    check_fake_node_multi_az_setup
+
+    m_as ovn-central-az1-1 ovn-nbctl --wait=sb sync
+    m_as ovn-central-az2-1 ovn-nbctl --wait=sb sync
+    m_as ovn-central-az2-1 ovn-nbctl --wait=sb sync
+
+    for c in $1
+    do
+        m_as $c ovn-appctl -t ovn-controller version
+    done
+}
+
+cleanup_multinode_resources_by_az() {
+    check_fake_node_multi_az_setup
+    m_as ovn-central-az1-1 rm -f /etc/ovn/ovnnb_db.db
+    m_as ovn-central-az1-1 /usr/share/ovn/scripts/ovn-ctl restart_northd
+    m_as ovn-central-az2-1 rm -f /etc/ovn/ovnnb_db.db
+    m_as ovn-central-az2-1 /usr/share/ovn/scripts/ovn-ctl restart_northd
+    m_as ovn-central-az3-1 rm -f /etc/ovn/ovnnb_db.db
+    m_as ovn-central-az3-1 /usr/share/ovn/scripts/ovn-ctl restart_northd
+    check m_as ovn-central-az1-1 ovn-nbctl --wait=sb sync
+    check m_as ovn-central-az2-1 ovn-nbctl --wait=sb sync
+    check m_as ovn-central-az3-1 ovn-nbctl --wait=sb sync
+
+    for c in $1
+    do
+        m_as $c ovs-vsctl del-br br-int
+        m_as $c ip --all netns delete
+    done
+}
+
+configure_multinode_az() {
+    # Configure OVN IC by AZ
+    check m_as ovn-central-az1-1 ovn-nbctl set-connection ptcp:6641
+    check m_as ovn-central-az1-1 ovn-sbctl set-connection ptcp:6642
+    check m_as ovn-central-az1-1 ovn-nbctl set NB_Global . name=ovn-central-az1-1
+    check m_as ovn-central-az1-1 ovn-nbctl set NB_Global . options:ic-route-adv=true \
+                            options:ic-route-learn=true
+    check m_as ovn-central-az2-1 ovn-nbctl set-connection ptcp:6641
+    check m_as ovn-central-az2-1 ovn-sbctl set-connection ptcp:6642
+    check m_as ovn-central-az2-1 ovn-nbctl set NB_Global . name=ovn-central-az2-1
+    check m_as ovn-central-az2-1 ovn-nbctl set NB_Global . options:ic-route-adv=true \
+                            options:ic-route-learn=true
+    check m_as ovn-central-az3-1 ovn-nbctl set-connection ptcp:6641
+    check m_as ovn-central-az3-1 ovn-sbctl set-connection ptcp:6642
+    check m_as ovn-central-az3-1 ovn-nbctl set NB_Global . name=ovn-central-az3-1
+    check m_as ovn-central-az3-1 ovn-nbctl set NB_Global . options:ic-route-adv=true \
+                            options:ic-route-learn=true
+
+    # Configure OVN IC Gateway
+    check m_as ovn-gw-1 ovs-vsctl set open . external-ids:ovn-is-interconn=true
+    check m_as ovn-gw-2 ovs-vsctl set open . external-ids:ovn-is-interconn=true
+    check m_as ovn-gw-3 ovs-vsctl set open . external-ids:ovn-is-interconn=true
 }
 
 OVS_END_SHELL_HELPERS
