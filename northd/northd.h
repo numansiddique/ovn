@@ -165,6 +165,7 @@ struct northd_data {
     struct ovs_list lr_list;
     struct sset svc_monitor_lsps;
     struct hmap svc_monitor_map;
+    struct hmap dp_tnlids;
 
     /* Change tracking data. */
     struct northd_tracked_data trk_data;

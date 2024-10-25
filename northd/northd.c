@@ -1022,7 +1022,8 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
                 const struct sbrec_datapath_binding_table *sbrec_dp_table,
                 struct ovn_datapaths *ls_datapaths,
                 struct ovn_datapaths *lr_datapaths,
-                struct ovs_list *lr_list)
+                struct ovs_list *lr_list,
+                struct hmap *dp_tnlids)
 {
     struct ovs_list sb_only, nb_only, both;
 
@@ -1031,18 +1032,17 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
                    datapaths, &sb_only, &nb_only, &both, lr_list);
 
     /* Assign explicitly requested tunnel ids first. */
-    struct hmap dp_tnlids = HMAP_INITIALIZER(&dp_tnlids);
     struct ovn_datapath *od;
     LIST_FOR_EACH (od, list, &both) {
-        ovn_datapath_assign_requested_tnl_id(&dp_tnlids, od);
+        ovn_datapath_assign_requested_tnl_id(dp_tnlids, od);
     }
     LIST_FOR_EACH (od, list, &nb_only) {
-        ovn_datapath_assign_requested_tnl_id(&dp_tnlids, od);
+        ovn_datapath_assign_requested_tnl_id(dp_tnlids, od);
     }
 
     /* Keep nonconflicting tunnel IDs that are already assigned. */
     LIST_FOR_EACH (od, list, &both) {
-        if (!od->tunnel_key && ovn_add_tnlid(&dp_tnlids, od->sb->tunnel_key)) {
+        if (!od->tunnel_key && ovn_add_tnlid(dp_tnlids, od->sb->tunnel_key)) {
             od->tunnel_key = od->sb->tunnel_key;
         }
     }
@@ -1050,10 +1050,10 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
     /* Assign new tunnel ids where needed. */
     uint32_t hint = 0;
     LIST_FOR_EACH_SAFE (od, list, &both) {
-        ovn_datapath_allocate_key(datapaths, &dp_tnlids, od, &hint);
+        ovn_datapath_allocate_key(datapaths, dp_tnlids, od, &hint);
     }
     LIST_FOR_EACH_SAFE (od, list, &nb_only) {
-        ovn_datapath_allocate_key(datapaths, &dp_tnlids, od, &hint);
+        ovn_datapath_allocate_key(datapaths, dp_tnlids, od, &hint);
     }
 
     /* Sync tunnel ids from nb to sb. */
@@ -1068,7 +1068,6 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
         ovn_datapath_update_external_ids(od);
         sbrec_datapath_binding_set_tunnel_key(od->sb, od->tunnel_key);
     }
-    ovn_destroy_tnlids(&dp_tnlids);
 
     /* Delete southbound records without northbound matches. */
     LIST_FOR_EACH_SAFE (od, list, &sb_only) {
@@ -19021,6 +19020,7 @@ northd_init(struct northd_data *data)
     ovs_list_init(&data->lr_list);
     sset_init(&data->svc_monitor_lsps);
     hmap_init(&data->svc_monitor_map);
+    hmap_init(&data->dp_tnlids);
     init_northd_tracked_data(data);
 }
 
@@ -19087,6 +19087,7 @@ northd_destroy(struct northd_data *data)
                                 &data->lr_list);
 
     sset_destroy(&data->svc_monitor_lsps);
+    ovn_destroy_tnlids(&data->dp_tnlids);
     destroy_northd_tracked_data(data);
 }
 
@@ -19174,7 +19175,7 @@ ovnnb_db_run(struct northd_input *input_data,
                     input_data->nbrec_logical_router_table,
                     input_data->sbrec_datapath_binding_table,
                     &data->ls_datapaths,
-                    &data->lr_datapaths, &data->lr_list);
+                    &data->lr_datapaths, &data->lr_list, &data->dp_tnlids);
     build_lb_datapaths(input_data->lbs, input_data->lbgrps,
                        &data->ls_datapaths, &data->lr_datapaths,
                        &data->lb_datapaths_map, &data->lb_group_datapaths_map);
