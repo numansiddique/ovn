@@ -79,6 +79,8 @@ struct ovn_datapaths {
 
     /* The array index of each element in 'datapaths'. */
     struct ovn_datapath **array;
+    size_t n_array;
+    size_t n_allocated_array;
 };
 
 static inline size_t
@@ -97,6 +99,11 @@ bool od_has_lb_vip(const struct ovn_datapath *od);
 enum redirected_routing_protcol_flag_type {
     REDIRECT_BGP = (1 << 0),
     REDIRECT_BFD = (1 << 1),
+};
+
+struct tracked_dps {
+    /* Tracked created or updated datapaths. */
+    struct hmapx crupdated;
 };
 
 struct tracked_ovn_ports {
@@ -130,6 +137,7 @@ enum northd_tracked_data_type {
     NORTHD_TRACKED_LR_NATS  = (1 << 2),
     NORTHD_TRACKED_LS_LBS   = (1 << 3),
     NORTHD_TRACKED_LS_ACLS  = (1 << 4),
+    NORTHD_TRACKED_SWITCHES = (1 << 5),
 };
 
 /* Track what's changed in the northd engine node.
@@ -138,6 +146,7 @@ enum northd_tracked_data_type {
 struct northd_tracked_data {
     /* Indicates the type of data tracked.  One or all of NORTHD_TRACKED_*. */
     enum northd_tracked_data_type type;
+    struct tracked_dps trk_switches;
     struct tracked_ovn_ports trk_lsps;
     struct tracked_lbs trk_lbs;
 
@@ -348,9 +357,11 @@ struct ovn_datapath {
 
     /* IPAM data. */
     struct ipam_info ipam_info;
+    bool ipam_info_initialized;
 
     /* Multicast data. */
     struct mcast_info mcast_info;
+    bool mcast_info_initialized;
 
     /* Applies to only logical router datapath.
      * True if logical router is a gateway router. i.e options:chassis is set.
@@ -784,6 +795,10 @@ bool lflow_handle_ls_stateful_changes(struct ovsdb_idl_txn *,
                                       struct ls_stateful_tracked_data *,
                                       struct lflow_input *,
                                       struct lflow_table *lflows);
+bool northd_handle_sb_datapath_binding_changes(
+    const struct sbrec_datapath_binding_table *,
+    const struct ovn_datapaths *ls_datapaths,
+    const struct ovn_datapaths *lr_datapaths);
 bool northd_handle_sb_port_binding_changes(
     const struct sbrec_port_binding_table *, struct hmap *ls_ports,
     struct hmap *lr_ports);
@@ -850,6 +865,12 @@ static inline bool
 northd_has_ls_acls_in_tracked_data(struct northd_tracked_data *trk_nd_changes)
 {
     return trk_nd_changes->type & NORTHD_TRACKED_LS_ACLS;
+}
+
+static inline bool
+northd_has_lswitchs_in_tracked_data(struct northd_tracked_data *trk_nd_changes)
+{
+    return trk_nd_changes->type & NORTHD_TRACKED_SWITCHES;
 }
 
 /* Returns 'true' if the IPv4 'addr' is on the same subnet with one of the

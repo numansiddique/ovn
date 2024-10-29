@@ -17,6 +17,7 @@
 #define OVN_UTIL_H 1
 
 #include "ovsdb-idl.h"
+#include "lib/bitmap.h"
 #include "lib/packets.h"
 #include "lib/sset.h"
 #include "lib/svec.h"
@@ -471,6 +472,19 @@ void sorted_array_apply_diff(const struct sorted_array *a1,
                                                     const char *item,
                                                     bool add),
                              const void *arg);
+
+static inline unsigned long *
+ovn_bitmap_realloc(unsigned long *bitmap, size_t n_bits_old,
+                   size_t n_bits_new)
+{
+    ovs_assert(n_bits_new >= n_bits_old);
+
+    if (bitmap_n_bytes(n_bits_old) != bitmap_n_bytes(n_bits_new)) {
+        return xrealloc(bitmap, bitmap_n_bytes(n_bits_new));
+    }
+
+    return bitmap;
+}
 
 /* Utilities around properly handling exit command. */
 struct ovn_exit_args {
