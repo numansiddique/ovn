@@ -155,6 +155,25 @@ northd_nb_logical_switch_handler(struct engine_node *node,
 }
 
 bool
+northd_sb_datapath_binding_handler(struct engine_node *node,
+                                   void *data)
+{
+    struct northd_data *nd = data;
+
+    struct northd_input input_data;
+
+    northd_get_input_data(node, &input_data);
+
+    if (!northd_handle_sb_datapath_binding_changes(
+            input_data.sbrec_datapath_binding_table, &nd->ls_datapaths,
+            &nd->lr_datapaths)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool
 northd_sb_port_binding_handler(struct engine_node *node,
                                void *data)
 {
