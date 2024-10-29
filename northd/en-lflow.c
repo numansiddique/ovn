@@ -127,6 +127,10 @@ lflow_northd_handler(struct engine_node *node,
         return false;
     }
 
+    if (northd_has_lswitchs_in_tracked_data(&northd_data->trk_data)) {
+        return false;
+    }
+
     const struct engine_context *eng_ctx = engine_get_context();
     struct lflow_data *lflow_data = data;
 

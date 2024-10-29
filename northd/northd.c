@@ -595,6 +595,7 @@ init_ipam_info_for_datapath(struct ovn_datapath *od)
     char uuid_s[UUID_LEN + 1];
     sprintf(uuid_s, UUID_FMT, UUID_ARGS(&od->key));
     init_ipam_info(&od->ipam_info, &od->nbs->other_config, uuid_s);
+    od->ipam_info_initialized = true;
 }
 
 static void
@@ -682,22 +683,25 @@ init_mcast_info_for_datapath(struct ovn_datapath *od)
     } else {
         init_mcast_info_for_router_datapath(od);
     }
+    od->mcast_info_initialized = true;
 }
 
 static void
 destroy_mcast_info_for_switch_datapath(struct ovn_datapath *od)
 {
-    struct mcast_switch_info *mcast_sw_info = &od->mcast_info.sw;
+    if (od->ipam_info_initialized) {
+        struct mcast_switch_info *mcast_sw_info = &od->mcast_info.sw;
 
-    free(mcast_sw_info->eth_src);
-    free(mcast_sw_info->ipv4_src);
-    free(mcast_sw_info->ipv6_src);
+        free(mcast_sw_info->eth_src);
+        free(mcast_sw_info->ipv4_src);
+        free(mcast_sw_info->ipv6_src);
+    }
 }
 
 static void
 destroy_mcast_info_for_datapath(struct ovn_datapath *od)
 {
-    if (!od->nbr && !od->nbs) {
+    if (!od->mcast_info_initialized || (!od->nbr && !od->nbs)) {
         return;
     }
 
@@ -1001,6 +1005,19 @@ ovn_datapath_assign_requested_tnl_id(
     }
 }
 
+static bool
+ovn_datapath_assign_or_allocate_tnl_id(struct hmap *dp_tnlids,
+                                       struct ovn_datapath *od, uint32_t *hint)
+{
+    ovn_datapath_assign_requested_tnl_id(dp_tnlids, od);
+    if (!od->tunnel_key) {
+        od->tunnel_key = ovn_allocate_tnlid(dp_tnlids, "datapath",
+            OVN_MIN_DP_KEY_LOCAL, get_ovn_max_dp_key_local(vxlan_mode), hint);
+    }
+
+    return od->tunnel_key != 0;
+}
+
 static void
 ods_build_array_index(struct ovn_datapaths *datapaths)
 {
@@ -1009,8 +1026,11 @@ ods_build_array_index(struct ovn_datapaths *datapaths)
      * doesn't matter if they are different on every iteration. */
     size_t index = 0;
 
-    datapaths->array = xrealloc(datapaths->array,
-                            ods_size(datapaths) * sizeof *datapaths->array);
+    datapaths->n_array = ods_size(datapaths);
+    datapaths->n_allocated_array = datapaths->n_array + 10;
+    datapaths->array = xrealloc(
+        datapaths->array,
+        datapaths->n_allocated_array * sizeof *datapaths->array);
 
     struct ovn_datapath *od;
     HMAP_FOR_EACH (od, key_node, &datapaths->datapaths) {
@@ -1018,6 +1038,22 @@ ods_build_array_index(struct ovn_datapaths *datapaths)
         datapaths->array[index++] = od;
         od->datapaths = datapaths;
     }
+}
+
+static void
+ods_assign_array_index(struct ovn_datapaths *datapaths, struct ovn_datapath *od)
+{
+    ovs_assert(ods_size(datapaths) == (datapaths->n_array + 1));
+    od->index = datapaths->n_array;
+
+    if (datapaths->n_array == datapaths->n_allocated_array) {
+        datapaths->n_allocated_array += 10;
+        datapaths->array = xrealloc(
+            datapaths->array,
+            datapaths->n_allocated_array * sizeof *datapaths->array);
+    }
+    datapaths->array[datapaths->n_array++] = od;
+    od->datapaths = datapaths;
 }
 
 /* Updates the southbound Datapath_Binding table so that it contains the
@@ -3748,7 +3784,7 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                 &od->nbs->load_balancer[i]->header_.uuid;
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
             ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+            ovn_lb_datapaths_add_ls(lb_dps, 1, &od, ods_size(ls_datapaths));
         }
 
         for (size_t i = 0; i < od->nbs->n_load_balancer_group; i++) {
@@ -3758,7 +3794,8 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                 ovn_lb_group_datapaths_find(lb_group_datapaths_map,
                                             lb_group_uuid);
             ovs_assert(lb_group_dps);
-            ovn_lb_group_datapaths_add_ls(lb_group_dps, 1, &od);
+            ovn_lb_group_datapaths_add_ls(lb_group_dps, 1, &od,
+                                          ods_size(ls_datapaths));
         }
     }
 
@@ -3773,7 +3810,8 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                 ovn_lb_group_datapaths_find(lb_group_datapaths_map,
                                             lb_group_uuid);
             ovs_assert(lb_group_dps);
-            ovn_lb_group_datapaths_add_lr(lb_group_dps, od);
+            ovn_lb_group_datapaths_add_lr(lb_group_dps, od,
+                                          ods_size(lr_datapaths));
         }
 
         for (size_t i = 0; i < od->nbr->n_load_balancer; i++) {
@@ -3781,7 +3819,7 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
                 &od->nbr->load_balancer[i]->header_.uuid;
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
             ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+            ovn_lb_datapaths_add_lr(lb_dps, 1, &od, ods_size(lr_datapaths));
         }
     }
 
@@ -3792,9 +3830,11 @@ build_lb_datapaths(const struct hmap *lbs, const struct hmap *lb_groups,
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
             ovs_assert(lb_dps);
             ovn_lb_datapaths_add_ls(lb_dps, lb_group_dps->n_ls,
-                                    lb_group_dps->ls);
+                                    lb_group_dps->ls,
+                                    ods_size(ls_datapaths));
             ovn_lb_datapaths_add_lr(lb_dps, lb_group_dps->n_lr,
-                                    lb_group_dps->lr);
+                                    lb_group_dps->lr,
+                                    ods_size(lr_datapaths));
         }
     }
 }
@@ -3853,7 +3893,7 @@ build_lswitch_lbs_from_lrouter(struct ovn_datapaths *lr_datapaths,
     HMAP_FOR_EACH (lb_dps, hmap_node, lb_dps_map) {
         BITMAP_FOR_EACH_1 (index, ods_size(lr_datapaths), lb_dps->nb_lr_map) {
             struct ovn_datapath *od = lr_datapaths->array[index];
-            ovn_lb_datapaths_add_ls(lb_dps, od->n_ls_peers, od->ls_peers);
+            ovn_lb_datapaths_add_ls(lb_dps, od->n_ls_peers, od->ls_peers, 0);
         }
     }
 
@@ -3862,13 +3902,14 @@ build_lswitch_lbs_from_lrouter(struct ovn_datapaths *lr_datapaths,
         for (size_t i = 0; i < lb_group_dps->n_lr; i++) {
             struct ovn_datapath *od = lb_group_dps->lr[i];
             ovn_lb_group_datapaths_add_ls(lb_group_dps, od->n_ls_peers,
-                                          od->ls_peers);
+                                          od->ls_peers, 0);
             for (size_t j = 0; j < lb_group_dps->lb_group->n_lbs; j++) {
                 const struct uuid *lb_uuid =
                     &lb_group_dps->lb_group->lbs[j]->nlb->header_.uuid;
                 lb_dps = ovn_lb_datapaths_find(lb_dps_map, lb_uuid);
                 ovs_assert(lb_dps);
-                ovn_lb_datapaths_add_ls(lb_dps, od->n_ls_peers, od->ls_peers);
+                ovn_lb_datapaths_add_ls(lb_dps, od->n_ls_peers,
+                                        od->ls_peers, 0);
             }
         }
     }
@@ -4345,6 +4386,12 @@ build_ports(struct ovsdb_idl_txn *ovnsb_txn,
 }
 
 static void
+destroy_tracked_dps(struct tracked_dps *trk_dps)
+{
+    hmapx_clear(&trk_dps->crupdated);
+}
+
+static void
 destroy_tracked_ovn_ports(struct tracked_ovn_ports *trk_ovn_ports)
 {
     struct hmapx_node *hmapx_node;
@@ -4380,6 +4427,7 @@ void
 destroy_northd_data_tracked_changes(struct northd_data *nd)
 {
     struct northd_tracked_data *trk_changes = &nd->trk_data;
+    destroy_tracked_dps(&trk_changes->trk_switches);
     destroy_tracked_ovn_ports(&trk_changes->trk_lsps);
     destroy_tracked_lbs(&trk_changes->trk_lbs);
     hmapx_clear(&trk_changes->trk_nat_lrs);
@@ -4393,6 +4441,7 @@ init_northd_tracked_data(struct northd_data *nd)
 {
     struct northd_tracked_data *trk_data = &nd->trk_data;
     trk_data->type = NORTHD_TRACKED_NONE;
+    hmapx_init(&trk_data->trk_switches.crupdated);
     hmapx_init(&trk_data->trk_lsps.created);
     hmapx_init(&trk_data->trk_lsps.updated);
     hmapx_init(&trk_data->trk_lsps.deleted);
@@ -4408,6 +4457,7 @@ destroy_northd_tracked_data(struct northd_data *nd)
 {
     struct northd_tracked_data *trk_data = &nd->trk_data;
     trk_data->type = NORTHD_TRACKED_NONE;
+    hmapx_destroy(&trk_data->trk_switches.crupdated);
     hmapx_destroy(&trk_data->trk_lsps.created);
     hmapx_destroy(&trk_data->trk_lsps.updated);
     hmapx_destroy(&trk_data->trk_lsps.deleted);
@@ -4822,15 +4872,80 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
                          const struct northd_input *ni,
                          struct northd_data *nd)
 {
-    const struct nbrec_logical_switch *changed_ls;
     struct northd_tracked_data *trk_data = &nd->trk_data;
+    nd->trk_data.type = NORTHD_TRACKED_NONE;
 
-    NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
+    /* Loop to handle deleted logical switches. */
+    const struct nbrec_logical_switch *deleted_ls;
+    NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (deleted_ls,
                                              ni->nbrec_logical_switch_table) {
-        if (nbrec_logical_switch_is_new(changed_ls) ||
-            nbrec_logical_switch_is_deleted(changed_ls)) {
+        if (nbrec_logical_switch_is_deleted(deleted_ls)) {
+            return false;
+        }
+    }
+
+    /* Loop to handle only newly created logical switches and to
+     * create ovn_datapath objects. */
+    const struct nbrec_logical_switch *new_ls;
+    uint32_t hint = 0;
+    NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (
+            new_ls, ni->nbrec_logical_switch_table) {
+        if (!nbrec_logical_switch_is_new(new_ls)) {
+            continue;
+        }
+
+        /* If a logical switch is created with the below columns set, then we can't handle
+         * handle this yet.  Return false. */
+        if (new_ls->copp || new_ls->n_dns_records
+            || new_ls->n_forwarding_groups || new_ls->n_qos_rules) {
+            return false;
+        }
+
+        struct ovn_datapath *od = ovn_datapath_create(
+            &nd->ls_datapaths.datapaths, &new_ls->header_.uuid, new_ls,
+            NULL, NULL);
+
+        ods_assign_array_index(&nd->ls_datapaths, od);
+
+        /* Assign tunnel id if requested or allocate a new one. */
+        if (!ovn_datapath_assign_or_allocate_tnl_id(&nd->dp_tnlids,
+                                                    od, &hint)) {
+            ovn_datapath_destroy(&nd->ls_datapaths.datapaths, od);
             goto fail;
         }
+
+        init_ipam_info_for_datapath(od);
+        init_mcast_info_for_datapath(od);
+
+        od->sb = sbrec_datapath_binding_insert_persist_uuid(ovnsb_idl_txn,
+                                                            &od->key);
+        ovn_datapath_update_external_ids(od);
+        sbrec_datapath_binding_set_tunnel_key(od->sb, od->tunnel_key);
+
+        /* Create SB:IP_Multicast for the logical switch. */
+        const struct sbrec_ip_multicast *ip_mcast =
+            sbrec_ip_multicast_insert(ovnsb_idl_txn);
+        store_mcast_info_for_switch_datapath(ip_mcast, od);
+
+        if (!ls_handle_lsp_changes(ovnsb_idl_txn, new_ls,
+                                   ni, nd, od, &trk_data->trk_lsps)) {
+            goto fail;
+        }
+
+        if (new_ls->n_acls) {
+            hmapx_add(&trk_data->ls_with_changed_acls, od);
+        }
+        hmapx_add(&trk_data->trk_switches.crupdated, od);
+    }
+
+    /* Loop to handle updated logical switches. */
+    const struct nbrec_logical_switch *changed_ls;
+    NBREC_LOGICAL_SWITCH_TABLE_FOR_EACH_TRACKED (changed_ls,
+                                             ni->nbrec_logical_switch_table) {
+        if (nbrec_logical_switch_is_new(changed_ls)) {
+            continue;
+        }
+
         struct ovn_datapath *od = ovn_datapath_find_(
                                     &nd->ls_datapaths.datapaths,
                                     &changed_ls->header_.uuid);
@@ -4855,6 +4970,10 @@ northd_handle_ls_changes(struct ovsdb_idl_txn *ovnsb_idl_txn,
         if (is_ls_acls_changed(changed_ls)) {
             hmapx_add(&trk_data->ls_with_changed_acls, od);
         }
+    }
+
+    if (!hmapx_is_empty(&trk_data->trk_switches.crupdated)) {
+        trk_data->type |= NORTHD_TRACKED_SWITCHES;
     }
 
     if (!hmapx_is_empty(&trk_data->trk_lsps.created)
@@ -5000,6 +5119,93 @@ northd_handle_lr_changes(const struct northd_input *ni,
 fail:
     destroy_northd_data_tracked_changes(nd);
     return false;
+}
+
+bool
+northd_handle_sb_datapath_binding_changes(
+    const struct sbrec_datapath_binding_table *sbrec_dp_table,
+    const struct ovn_datapaths *ls_datapaths,
+    const struct ovn_datapaths *lr_datapaths)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    const struct sbrec_datapath_binding *sbrec_dp;
+    SBREC_DATAPATH_BINDING_TABLE_FOR_EACH_TRACKED (sbrec_dp, sbrec_dp_table) {
+        const struct ovn_datapaths *datapaths = NULL;
+        bool external_ids_missing = false;
+        struct uuid key;
+        bool is_switch;
+
+        const char *name = smap_get(&sbrec_dp->external_ids, "name");
+        if (!name) {
+            external_ids_missing = true;
+        }
+
+        if (smap_get_uuid(&sbrec_dp->external_ids, "logical-switch", &key)) {
+            datapaths = ls_datapaths;
+            is_switch = true;
+        } else if (smap_get_uuid(&sbrec_dp->external_ids, "logical-router",
+                                 &key)) {
+            datapaths = lr_datapaths;
+            is_switch = false;
+        } else {
+            external_ids_missing = true;
+        }
+
+        if (external_ids_missing) {
+            VLOG_WARN_RL(&rl, "Datapath "UUID_FMT" is present in the"
+                         "Southbound DB without valid external_ids keys",
+                         UUID_ARGS(&sbrec_dp->header_.uuid));
+            return false;
+        }
+
+        if (!sbrec_datapath_binding_is_deleted(sbrec_dp) &&
+            !uuid_equals(&sbrec_dp->header_.uuid, &key)) {
+            VLOG_WARN_RL(&rl, "Datapath "UUID_FMT" is present in the "
+                         "Southbound DB with mismatching "
+                         "external-ids:logical-switch/router "UUID_FMT,
+                         UUID_ARGS(&sbrec_dp->header_.uuid), UUID_ARGS(&key));
+            return false;
+        }
+
+        struct ovn_datapath *od =
+            ovn_datapath_find_(&datapaths->datapaths, &key);
+
+        if (sbrec_datapath_binding_is_new(sbrec_dp)) {
+            if (!od) {
+                VLOG_WARN_RL(&rl, "A datapath-binding for %s is created but the "
+                             "%s is not found.", name,
+                            is_switch ? "Logical switch" : "Logical router");
+                return false;
+            }
+            od->sb = sbrec_dp;
+        }  else if (sbrec_datapath_binding_is_deleted(sbrec_dp)) {
+            /* Most likely the sbrec_dp was deleted by northd and this is the
+             * notification of that transaction, and we can ignore in this
+             * case. Fallback to recompute otherwise, to avoid dangling
+             * sb idl pointers and other unexpected behavior. */
+            if (od && od->sb == sbrec_dp) {
+                VLOG_WARN_RL(&rl, "A datapath-binding for %s is deleted but the "
+                             "%s still exists.", name,
+                            is_switch ? "Logical switch" : "Logical router");
+                return false;
+            }
+        } else {
+            /* sbrec_dp is updated.*/
+            if (!od) {
+                VLOG_WARN_RL(&rl, "A datapath-binding for %s is updated but the "
+                             "%s is not found.", name,
+                             is_switch ? "Logical switch" : "Logical router");
+                return false;
+            }
+            if (od->sb != sbrec_dp) {
+                VLOG_WARN_RL(&rl, "A datapath-binding for %s is updated with a new"
+                             "IDL row, which is unusual.", name);
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 bool
@@ -5214,7 +5420,7 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbs) {
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &uuidnode->uuid);
             ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+            ovn_lb_datapaths_add_ls(lb_dps, 1, &od, ods_size(ls_datapaths));
 
             /* Add the lb to the northd tracked data. */
             hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
@@ -5224,7 +5430,8 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             lbgrp_dps = ovn_lb_group_datapaths_find(lbgrp_datapaths_map,
                                                     &uuidnode->uuid);
             ovs_assert(lbgrp_dps);
-            ovn_lb_group_datapaths_add_ls(lbgrp_dps, 1, &od);
+            ovn_lb_group_datapaths_add_ls(lbgrp_dps, 1, &od,
+                                          ods_size(ls_datapaths));
 
             /* Associate all the lbs of the lbgrp to the datapath 'od' */
             for (size_t j = 0; j < lbgrp_dps->lb_group->n_lbs; j++) {
@@ -5232,7 +5439,7 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                     = &lbgrp_dps->lb_group->lbs[j]->nlb->header_.uuid;
                 lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
                 ovs_assert(lb_dps);
-                ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+                ovn_lb_datapaths_add_ls(lb_dps, 1, &od, ods_size(ls_datapaths));
 
                 /* Add the lb to the northd tracked data. */
                 hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
@@ -5251,7 +5458,7 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
         UUIDSET_FOR_EACH (uuidnode, &codlb->assoc_lbs) {
             lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, &uuidnode->uuid);
             ovs_assert(lb_dps);
-            ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+            ovn_lb_datapaths_add_lr(lb_dps, 1, &od, ods_size(lr_datapaths));
 
             /* Add the lb to the northd tracked data. */
             hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
@@ -5261,7 +5468,8 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             lbgrp_dps = ovn_lb_group_datapaths_find(lbgrp_datapaths_map,
                                                     &uuidnode->uuid);
             ovs_assert(lbgrp_dps);
-            ovn_lb_group_datapaths_add_lr(lbgrp_dps, od);
+            ovn_lb_group_datapaths_add_lr(lbgrp_dps, od,
+                                          ods_size(lr_datapaths));
 
             /* Associate all the lbs of the lbgrp to the datapath 'od' */
             for (size_t j = 0; j < lbgrp_dps->lb_group->n_lbs; j++) {
@@ -5269,7 +5477,7 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
                     = &lbgrp_dps->lb_group->lbs[j]->nlb->header_.uuid;
                 lb_dps = ovn_lb_datapaths_find(lb_datapaths_map, lb_uuid);
                 ovs_assert(lb_dps);
-                ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+                ovn_lb_datapaths_add_lr(lb_dps, 1, &od, ods_size(lr_datapaths));
 
                 /* Add the lb to the northd tracked data. */
                 hmapx_add(&nd_changes->trk_lbs.crupdated, lb_dps);
@@ -5310,12 +5518,13 @@ northd_handle_lb_data_changes(struct tracked_lb_data *trk_lb_data,
             ovs_assert(lb_dps);
             for (size_t i = 0; i < lbgrp_dps->n_lr; i++) {
                 od = lbgrp_dps->lr[i];
-                ovn_lb_datapaths_add_lr(lb_dps, 1, &od);
+                ovn_lb_datapaths_add_lr(lb_dps, 1, &od, ods_size(lr_datapaths));
             }
 
             for (size_t i = 0; i < lbgrp_dps->n_ls; i++) {
                od = lbgrp_dps->ls[i];
-                ovn_lb_datapaths_add_ls(lb_dps, 1, &od);
+                ovn_lb_datapaths_add_ls(lb_dps, 1, &od,
+                                        ods_size(ls_datapaths));
 
                 /* Add the ls datapath to the northd tracked data. */
                 hmapx_add(&nd_changes->ls_with_changed_lbs, od);

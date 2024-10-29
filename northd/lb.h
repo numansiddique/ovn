@@ -133,11 +133,13 @@ struct ovn_lb_datapaths {
     struct hmap_node hmap_node;
 
     const struct ovn_northd_lb *lb;
-    size_t n_nb_ls;
     unsigned long *nb_ls_map;
+    size_t ls_map_size;
+    size_t n_nb_ls;
 
-    size_t n_nb_lr;
     unsigned long *nb_lr_map;
+    size_t lr_map_size;
+    size_t n_nb_lr;
 
     /* Reference of lflows generated for this load balancer.
      *
@@ -175,20 +177,24 @@ struct ovn_lb_datapaths *ovn_lb_datapaths_find(const struct hmap *,
 void ovn_lb_datapaths_destroy(struct ovn_lb_datapaths *);
 
 void ovn_lb_datapaths_add_lr(struct ovn_lb_datapaths *, size_t n,
-                             struct ovn_datapath **);
+                             struct ovn_datapath **,
+                             size_t n_lr_datapaths);
 void ovn_lb_datapaths_add_ls(struct ovn_lb_datapaths *, size_t n,
-                             struct ovn_datapath **);
-
+                             struct ovn_datapath **,
+                             size_t n_ls_datapaths);
 struct ovn_lb_group_datapaths {
     struct hmap_node hmap_node;
 
     const struct ovn_lb_group *lb_group;
 
     /* Datapaths to which 'lb_group' is applied. */
-    size_t n_ls;
     struct ovn_datapath **ls;
-    size_t n_lr;
+    size_t max_ls;
+    size_t n_ls;
+
     struct ovn_datapath **lr;
+    size_t max_lr;
+    size_t n_lr;
 };
 
 struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_create(
@@ -201,16 +207,28 @@ struct ovn_lb_group_datapaths *ovn_lb_group_datapaths_find(
 
 static inline void
 ovn_lb_group_datapaths_add_ls(struct ovn_lb_group_datapaths *lbg_dps, size_t n,
-                               struct ovn_datapath **ods)
+                              struct ovn_datapath **ods,
+                              size_t n_ls_datapaths)
 {
+    if (n_ls_datapaths > lbg_dps->max_ls) {
+        lbg_dps->ls = xrealloc(lbg_dps->ls,
+                               n_ls_datapaths * sizeof *lbg_dps->ls);
+        lbg_dps->max_ls = n_ls_datapaths;
+    }
     memcpy(&lbg_dps->ls[lbg_dps->n_ls], ods, n * sizeof *ods);
     lbg_dps->n_ls += n;
 }
 
 static inline void
 ovn_lb_group_datapaths_add_lr(struct ovn_lb_group_datapaths *lbg_dps,
-                               struct ovn_datapath *lr)
+                              struct ovn_datapath *lr,
+                              size_t n_lr_datapaths)
 {
+    if (n_lr_datapaths > lbg_dps->max_lr) {
+        lbg_dps->lr = xrealloc(lbg_dps->lr,
+                               n_lr_datapaths * sizeof *lbg_dps->lr);
+        lbg_dps->max_lr = n_lr_datapaths;
+    }
     lbg_dps->lr[lbg_dps->n_lr++] = lr;
 }
 

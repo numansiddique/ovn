@@ -138,6 +138,10 @@ ls_stateful_northd_handler(struct engine_node *node, void *data_)
         return false;
     }
 
+    if (northd_has_lswitchs_in_tracked_data(&northd_data->trk_data)) {
+        return false;
+    }
+
     if (!northd_has_ls_lbs_in_tracked_data(&northd_data->trk_data) &&
         !northd_has_ls_acls_in_tracked_data(&northd_data->trk_data)) {
         return true;
