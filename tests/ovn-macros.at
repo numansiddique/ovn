@@ -196,7 +196,7 @@ m4_define([DUMP_FLOWS], [
     sbox=$1
     output_file=$2
     as $sbox
-    ovs-ofctl dump-flows br-int |
+    ovs-ofctl dump-flows br-int  | grep -v "NXST_FLOW reply" |
           sed 's/cookie=0x[[^,]]*/cookie=xx/g' |
           sed 's/duration=[[^,]]*/duration=xx/g' |
           sed 's/idle_age=[[^,]]*/idle_age=xx/g' |
@@ -230,15 +230,15 @@ m4_define([CHECK_FLOWS_AFTER_RECOMPUTE], [
     as $sbox
     if test "$hv" != "vtep"; then
       # Get flows before and after recompute
-      DUMP_FLOWS([$sbox], [flows-$hv-1])
+      DUMP_FLOWS([$sbox], [flows-$hv-before])
 
       check ovn-appctl -t ovn-controller recompute
       # The recompute might cause some sb changes. Let controller catch up.
       if [[ -e ovn-nb/ovn-nb.sock ]] && [[ -e northd/ovn-northd.pid ]]; then
           check ovn-nbctl --wait=hv sync
       fi
-      DUMP_FLOWS([$sbox], [flows-$hv-2])
-      diff flows-$hv-1 flows-$hv-2 > flow-diff
+      DUMP_FLOWS([$sbox], [flows-$hv-after])
+      diff flows-$hv-before flows-$hv-after > flow-diff
       AT_CHECK([wc -l < flow-diff], [0], [0
 ])
     fi
@@ -275,14 +275,18 @@ m4_define([CHECK_RELATED_PORTS_AFTER_RECOMPUTE], [
     fi
 ])
 
+# CHECK_AFTER_RECOMPUTE(hv, sbox, related_ports, ignored_dp)
+# Check related ports (ignoring $related_ports) and FLOWS (ignoring flows from $ignored_dp)
+# by comparing IP flows and flows after recompute.
 m4_define([CHECK_AFTER_RECOMPUTE], [
     hv=$1
     sbox=$2
     related_ports=$3
+    ignored_dp=$4
     AT_CAPTURE_FILE([related-ports-diff])
     # Make sure I+P has finalized his job before getting flows and comparing them after recompte.
     # Some tests have northd and ovn-nb ovsdb stopped, so avoid ovn-nbctl for those.
-    if [[ -e ovn-nb/ovn-nb.sock ]] && [[ -e northd/ovn-northd.pid ]]; then
+    if [[ -e ${AZ_DIR}ovn-nb/ovn-nb.sock ]] && [[ -e ${AZ_DIR}northd/ovn-northd.pid ]]; then
         # Do wait twice to handle some potential race conditions
         check ovn-nbctl --wait=hv sync
         check ovn-nbctl --wait=hv sync
@@ -290,25 +294,45 @@ m4_define([CHECK_AFTER_RECOMPUTE], [
 
     as $sbox
     if test "$hv" != "vtep"; then
-      DUMP_RELATED_PORTS([$sbox], [related-ports-$hv-1])
-      DUMP_FLOWS([$sbox], [flows-$hv-1])
+      DUMP_RELATED_PORTS([$sbox], [related-ports-$hv-before])
+      DUMP_FLOWS([$sbox], [flows-$hv-before])
       check ovn-appctl -t ovn-controller recompute
       # The recompute might cause some sb changes. Let controller catch up.
-      if [[ -e ovn-nb/ovn-nb.sock ]] && [[ -e northd/ovn-northd.pid ]]; then
+      if [[ -e ${AZ_DIR}ovn-nb/ovn-nb.sock ]] && [[ -e ${AZ_DIR}northd/ovn-northd.pid ]]; then
           check ovn-nbctl --wait=hv sync
       fi
-      DUMP_RELATED_PORTS([$sbox], [related-ports-$hv-2])
-      DUMP_FLOWS([$sbox], [flows-$hv-2])
-      # Compare and store differences before and after recompute
-      comm -3 related-ports-$hv-1 related-ports-$hv-2 > related-ports-diff-$hv
+      DUMP_RELATED_PORTS([$sbox], [related-ports-$hv-after])
+      DUMP_FLOWS([$sbox], [flows-$hv-after])
+
+      # Compare and store related_ports differences before and after recompute
+      comm -3 related-ports-$hv-before related-ports-$hv-after > related-ports-diff-$hv
       # Ignore some differences.
       echo "$related_ports" | comm -2 -3 related-ports-diff-$hv - > related-ports-diff
       AT_CHECK([wc -l < related-ports-diff], [0], [0
 ])
-      diff flows-$hv-1 flows-$hv-2 > flow-diff
-      AT_CHECK([wc -l < flow-diff], [0], [0
+
+      # Compare and store flow differences before and after recompute
+      IFS=$','; dps=($ignored_dp); unset IFS;
+      comm -3 flows-$hv-before flows-$hv-after > flow-diff-$hv
+      if [[ -n "$related_ports" ]]; then
+        tag=$(ovn-sbctl --bare --columns tag list port_binding $related_ports)
+        if [[ -n "$tag" ]]; then
+          echo "Ignoring tag $tag"
+          cat flow-diff-$hv | grep -v "dl_vlan=$tag" > flow-diff-$hv
+        fi
+      fi
+      for dp in "${dps[[@]]}"
+      do
+        if [[ -n "${dp}" ]]; then
+          key=$(printf '0x%x' $(ovn-sbctl --bare --columns tunnel_key list datapath $dp))
+          if [[ -n "${key}" ]]; then
+            echo "Ignoring $dp i.e. tunnel_key $key"
+            cat flow-diff-$hv | grep -v "metadata=$key" | grep -v "load:${key}->OXM_OF_METADATA" > flow-diff-$hv
+          fi
+        fi
+      done
+      AT_CHECK([wc -l < flow-diff-$hv], [0], [0
 ])
-      diff flows-$hv-1 flows-$hv-2 > flow-diff
     fi
 ])
 
@@ -753,6 +777,7 @@ start_virtual_controller() {
 # ovn_setenv AZ
 ovn_setenv () {
     local d=$ovs_base/$1
+    AS_VAR_SET([AZ_DIR], ["$d"/]); export $var
     AS_VAR_SET([OVN_NB_DB], [unix:"$d"/ovn-nb/ovn-nb.sock]); export $var
     AS_VAR_SET([OVN_SB_DB], [unix:"$d"/ovn-sb/ovn-sb.sock]); export $var
 }
