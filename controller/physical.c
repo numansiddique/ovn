@@ -2194,15 +2194,15 @@ consider_mc_group(struct ovsdb_idl_index *sbrec_port_binding_by_name,
         }
 
         int zone_id = ct_zone_find_zone(ct_zones, port->logical_port);
-        if (zone_id) {
-            put_load(zone_id, MFF_LOG_CT_ZONE, 0, 16, &ofpacts);
-        }
 
         const char *lport_name = (port->parent_port && *port->parent_port) ?
                                   port->parent_port : port->logical_port;
 
         if (!strcmp(port->type, "patch")) {
             if (ldp->is_transit_switch) {
+                if (zone_id) {
+                    put_load(zone_id, MFF_LOG_CT_ZONE, 0, 16, &ofpacts);
+                }
                 local_output_pb(port->tunnel_key, &ofpacts);
             } else {
                 remote_ramp_ports = true;
@@ -2218,8 +2218,14 @@ consider_mc_group(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                     || is_additional_chassis(port, chassis))
                    && (local_binding_get_primary_pb(local_bindings, lport_name)
                        || !strcmp(port->type, "l3gateway"))) {
+            if (zone_id) {
+                put_load(zone_id, MFF_LOG_CT_ZONE, 0, 16, &ofpacts);
+            }
             local_output_pb(port->tunnel_key, &ofpacts);
         } else if (simap_contains(patch_ofports, port->logical_port)) {
+            if (zone_id) {
+                put_load(zone_id, MFF_LOG_CT_ZONE, 0, 16, &ofpacts);
+            }
             local_output_pb(port->tunnel_key, &ofpacts);
         } else if (!strcmp(port->type, "chassisredirect")
                    && port->chassis == chassis) {
@@ -2231,6 +2237,9 @@ consider_mc_group(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                                            distributed_port);
                 if (distributed_binding
                     && port->datapath == distributed_binding->datapath) {
+                    if (zone_id) {
+                        put_load(zone_id, MFF_LOG_CT_ZONE, 0, 16, &ofpacts);
+                    }
                     local_output_pb(distributed_binding->tunnel_key, &ofpacts);
                 }
             }
