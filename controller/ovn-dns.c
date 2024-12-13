@@ -38,7 +38,9 @@ struct dns_data {
 };
 
 /* shash of 'struct dns_data'. */
-static struct hmap dns_cache_ = HMAP_INITIALIZER(&dns_cache_);
+static struct hmap dns_caches[2];
+static struct hmap *active_dns_cache_;
+static uint8_t active_dns_cache_idx;
 
 /* Mutex to protect dns_cache_. */
 static struct ovs_mutex dns_cache_mutex = OVS_MUTEX_INITIALIZER;
@@ -47,58 +49,49 @@ static void update_cache_with_dns_rec(const struct sbrec_dns *,
                                       struct dns_data *,
                                       const struct uuid *uuid,
                                       struct hmap *dns_cache);
-static struct dns_data *dns_data_find(const struct uuid *uuid);
+static struct dns_data *dns_data_find(const struct uuid *uuid,
+                                      const struct hmap *);
 static struct dns_data *dns_data_alloc(struct uuid uuid);
 static void dns_data_destroy(struct dns_data *dns_data);
+static void destroy_dns_cache(struct hmap *dns_cache);
 
 void
 ovn_dns_cache_init(void)
 {
+    hmap_init(&dns_caches[0]);
+    hmap_init(&dns_caches[1]);
+    active_dns_cache_idx = 0;
+    active_dns_cache_ = &dns_caches[0];
 }
 
 void
 ovn_dns_cache_destroy(void)
 {
     ovs_mutex_lock(&dns_cache_mutex);
-    struct dns_data *dns_data;
-    HMAP_FOR_EACH_POP (dns_data, hmap_node, &dns_cache_) {
-        dns_data_destroy(dns_data);
-    }
-    hmap_destroy(&dns_cache_);
+    destroy_dns_cache(&dns_caches[0]);
+    destroy_dns_cache(&dns_caches[1]);
+    hmap_destroy(&dns_caches[0]);
+    hmap_destroy(&dns_caches[1]);
+    active_dns_cache_ = NULL;
     ovs_mutex_unlock(&dns_cache_mutex);
 }
 
 void
 ovn_dns_sync_cache(const struct sbrec_dns_table *dns_table)
 {
-    ovs_mutex_lock(&dns_cache_mutex);
-    struct dns_data *dns_data;
-    HMAP_FOR_EACH (dns_data, hmap_node, &dns_cache_) {
-        dns_data->delete = true;
-    }
-
     const struct sbrec_dns *sbrec_dns;
+    struct dns_data *dns_data;
+
+    uint8_t next_cache_idx = (active_dns_cache_idx + 1) % 2;
+    struct hmap *dns_cache = &dns_caches[next_cache_idx];
+    ovs_assert(dns_cache != active_dns_cache_);
+
     SBREC_DNS_TABLE_FOR_EACH (sbrec_dns, dns_table) {
         const struct uuid *uuid = &sbrec_dns->header_.uuid;
-        dns_data = dns_data_find(uuid);
-        if (!dns_data) {
-            dns_data = dns_data_alloc(*uuid);
-            hmap_insert(&dns_cache_, &dns_data->hmap_node, uuid_hash(uuid));
-        } else {
-            free(dns_data->dps);
-        }
-
-        dns_data->delete = false;
-
-        if (!smap_equal(&dns_data->records, &sbrec_dns->records)) {
-            smap_destroy(&dns_data->records);
-            smap_clone(&dns_data->records, &sbrec_dns->records);
-        }
-
-        if (!smap_equal(&dns_data->options, &sbrec_dns->options)) {
-            smap_destroy(&dns_data->options);
-            smap_clone(&dns_data->options, &sbrec_dns->options);
-        }
+        dns_data = dns_data_alloc(*uuid);
+        hmap_insert(dns_cache, &dns_data->hmap_node, uuid_hash(uuid));
+        smap_clone(&dns_data->records, &sbrec_dns->records);
+        smap_clone(&dns_data->options, &sbrec_dns->options);
 
         dns_data->n_dps = sbrec_dns->n_datapaths;
         dns_data->dps = xcalloc(dns_data->n_dps, sizeof(uint64_t));
@@ -107,30 +100,33 @@ ovn_dns_sync_cache(const struct sbrec_dns_table *dns_table)
         }
     }
 
-    HMAP_FOR_EACH_SAFE (dns_data, hmap_node, &dns_cache_) {
-        if (dns_data->delete) {
-            hmap_remove(&dns_cache_, &dns_data->hmap_node);
-            dns_data_destroy(dns_data);
-        }
-    }
+    struct hmap *prev_active_cache = active_dns_cache_;
+
+    ovs_mutex_lock(&dns_cache_mutex);
+    active_dns_cache_ = dns_cache;
+    active_dns_cache_idx = next_cache_idx;
     ovs_mutex_unlock(&dns_cache_mutex);
+
+    /* Destroy the previous active dns cache. */
+    destroy_dns_cache(prev_active_cache);
 }
 
 void
 ovn_dns_update_cache(const struct sbrec_dns_table *dns_table)
 {
     ovs_mutex_lock(&dns_cache_mutex);
-
+    ovs_assert(active_dns_cache_ != NULL);
     const struct sbrec_dns *sbrec_dns;
     SBREC_DNS_TABLE_FOR_EACH_TRACKED (sbrec_dns, dns_table) {
         const struct uuid *uuid = &sbrec_dns->header_.uuid;
-        struct dns_data *dns_data = dns_data_find(uuid);
+        struct dns_data *dns_data = dns_data_find(uuid, active_dns_cache_);
 
         if (sbrec_dns_is_deleted(sbrec_dns) && dns_data) {
-            hmap_remove(&dns_cache_, &dns_data->hmap_node);
+            hmap_remove(active_dns_cache_, &dns_data->hmap_node);
             dns_data_destroy(dns_data);
         } else {
-            update_cache_with_dns_rec(sbrec_dns, dns_data, uuid, &dns_cache_);
+            update_cache_with_dns_rec(sbrec_dns, dns_data, uuid,
+                                      active_dns_cache_);
         }
     }
 
@@ -142,10 +138,11 @@ ovn_dns_lookup(const char *query_name, uint64_t dp_key, bool *ovn_owned)
 {
     ovs_mutex_lock(&dns_cache_mutex);
 
+    ovs_assert(active_dns_cache_ != NULL);
     *ovn_owned = false;
     struct dns_data *dns_data;
     const char *answer_data = NULL;
-    HMAP_FOR_EACH (dns_data, hmap_node, &dns_cache_) {
+    HMAP_FOR_EACH (dns_data, hmap_node, active_dns_cache_) {
         for (size_t i = 0; i < dns_data->n_dps; i++) {
             if (dns_data->dps[i] == dp_key) {
                 /* DNS records in SBDB are stored in lowercase. Convert to
@@ -205,11 +202,11 @@ update_cache_with_dns_rec(const struct sbrec_dns *sbrec_dns,
 }
 
 static struct dns_data *
-dns_data_find(const struct uuid *uuid)
+dns_data_find(const struct uuid *uuid, const struct hmap *dns_cache)
 {
     struct dns_data *dns_data;
     size_t hash = uuid_hash(uuid);
-    HMAP_FOR_EACH_WITH_HASH (dns_data, hmap_node, hash, &dns_cache_) {
+    HMAP_FOR_EACH_WITH_HASH (dns_data, hmap_node, hash, dns_cache) {
         if (uuid_equals(&dns_data->uuid, uuid)) {
             return dns_data;
         }
@@ -239,4 +236,13 @@ dns_data_destroy(struct dns_data *dns_data)
     smap_destroy(&dns_data->options);
     free(dns_data->dps);
     free(dns_data);
+}
+
+static void
+destroy_dns_cache(struct hmap *dns_cache)
+{
+    struct dns_data *dns_data;
+    HMAP_FOR_EACH_POP (dns_data, hmap_node, dns_cache) {
+        dns_data_destroy(dns_data);
+    }
 }
