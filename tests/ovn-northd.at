@@ -14287,7 +14287,7 @@ check ovn-nbctl --wait=sb sync
 check as northd ovn-appctl -t ovn-northd inc-engine/clear-stats
 check ovn-nbctl --wait=sb ls-add sw0
 check_engine_stats northd norecompute compute
-check_engine_stats ls_stateful recompute nocompute
+check_engine_stats ls_stateful norecompute compute
 check_engine_stats lflow recompute nocompute
 
 # For the below engine nodes, en_northd is input.  So check

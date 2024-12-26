@@ -138,12 +138,9 @@ ls_stateful_northd_handler(struct engine_node *node, void *data_)
         return false;
     }
 
-    if (northd_has_lswitchs_in_tracked_data(&northd_data->trk_data)) {
-        return false;
-    }
-
     if (!northd_has_ls_lbs_in_tracked_data(&northd_data->trk_data) &&
-        !northd_has_ls_acls_in_tracked_data(&northd_data->trk_data)) {
+        !northd_has_ls_acls_in_tracked_data(&northd_data->trk_data) &&
+        !northd_has_lswitchs_in_tracked_data(&northd_data->trk_data)) {
         return true;
     }
 
@@ -153,6 +150,10 @@ ls_stateful_northd_handler(struct engine_node *node, void *data_)
     struct hmapx_node *hmapx_node;
 
     struct hmapx changed_stateful_od = HMAPX_INITIALIZER(&changed_stateful_od);
+    HMAPX_FOR_EACH (hmapx_node, &nd_changes->trk_switches.crupdated) {
+        hmapx_add(&changed_stateful_od, hmapx_node->data);
+    }
+
     HMAPX_FOR_EACH (hmapx_node, &nd_changes->ls_with_changed_lbs) {
         hmapx_add(&changed_stateful_od, hmapx_node->data);
     }
@@ -166,9 +167,14 @@ ls_stateful_northd_handler(struct engine_node *node, void *data_)
 
         struct ls_stateful_record *ls_stateful_rec = ls_stateful_table_find_(
             &data->table, od->nbs);
-        ovs_assert(ls_stateful_rec);
-        ls_stateful_record_reinit(ls_stateful_rec, od, NULL,
+        if (!ls_stateful_rec) {
+            ls_stateful_rec =
+                ls_stateful_record_create(&data->table, od,
+                                          input_data.ls_port_groups);
+        } else {
+            ls_stateful_record_reinit(ls_stateful_rec, od, NULL,
                                   input_data.ls_port_groups);
+        }
 
         /* Add the ls_stateful_rec to the tracking data. */
         hmapx_add(&data->trk_data.crupdated, ls_stateful_rec);
