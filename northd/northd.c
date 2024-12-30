@@ -847,6 +847,16 @@ join_datapaths(const struct nbrec_logical_switch_table *nbrec_ls_table,
             continue;
         }
 
+        if (!uuid_equals(&sb->header_.uuid, &key)) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+            VLOG_INFO_RL(
+                &rl, "deleting Datapath_Binding "UUID_FMT" with "
+                "mismatching external-ids:logical-switch/router "UUID_FMT,
+                UUID_ARGS(&sb->header_.uuid), UUID_ARGS(&key));
+            sbrec_datapath_binding_delete(sb);
+            continue;
+        }
+
         if (ovn_datapath_find_(datapaths, &key)) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
             VLOG_INFO_RL(
@@ -1064,7 +1074,8 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
         ovn_datapath_update_external_ids(od);
     }
     LIST_FOR_EACH (od, list, &nb_only) {
-        od->sb = sbrec_datapath_binding_insert(ovnsb_txn);
+        od->sb = sbrec_datapath_binding_insert_persist_uuid(ovnsb_txn,
+                                                            &od->key);
         ovn_datapath_update_external_ids(od);
         sbrec_datapath_binding_set_tunnel_key(od->sb, od->tunnel_key);
     }
