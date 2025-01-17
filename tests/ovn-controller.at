@@ -917,6 +917,13 @@ check ovn-nbctl lrp-add lr0 rp-ls1 00:00:01:01:02:03 192.168.1.254/24
 
 OVS_WAIT_UNTIL([as hv1 ovs-ofctl dump-flows br-int | grep table=OFTABLE_LOCAL_OUTPUT | grep -q "reg15=0x${port},metadata=0x${meta}"])
 
+# Check we have a full recompute if type column is updated
+AT_CHECK([ovn-appctl -t ovn-controller inc-engine/clear-stats])
+check ovn-nbctl lsp-set-type ls0-rp localnet
+AT_CHECK([ovn-appctl -t ovn-controller inc-engine/show-stats | grep physical_flow_output -A 1 | awk '/recompute/{print $3}'],[0],[dnl
+1
+])
+
 OVN_CLEANUP([hv1])
 AT_CLEANUP
 ])
