@@ -3229,6 +3229,15 @@ tcp.flags = RST;
         db="OVN_Northbound"/> row in the <ref db="OVN_Northbound"/> database.
       </column>
 
+      <column name="external_ids" key="pure_provider_switch"
+       type='{"type": "boolean"}'>
+        For a logical datapath that represents a logical switch that has
+        localnet ports and all its logical router ports' peers are
+        distributed gateway ports, <code>ovn-northd</code> stores in this
+        key the boolean value <code>true</code> to indicate that this
+        logical switch is a pure provider switch.
+      </column>
+
       <group title="Naming">
         <p>
           <code>ovn-northd</code> copies these from the name fields in the <ref
