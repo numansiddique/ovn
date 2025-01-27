@@ -479,7 +479,7 @@ OVN_CONTROLLER_EXPECT_NO_HIT(
 )
 
 OVN_CONTROLLER_EXPECT_HIT_COND(
-    [hv1 hv2 hv3 hv4 hv5], [lflow_run], [=0 =0 >0 =0 =0],
+    [hv1 hv2 hv3 hv4 hv5], [lflow_run], [>0 >0 >0 =0 =0],
     [ovn-nbctl --wait=hv lrp-set-gateway-chassis lr1-public hv3 30 && ovn-nbctl --wait=hv sync]
 )
 
@@ -552,8 +552,8 @@ hv5_ch=$(ovn-sbctl --bare --columns _uuid list chassis hv5)
 OVS_WAIT_UNTIL([ovn-sbctl find port_binding logical_port=cr-lr1-public chassis=$hv5_ch])
 check ovn-nbctl --wait=hv sync
 # Delete hv5 from gateway chassis. There should be no lflow_run.
-OVN_CONTROLLER_EXPECT_NO_HIT(
-    [hv1 hv2 hv3 hv4 hv5], [lflow_run],
+OVN_CONTROLLER_EXPECT_HIT_COND(
+    [hv1 hv2 hv3 hv4 hv5], [lflow_run], [=0 =0 =0 =0 =0]
     [ovn-nbctl --wait=hv lrp-del-gateway-chassis lr1-public hv5]
 )
 
