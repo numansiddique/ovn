@@ -766,6 +766,14 @@ ovn_datapath_update_external_ids(struct ovn_datapath *od)
             smap_add_format(&ids, "fdb_age_threshold",
                             "%u", age_threshold);
         }
+
+        /* A logical switch datapath is a true provider switch if
+         *   - It has (a) localnet port(s) and
+         *   - All its logical router ports' peers are DGPs. */
+        if (od->n_router_ports && od->n_router_ports == od->n_peer_dgw_ports
+            && od->n_localnet_ports) {
+            smap_add(&ids, "only_dgp_peer_ports", "true");
+        }
     }
 
     /* Set snat-ct-zone */
@@ -799,6 +807,20 @@ ovn_datapath_update_external_ids(struct ovn_datapath *od)
 
     sbrec_datapath_binding_set_external_ids(od->sb, &ids);
     smap_destroy(&ids);
+}
+
+static void
+update_datapaths_external_ids(struct ovn_datapaths *ls_datapaths,
+                              struct ovn_datapaths *lr_datapaths)
+{
+    struct ovn_datapath *od;
+    HMAP_FOR_EACH (od, key_node, &ls_datapaths->datapaths) {
+        ovn_datapath_update_external_ids(od);
+    }
+
+    HMAP_FOR_EACH (od, key_node, &lr_datapaths->datapaths) {
+        ovn_datapath_update_external_ids(od);
+    }
 }
 
 static void
@@ -852,7 +874,6 @@ join_datapaths(const struct nbrec_logical_switch_table *nbrec_ls_table,
             od->nbs = nbs;
             ovs_list_remove(&od->list);
             ovs_list_push_back(both, &od->list);
-            ovn_datapath_update_external_ids(od);
         } else {
             od = ovn_datapath_create(datapaths, &nbs->header_.uuid,
                                      nbs, NULL, NULL);
@@ -876,7 +897,6 @@ join_datapaths(const struct nbrec_logical_switch_table *nbrec_ls_table,
                 od->nbr = nbr;
                 ovs_list_remove(&od->list);
                 ovs_list_push_back(both, &od->list);
-                ovn_datapath_update_external_ids(od);
             } else {
                 /* Can't happen! */
                 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
@@ -1043,11 +1063,9 @@ build_datapaths(struct ovsdb_idl_txn *ovnsb_txn,
         if (od->sb->tunnel_key != od->tunnel_key) {
             sbrec_datapath_binding_set_tunnel_key(od->sb, od->tunnel_key);
         }
-        ovn_datapath_update_external_ids(od);
     }
     LIST_FOR_EACH (od, list, &nb_only) {
         od->sb = sbrec_datapath_binding_insert(ovnsb_txn);
-        ovn_datapath_update_external_ids(od);
         sbrec_datapath_binding_set_tunnel_key(od->sb, od->tunnel_key);
     }
     ovn_destroy_tnlids(&dp_tnlids);
@@ -2456,6 +2474,8 @@ join_logical_ports(const struct sbrec_port_binding_table *sbrec_pb_table,
             /* Only used for the router type LSP whose peer is l3dgw_port */
             op->peer->enable_router_port_acl = smap_get_bool(
                     &op->peer->nbsp->options, "enable_router_port_acl", false);
+
+            op->peer->od->n_peer_dgw_ports++;
         }
     }
 
@@ -18513,6 +18533,8 @@ ovnnb_db_run(struct northd_input *input_data,
                 input_data->sbrec_ha_chassis_grp_by_name,
                 &data->ls_datapaths.datapaths, &data->lr_datapaths.datapaths,
                 &data->ls_ports, &data->lr_ports);
+    update_datapaths_external_ids(&data->ls_datapaths,
+                                  &data->lr_datapaths);
     build_lb_port_related_data(ovnsb_txn,
                                input_data->sbrec_service_monitor_table,
                                input_data->svc_monitor_mac,
