@@ -132,6 +132,18 @@ lport_get_l3gw_peer(const struct sbrec_port_binding *pb,
     return get_peer_lport(pb, sbrec_port_binding_by_name);
 }
 
+const struct sbrec_port_binding *
+lport_get_cr_port(struct ovsdb_idl_index *sbrec_port_binding_by_name,
+                  const struct sbrec_port_binding *pb)
+{
+    const char *crp = smap_get(&pb->options, "chassis-redirect-port");
+    if (crp) {
+        return lport_lookup_by_name(sbrec_port_binding_by_name, crp);
+    }
+
+    return NULL;
+}
+
 enum can_bind
 lport_can_bind_on_this_chassis(const struct sbrec_chassis *chassis_rec,
                                const struct sbrec_port_binding *pb)

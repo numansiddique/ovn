@@ -53,6 +53,13 @@ static struct tracked_datapath *tracked_datapath_create(
 
 static bool datapath_is_switch(const struct sbrec_datapath_binding *);
 static bool datapath_is_transit_switch(const struct sbrec_datapath_binding *);
+static bool datapath_has_only_dgp_peer_ports(
+    const struct sbrec_datapath_binding *);
+static void local_datapath_remove_and_destroy__(
+    struct local_datapath *ld,
+    const struct sbrec_port_binding *ignore_peer_port,
+    struct hmap *local_datapaths,
+    struct hmap *tracked_datapaths);
 
 static uint64_t local_datapath_usage;
 
@@ -86,6 +93,7 @@ local_datapath_alloc(const struct sbrec_datapath_binding *dp)
     ld->datapath = dp;
     ld->is_switch = datapath_is_switch(dp);
     ld->is_transit_switch = datapath_is_transit_switch(dp);
+    ld->has_only_dgp_peer_ports = datapath_has_only_dgp_peer_ports(dp);
     shash_init(&ld->external_ports);
     shash_init(&ld->multichassis_ports);
     sset_init(&ld->claimed_lports);
@@ -130,6 +138,14 @@ local_datapath_destroy(struct local_datapath *ld)
     shash_destroy(&ld->multichassis_ports);
     sset_destroy(&ld->claimed_lports);
     free(ld);
+}
+
+void local_datapath_remove_and_destroy(struct local_datapath *ld,
+                                       struct hmap *local_datapaths,
+                                       struct hmap *tracked_datapaths)
+{
+    local_datapath_remove_and_destroy__(ld, NULL, local_datapaths,
+                                        tracked_datapaths);
 }
 
 /* Checks if pb is running on local gw router or pb is a patch port
@@ -226,12 +242,12 @@ add_local_datapath_peer_port(
         get_local_datapath(local_datapaths,
                            peer->datapath->tunnel_key);
     if (!peer_ld) {
-        add_local_datapath__(sbrec_datapath_binding_by_key,
-                             sbrec_port_binding_by_datapath,
-                             sbrec_port_binding_by_name, 1,
-                             peer->datapath, chassis, local_datapaths,
-                             tracked_datapaths);
-        return;
+        peer_ld = add_local_datapath__(sbrec_datapath_binding_by_key,
+                                       sbrec_port_binding_by_datapath,
+                                       sbrec_port_binding_by_name, 1,
+                                       peer->datapath, chassis,
+                                       local_datapaths,
+                                       tracked_datapaths);
     }
 
     local_datapath_peer_port_add(peer_ld, peer, pb);
@@ -618,6 +634,17 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                              tracked_datapaths);
     }
 
+    if (ld->has_only_dgp_peer_ports) {
+        /* If this flag is set, it means this 'switch' datapath has
+         *  - one ore many localnet ports.
+         *  - all the router ports it is connected to are
+         *    distributed gateway ports (DGPs).
+         * There is no need to add the routers of the dgps to
+         * the local datapaths.
+         * */
+        return ld;
+    }
+
     if (depth >= 100) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
         VLOG_WARN_RL(&rl, "datapaths nested too deep");
@@ -710,6 +737,13 @@ datapath_is_transit_switch(const struct sbrec_datapath_binding *ldp)
     return smap_get(&ldp->external_ids, "interconn-ts") != NULL;
 }
 
+static bool
+datapath_has_only_dgp_peer_ports(const struct sbrec_datapath_binding *ldp)
+{
+    return datapath_is_switch(ldp) &&
+           smap_get_bool(&ldp->external_ids, "only_dgp_peer_ports", false);
+}
+
 bool
 lb_is_local(const struct sbrec_load_balancer *sbrec_lb,
             const struct hmap *local_datapaths)
@@ -749,4 +783,42 @@ lb_is_local(const struct sbrec_load_balancer *sbrec_lb,
     }
 
     return false;
+}
+
+static void
+local_datapath_remove_and_destroy__(struct local_datapath *ld,
+                                    const struct sbrec_port_binding *ignore_pb,
+                                    struct hmap *local_datapaths,
+                                    struct hmap *tracked_datapaths)
+{
+    for (size_t i = 0; i < ld->n_peer_ports; i++) {
+        const struct sbrec_port_binding *remote = ld->peer_ports[i].remote;
+        const struct sbrec_port_binding *local = ld->peer_ports[i].local;
+
+        if (local == ignore_pb) {
+            continue;
+        }
+
+        struct local_datapath *peer_ld;
+        uint32_t remote_peer_ld_key;
+
+        remote_peer_ld_key = ld->peer_ports[i].remote->datapath->tunnel_key;
+        peer_ld = get_local_datapath(local_datapaths, remote_peer_ld_key);
+        if (peer_ld && !peer_ld->has_only_dgp_peer_ports) {
+            local_datapath_remove_and_destroy__(peer_ld, remote,
+                                                local_datapaths,
+                                                tracked_datapaths);
+        } else if (peer_ld && peer_ld->has_only_dgp_peer_ports) {
+            remove_local_datapath_peer_port(ld->peer_ports[i].remote,
+                                            peer_ld, local_datapaths);
+        }
+    }
+
+    hmap_remove(local_datapaths, &ld->hmap_node);
+    if (tracked_datapaths) {
+        tracked_datapath_add(ld->datapath, TRACKED_RESOURCE_REMOVED,
+                             tracked_datapaths);
+    }
+
+    local_datapath_destroy(ld);
 }

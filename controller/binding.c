@@ -824,6 +824,16 @@ static bool binding_lport_update_port_sec(
 static bool ovs_iface_matches_lport_iface_id_ver(
     const struct ovsrec_interface *,
     const struct sbrec_port_binding *);
+static bool cleanup_patch_port_local_dps(
+    const struct sbrec_port_binding *, const struct sbrec_port_binding *cr_pb,
+    const struct sbrec_port_binding *peer, struct local_datapath *ld,
+    struct binding_ctx_in *b_ctx_in,
+    struct binding_ctx_out *b_ctx_out,
+    bool *cleanup);
+static bool local_datapath_is_relevant(
+    struct local_datapath *, struct local_datapath *ignore_peer_ld,
+    struct hmap *local_datapaths, int *depth, const struct sbrec_chassis *,
+    struct ovsdb_idl_index *);
 
 void
 related_lports_init(struct related_lports *rp)
@@ -1126,6 +1136,19 @@ binding_dump_local_bindings(struct local_binding_data *lbinding_data,
     }
 
     free(nodes);
+}
+
+void
+binding_dump_local_datapaths(struct hmap *local_datapaths,
+                             struct ds *out_data)
+{
+    ds_put_cstr(out_data, "Local datapaths:\n");
+    struct local_datapath *ld;
+    HMAP_FOR_EACH (ld, hmap_node, local_datapaths) {
+        ds_put_format(out_data, "Datapath: %s, type: %s\n",
+                      smap_get(&ld->datapath->external_ids, "name"),
+                      ld->is_switch ? "switch" : "router");
+    }
 }
 
 void
@@ -2144,7 +2167,9 @@ build_local_bindings(struct binding_ctx_in *b_ctx_in,
 
 static bool consider_patch_port_for_local_datapaths(
         const struct sbrec_port_binding *,
-        struct binding_ctx_in *, struct binding_ctx_out *);
+        const struct sbrec_port_binding *cr_pb,
+        struct binding_ctx_in *, struct binding_ctx_out *,
+        bool check_and_remove_localdps);
 
 void
 binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
@@ -2189,7 +2214,8 @@ binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
         switch (lport_type) {
         case LP_PATCH:
             update_related_lport(pb, b_ctx_out);
-            consider_patch_port_for_local_datapaths(pb, b_ctx_in, b_ctx_out);
+            consider_patch_port_for_local_datapaths(pb, NULL, b_ctx_in,
+                                                    b_ctx_out, false);
             break;
 
         case LP_VTEP:
@@ -2245,6 +2271,9 @@ binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
             struct lport *lnet_lport = xmalloc(sizeof *lnet_lport);
             lnet_lport->pb = pb;
             ovs_list_push_back(&localnet_lports, &lnet_lport->list_node);
+            if (pb->chassis == b_ctx_in->chassis_rec) {
+                sbrec_port_binding_set_chassis(pb, NULL);
+            }
             break;
         }
 
@@ -2574,7 +2603,6 @@ consider_iface_release(const struct ovsrec_interface *iface_rec,
                 if_status_mgr_remove_ovn_installed(b_ctx_out->if_mgr,
                                            lbinding->iface);
             }
-
         } else if (b_lport && b_lport->type == LP_LOCALPORT) {
             /* lbinding is associated with a localport.  Remove it from the
              * related lports. */
@@ -2964,12 +2992,27 @@ handle_updated_vif_lport(const struct sbrec_port_binding *pb,
 
 static bool
 consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
+                                        const struct sbrec_port_binding *cr_pb,
                                         struct binding_ctx_in *b_ctx_in,
-                                        struct binding_ctx_out *b_ctx_out)
+                                        struct binding_ctx_out *b_ctx_out,
+                                        bool check_and_remove_localdps)
 {
-    struct local_datapath *ld =
-        get_local_datapath(b_ctx_out->local_datapaths,
-                           pb->datapath->tunnel_key);
+    const struct sbrec_port_binding *peer;
+    struct local_datapath *peer_ld = NULL;
+    struct local_datapath *ld = NULL;
+
+    ld = get_local_datapath(b_ctx_out->local_datapaths,
+                            pb->datapath->tunnel_key);
+    if (ld && ld->has_only_dgp_peer_ports) {
+        /* Nothing much to do. */
+        return true;
+    }
+
+    peer = lport_get_peer(pb, b_ctx_in->sbrec_port_binding_by_name);
+    if (peer) {
+        peer_ld = get_local_datapath(b_ctx_out->local_datapaths,
+                                     peer->datapath->tunnel_key);
+    }
 
     if (!ld) {
         /* If 'ld' for this lport is not present, then check if
@@ -2977,17 +3020,9 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
          * and peer's datapath is already in the local datapaths,
          * then add this lport's datapath to the local_datapaths.
          * */
-        const struct sbrec_port_binding *peer;
-        struct local_datapath *peer_ld = NULL;
-        peer = lport_get_peer(pb, b_ctx_in->sbrec_port_binding_by_name);
-        if (peer) {
-            peer_ld =
-                get_local_datapath(b_ctx_out->local_datapaths,
-                                   peer->datapath->tunnel_key);
-        }
-        if (peer_ld && need_add_peer_to_local(
-                b_ctx_in->sbrec_port_binding_by_name, peer,
-                b_ctx_in->chassis_rec)) {
+        if (peer_ld && !peer_ld->has_only_dgp_peer_ports &&
+            need_add_peer_to_local(b_ctx_in->sbrec_port_binding_by_name, peer,
+                                   b_ctx_in->chassis_rec)) {
             ld = add_local_datapath(
                     b_ctx_in->sbrec_datapath_binding_by_key,
                     b_ctx_in->sbrec_port_binding_by_datapath,
@@ -3000,7 +3035,7 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
         /* Add the peer datapath to the local datapaths if it's
          * not present yet.
          */
-        if (need_add_peer_to_local(
+        if (peer && need_add_peer_to_local(
                 b_ctx_in->sbrec_port_binding_by_name, pb,
                 b_ctx_in->chassis_rec)) {
             add_local_datapath_peer_port(
@@ -3010,6 +3045,18 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
                 b_ctx_in->sbrec_port_binding_by_name,
                 ld, b_ctx_out->local_datapaths,
                 b_ctx_out->tracked_dp_bindings);
+        }
+
+        if (check_and_remove_localdps) {
+            bool cleanedup = false;
+            if (!cleanup_patch_port_local_dps(pb, cr_pb, peer, ld, b_ctx_in,
+                                              b_ctx_out, &cleanedup)) {
+                return false;
+            }
+
+            if (cleanedup) {
+                ld = NULL;
+            }
         }
     }
 
@@ -3029,12 +3076,10 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
         || if_status_is_port_claimed(b_ctx_out->if_mgr, pb->logical_port)) {
 
         remove_local_lports(pb->logical_port, b_ctx_out);
-        if (!release_lport(pb, ld, b_ctx_in->chassis_rec,
-                           !b_ctx_in->ovnsb_idl_txn,
-                           b_ctx_out->tracked_dp_bindings,
-                           b_ctx_out->if_mgr)) {
-            return false;
-        }
+        return release_lport(pb, ld, b_ctx_in->chassis_rec,
+                             !b_ctx_in->ovnsb_idl_txn,
+                             b_ctx_out->tracked_dp_bindings,
+                             b_ctx_out->if_mgr);
     }
     return true;
 }
@@ -3094,8 +3139,8 @@ handle_updated_port(struct binding_ctx_in *b_ctx_in,
 
     case LP_PATCH:
         update_related_lport(pb, b_ctx_out);
-        handled = consider_patch_port_for_local_datapaths(pb, b_ctx_in,
-                                                              b_ctx_out);
+        handled = consider_patch_port_for_local_datapaths(pb, NULL, b_ctx_in,
+                                                          b_ctx_out, true);
         break;
 
     case LP_VTEP:
@@ -3138,8 +3183,8 @@ handle_updated_port(struct binding_ctx_in *b_ctx_in,
             break;
         }
         handled = consider_patch_port_for_local_datapaths(distributed_pb,
-                                                          b_ctx_in,
-                                                          b_ctx_out);
+                                                          pb, b_ctx_in,
+                                                          b_ctx_out, true);
         break;
 
     case LP_EXTERNAL:
@@ -3911,4 +3956,143 @@ binding_destroy(void)
     shash_destroy_free_data(&_claimed_ports);
     shash_destroy_free_data(&_qos_ports);
     sset_clear(&_postponed_ports);
+}
+
+static bool
+is_patch_pb_chassis_relevant(
+    const struct sbrec_port_binding *pb,
+    const struct sbrec_chassis *chassis,
+    struct ovsdb_idl_index *sbrec_port_binding_by_name)
+{
+    if (ha_chassis_group_contains(pb->ha_chassis_group, chassis)) {
+        return true;
+    }
+
+    const struct sbrec_port_binding *pb_crp =
+        lport_get_cr_port(sbrec_port_binding_by_name, pb);
+    if (pb_crp) {
+        return ha_chassis_group_contains(pb_crp->ha_chassis_group, chassis);
+    }
+
+    return false;
+}
+
+static bool
+cleanup_patch_port_local_dps(const struct sbrec_port_binding *pb,
+                             const struct sbrec_port_binding *cr_pb,
+                             const struct sbrec_port_binding *peer,
+                             struct local_datapath *ld,
+                             struct binding_ctx_in *b_ctx_in,
+                             struct binding_ctx_out *b_ctx_out,
+                             bool *cleanedup)
+{
+    *cleanedup = false;
+    if (!peer) {
+        /* Remove 'pb' from the ld's peer ports as it has no peer. */
+        remove_local_datapath_peer_port(pb, ld,
+                                        b_ctx_out->local_datapaths);
+    }
+
+    /* We can consider removing the 'ld' of the patch port 'pb' from the
+     * local datapaths, if all the below conditions are met
+     *     - 'pb' doesn't have a peer or ld' is a router datapath
+     *     - if 'pb' is a distributed gateway port (dgp), then
+     *       its chassisredirect port's ha chassis group doesn't
+     *       contain our 'chassis rec'
+     *     - and finally 'ld' is not relevant any more.  See
+     *       local_datapath_is_relevant() for more details.
+     *
+     * Note: If 'ld' can be removed, then all its connected local datapaths
+     * can also be removed.
+     *
+     * For example, if we had sw1-port1 ->  sw1 -> lr1 -> sw2 and if
+     * sw1-port1 resides on this chassis, and if the link between sw1 and
+     * lr1 is broken, then we can remove lr1 and sw2 from the
+     * local_datapaths.
+     * */
+
+    bool consider_ld_for_removal = !peer || !ld->is_switch;
+    if (consider_ld_for_removal && cr_pb) {
+        consider_ld_for_removal = !ha_chassis_group_contains(
+            cr_pb->ha_chassis_group, b_ctx_in->chassis_rec);
+    }
+
+    if (!consider_ld_for_removal) {
+        return true;
+    }
+
+    int depth = 0;
+
+    bool is_relevant = local_datapath_is_relevant(
+        ld, NULL, b_ctx_out->local_datapaths,
+        &depth, b_ctx_in->chassis_rec,
+        b_ctx_in->sbrec_port_binding_by_name);
+
+    if (depth >= 100) {
+        /* datapaths are too deeply nested.  Fall back to recompute. */
+        return false;
+    }
+
+    if (!is_relevant) {
+        /* This 'ld' can be removed from the local datapaths as
+            *   - its a router datapath and
+            *   - it has no peers locally. */
+        local_datapath_remove_and_destroy(ld, b_ctx_out->local_datapaths,
+                                          b_ctx_out->tracked_dp_bindings);
+        *cleanedup = true;
+    }
+
+    return true;
+}
+
+static bool
+local_datapath_is_relevant(struct local_datapath *ld,
+                           struct local_datapath *ignore_peer_ld,
+                           struct hmap *local_datapaths, int *depth,
+                           const struct sbrec_chassis *chassis,
+                           struct ovsdb_idl_index *sbrec_pb_by_name)
+{
+    if (!sset_is_empty(&ld->claimed_lports) ||
+        !shash_is_empty(&ld->external_ports) ||
+        !shash_is_empty(&ld->multichassis_ports) ||
+        ld->vtep_port) {
+        return true;
+    }
+
+    bool relevant = false;
+
+    if (*depth >= 100) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+        VLOG_WARN_RL(&rl, "datapaths nested too deep");
+        return true;
+    }
+
+    for (size_t i = 0; i < ld->n_peer_ports && !relevant; i++) {
+        const struct sbrec_port_binding *remote = ld->peer_ports[i].remote;
+        const struct sbrec_port_binding *local = ld->peer_ports[i].local;
+
+        if (is_patch_pb_chassis_relevant(local, chassis,
+                                         sbrec_pb_by_name)) {
+            return  true;
+        }
+
+        if (is_patch_pb_chassis_relevant(remote, chassis,
+                                         sbrec_pb_by_name)) {
+            return  true;
+        }
+
+        struct local_datapath *peer_ld;
+        uint32_t remote_peer_ld_key;
+        remote_peer_ld_key = ld->peer_ports[i].remote->datapath->tunnel_key;
+        peer_ld = get_local_datapath(local_datapaths, remote_peer_ld_key);
+        if (peer_ld && !peer_ld->has_only_dgp_peer_ports &&
+            peer_ld != ignore_peer_ld) {
+            *depth = *depth + 1;
+            relevant = local_datapath_is_relevant(peer_ld, ld,
+                                                  local_datapaths, depth,
+                                                  chassis, sbrec_pb_by_name);
+        }
+    }
+
+    return relevant;
 }

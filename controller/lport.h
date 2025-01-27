@@ -77,4 +77,8 @@ const struct sbrec_port_binding *lport_get_l3gw_peer(
 bool
 lport_is_activated_by_activation_strategy(const struct sbrec_port_binding *pb,
                                           const struct sbrec_chassis *chassis);
+const struct sbrec_port_binding *lport_get_cr_port(
+    struct ovsdb_idl_index *sbrec_port_binding_by_name,
+    const struct sbrec_port_binding *);
+
 #endif /* controller/lport.h */
