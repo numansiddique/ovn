@@ -373,6 +373,10 @@ struct ovn_datapath {
     size_t n_router_ports;
     size_t n_allocated_router_ports;
 
+    /* Indicates the number of router port's peers which are distributed
+     * gateway ports (DGPs). */
+    size_t n_peer_dgw_ports;
+
     struct hmap port_tnlids;
     uint32_t port_key_hint;
 

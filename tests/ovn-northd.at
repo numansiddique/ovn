@@ -14657,6 +14657,65 @@ check rbr_match_custom
 AT_CLEANUP
 
 OVN_FOR_EACH_NORTHD_NO_HV([
+AT_SETUP([ovn-northd -- only_dgp_peer_ports flag in SB datapath_binding])
+ovn_start
+
+check ovn-nbctl ls-add sw0
+check ovn-nbctl --wait=sb sync
+
+# Check that there is no option "only_dgp_peer_ports" in the
+# SB.datapath_binding's external_ids.
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+# only_dgp_peer_ports flag will be set in the SB:datapath_binding's external_ids
+# only if the logical switch has
+#  -  one or more localnet ports.
+#  -  All its router ports' peeers are DGPs if one or more router
+#     ports are present.
+
+check ovn-nbctl --wait=sb lsp-add sw0 ln-sw0 -- lsp-set-type ln-sw0 localnet
+
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+check ovn-nbctl lsp-add sw0 sw0-lr0 -- lsp-set-type sw0-lr0 router
+check ovn-nbctl --wait=sb lsp-set-options sw0-lr0 router-port=lr0-sw0
+
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+check ovn-nbctl lr-add lr0
+check ovn-nbctl --wait=sb lrp-add lr0 lr0-sw0 00:00:02:01:02:03 172.16.1.1/24
+
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+check ovn-nbctl --wait=sb lrp-set-gateway-chassis lr0-sw0 ovn-gw-1
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [0], [dnl
+"true"
+])
+
+check ovn-nbctl lsp-add sw0 sw0-lr1 -- lsp-set-type sw0-lr1 router
+check ovn-nbctl --wait=sb lsp-set-options sw0-lr1 router-port=lr1-sw0
+check ovn-nbctl lr-add lr1
+check ovn-nbctl --wait=sb lrp-add lr1 lr1-sw0 00:00:02:01:02:03 172.16.1.1/24
+
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+check ovn-nbctl --wait=sb lrp-set-gateway-chassis lr1-sw0 ovn-gw-1
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [0], [dnl
+"true"
+])
+
+# Just add a normal port.
+check ovn-nbctl --wait=sb lsp-add sw0 sw0p1
+
+check ovn-nbctl --wait=sb lrp-set-gateway-chassis lr1-sw0 ovn-gw-1
+AT_CHECK([ovn-sbctl get datapath_binding sw0 external_ids:only_dgp_peer_ports], [0], [dnl
+"true"
+])
+
+AT_CLEANUP
+])
+
+OVN_FOR_EACH_NORTHD_NO_HV([
 AT_SETUP([ACL mismatched tiers])
 ovn_start
 
