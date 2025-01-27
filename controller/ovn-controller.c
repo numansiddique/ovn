@@ -101,6 +101,7 @@ static unixctl_cb_func debug_pause_execution;
 static unixctl_cb_func debug_resume_execution;
 static unixctl_cb_func debug_status_execution;
 static unixctl_cb_func debug_dump_local_bindings;
+static unixctl_cb_func debug_dump_local_datapaths;
 static unixctl_cb_func debug_dump_related_lports;
 static unixctl_cb_func debug_dump_local_template_vars;
 static unixctl_cb_func debug_dump_local_mac_bindings;
@@ -1687,6 +1688,22 @@ runtime_data_sb_datapath_binding_handler(struct engine_node *node OVS_UNUSED,
                                            dp->tunnel_key)) {
                 return false;
             }
+        }
+
+        if (sbrec_datapath_binding_is_updated(
+                dp, SBREC_DATAPATH_BINDING_COL_EXTERNAL_IDS) &&
+            !sbrec_datapath_binding_is_new(dp)) {
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                   dp->tunnel_key);
+                if (ld && ld->is_switch) {
+                    bool only_dgp_peer_ports =
+                        smap_get_bool(&dp->external_ids, "only_dgp_peer_ports",
+                                      false);
+                    if (ld->has_only_dgp_peer_ports != only_dgp_peer_ports) {
+                        return false;
+                    }
+                }
         }
     }
 
@@ -4358,6 +4375,12 @@ lflow_output_runtime_data_handler(struct engine_node *node,
 
     struct tracked_datapath *tdp;
     HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
+        if (tdp->tracked_type == TRACKED_RESOURCE_REMOVED) {
+            return false;
+        }
+    }
+
+    HMAP_FOR_EACH (tdp, node, tracked_dp_bindings) {
         if (tdp->tracked_type == TRACKED_RESOURCE_NEW) {
             if (!lflow_add_flows_for_datapath(tdp->dp, &l_ctx_in,
                                               &l_ctx_out)) {
@@ -5552,6 +5575,10 @@ main(int argc, char *argv[])
                              debug_dump_local_bindings,
                              &runtime_data->lbinding_data);
 
+    unixctl_command_register("debug/dump-local-datapaths", "", 0, 0,
+                             debug_dump_local_datapaths,
+                             &runtime_data->local_datapaths);
+
     unixctl_command_register("debug/dump-related-ports", "", 0, 0,
                              debug_dump_related_lports,
                              &runtime_data->related_lports);
@@ -6515,6 +6542,17 @@ debug_dump_local_bindings(struct unixctl_conn *conn, int argc OVS_UNUSED,
     binding_dump_local_bindings(local_bindings, &binding_data);
     unixctl_command_reply(conn, ds_cstr(&binding_data));
     ds_destroy(&binding_data);
+}
+
+static void
+debug_dump_local_datapaths(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                           const char *argv[] OVS_UNUSED,
+                           void *local_datapaths)
+{
+    struct ds local_dps_data = DS_EMPTY_INITIALIZER;
+    binding_dump_local_datapaths(local_datapaths, &local_dps_data);
+    unixctl_command_reply(conn, ds_cstr(&local_dps_data));
+    ds_destroy(&local_dps_data);
 }
 
 static void

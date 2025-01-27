@@ -2776,3 +2776,181 @@ for i in 1 2; do
 done
 
 AT_CLEANUP
+
+AT_SETUP([ovn multinode - only_dgp_peer_ports provider switch functionality])
+
+# Check that ovn-fake-multinode setup is up and running
+check_fake_multinode_setup
+
+# Delete the multinode NB and OVS resources before starting the test.
+cleanup_multinode_resources
+
+check multinode_nbctl ls-add sw0
+check multinode_nbctl lsp-add sw0 sw0-port1
+check multinode_nbctl lsp-set-addresses sw0-port1 "50:54:00:00:00:03 10.0.0.3 1000::3"
+check multinode_nbctl lsp-add sw0 sw0-port2
+check multinode_nbctl lsp-set-addresses sw0-port2 "50:54:00:00:00:04 10.0.0.4 1000::4"
+
+check multinode_nbctl lr-add lr0
+check multinode_nbctl lrp-add lr0 lr0-sw0 00:00:00:00:ff:01 10.0.0.1/24 1000::1/64
+check multinode_nbctl lsp-add sw0 sw0-lr0
+check multinode_nbctl lsp-set-type sw0-lr0 router
+check multinode_nbctl lsp-set-addresses sw0-lr0 router
+check multinode_nbctl lsp-set-options sw0-lr0 router-port=lr0-sw0
+
+check multinode_nbctl ls-add public
+check multinode_nbctl lrp-add lr0 lr0-public 00:00:20:20:12:13 172.16.1.100/24 2000::1/64
+check multinode_nbctl lsp-add public public-lr0
+check multinode_nbctl lsp-set-type public-lr0 router
+check multinode_nbctl lsp-set-addresses public-lr0 router
+check multinode_nbctl lsp-set-options public-lr0 router-port=lr0-public
+
+# localnet port
+check multinode_nbctl lsp-add public ln-public
+check multinode_nbctl lsp-set-type ln-public localnet
+check multinode_nbctl lsp-set-addresses ln-public unknown
+check multinode_nbctl lsp-set-options ln-public network_name=public
+
+check multinode_nbctl lrp-set-gateway-chassis lr0-public ovn-gw-1 20
+check multinode_nbctl lr-nat-add lr0 snat 172.16.1.100 10.0.0.0/24
+check multinode_nbctl lr-nat-add lr0 dnat_and_snat 172.16.1.110 10.0.0.3 sw0-port1 50:54:00:00:00:03
+check multinode_nbctl lr-nat-add lr0 snat 2000::1 1000::/64
+check multinode_nbctl lr-nat-add lr0 dnat_and_snat 2000::2 1000::3 sw0-port1 50:54:00:00:00:03
+
+check multinode_nbctl --wait=hv sync
+
+check multinode_nbctl ls-add sw1
+check multinode_nbctl lsp-add sw1 sw1-port1
+check multinode_nbctl lsp-set-addresses sw1-port1 "40:54:00:00:00:03 20.0.0.3 2000::3"
+
+check multinode_nbctl lr-add lr1
+check multinode_nbctl lrp-add lr1 lr1-sw1 00:00:01:00:ef:01 20.0.0.1/24 2000::a/64
+check multinode_nbctl lsp-add sw1 sw1-lr1
+check multinode_nbctl lsp-set-type sw1-lr1 router
+check multinode_nbctl lsp-set-addresses sw1-lr1 router
+check multinode_nbctl lsp-set-options sw1-lr1 router-port=lr1-sw1
+
+check multinode_nbctl lrp-add lr1 lr1-public 00:00:20:30:22:13 172.16.1.101/24
+check multinode_nbctl lsp-add public public-lr1
+check multinode_nbctl lsp-set-type public-lr1 router
+check multinode_nbctl lsp-set-addresses public-lr1 router
+check multinode_nbctl lsp-set-options public-lr1 router-port=lr1-public
+
+check multinode_nbctl lr-nat-add lr1 snat 172.16.1.101 20.0.0.0/24
+check multinode_nbctl lr-nat-add lr1 dnat_and_snat 172.16.1.120 20.0.0.3
+check multinode_nbctl lrp-set-gateway-chassis lr1-public ovn-gw-1 20
+
+check multinode_nbctl --wait=hv sync
+
+m_as ovn-chassis-1 /data/create_fake_vm.sh sw0-port1 sw0p1 50:54:00:00:00:03 1342 10.0.0.3 24 10.0.0.1 1000::3/64 1000::a
+m_as ovn-chassis-2 /data/create_fake_vm.sh sw1-port1 sw1p1 40:54:00:00:00:03 1342 20.0.0.3 24 20.0.0.1 2000::4/64 1000::a
+
+m_wait_for_ports_up sw0-port1
+m_wait_for_ports_up sw1-port1
+
+m_as ovn-central-az1-1 ovn-sbctl show
+
+m_as ovn-chassis-1 ovn-appctl  debug/dump-local-datapaths | sort
+m_as ovn-chassis-2 ovn-appctl  debug/dump-local-datapaths | sort
+
+AT_CHECK([m_as ovn-chassis-1 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([m_as ovn-chassis-2 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CHECK([m_as ovn-gw-1 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+# ping lr0-public IP - 172.168.0.100
+M_NS_CHECK_EXEC([ovn-chassis-1], [sw0p1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.100 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# ping lr1-public IP - 172.168.0.101 from sw0p1
+M_NS_CHECK_EXEC([ovn-chassis-1], [sw0p1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.101 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# ping public ip of sw1-port1 - 172.16.1.120 from sw0p1
+M_NS_CHECK_EXEC([ovn-chassis-1], [sw0p1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.120 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# ping public ip of sw0-port1 - 172.16.1.110 from sw1p1
+M_NS_CHECK_EXEC([ovn-chassis-2], [sw1p1], [ping -q -c 3 -i 0.3 -w 2 172.16.1.110 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# Bind sw0-port2 on chassis-2
+m_as ovn-chassis-2 /data/create_fake_vm.sh sw0-port2 sw0p2 50:54:00:00:00:04 1342 10.0.0.4 24 10.0.0.1 1000::4/64 1000::a
+m_wait_for_ports_up sw0-port2
+
+AT_CHECK([m_as ovn-chassis-2 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+# ping public ip of sw0-port1 - 172.16.1.110 from sw0p2
+M_NS_CHECK_EXEC([ovn-chassis-2], [sw0p2], [ping -q -c 3 -i 0.3 -w 2 172.16.1.110 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# ping public ip of sw1-port1 - 172.16.1.120 from sw0p2
+M_NS_CHECK_EXEC([ovn-chassis-2], [sw0p2], [ping -q -c 3 -i 0.3 -w 2 172.16.1.120 | FORMAT_PING], \
+[0], [dnl
+3 packets transmitted, 3 received, 0% packet loss, time 0ms
+])
+
+# Create a normal router port in public with its peer as a normal distributed router port.
+check multinode_nbctl lsp-add public public-lr2
+check multinode_nbctl lsp-set-type public-lr2 router
+check multinode_nbctl lsp-set-addresses public-lr2 router
+check multinode_nbctl lsp-set-options public-lr2 router-port=lr2-public
+check multinode_nbctl lr-add lr2
+check multinode_nbctl lrp-add lr2 lr2-public 00:00:41:00:1f:61 172.16.1.102/24 3000::a/64
+
+check multinode_nbctl --wait=hv sync
+AT_CHECK([m_as ovn-chassis-1 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CHECK([m_as ovn-chassis-2 ovn-appctl  debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CLEANUP

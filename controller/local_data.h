@@ -46,6 +46,8 @@ struct local_datapath {
     const struct sbrec_datapath_binding *datapath;
     bool is_switch;
     bool is_transit_switch;
+    /* Valid only for 'is_switch' local datapath. */
+    bool has_only_dgp_peer_ports;
 
     /* The localnet port in this datapath, if any (at most one is allowed). */
     const struct sbrec_port_binding *localnet_port;
@@ -91,6 +93,10 @@ struct local_datapath * add_local_datapath(
 
 void local_datapaths_destroy(struct hmap *local_datapaths);
 void local_datapath_destroy(struct local_datapath *ld);
+void local_datapath_remove_and_destroy(struct local_datapath *,
+                                       struct hmap *local_datapaths,
+                                       struct hmap *tracked_datapaths);
+
 void add_local_datapath_peer_port(
     const struct sbrec_port_binding *,
     const struct sbrec_chassis *,

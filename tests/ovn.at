@@ -41481,6 +41481,859 @@ OVN_CLEANUP([hv1])
 AT_CLEANUP
 ])
 
+OVN_FOR_EACH_NORTHD_NO_HV([
+AT_SETUP([ovn-controller -- only_dgp_peer_ports flag in SB datapath_binding])
+AT_KEYWORDS([multiple-l3dgw-ports])
+ovn_start
+net_add n1
+sim_add hv1
+as hv1
+check ovs-vsctl add-br br-phys
+ovn_attach n1 br-phys 192.168.0.1
+
+sim_add hv2
+as hv2
+check ovs-vsctl add-br br-phys
+ovn_attach n1 br-phys 192.168.0.2
+
+sim_add gw1
+as gw1
+check ovs-vsctl add-br br-phys
+ovn_attach n1 br-phys 192.168.0.3
+
+sim_add gw2
+as gw2
+check ovs-vsctl add-br br-phys
+ovn_attach n1 br-phys 192.168.0.4
+
+check ovn-nbctl ls-add sw0
+check ovn-nbctl lsp-add sw0 sw0-port1
+check ovn-nbctl lsp-set-addresses sw0-port1 "50:54:00:00:00:01 10.0.0.3 1000::3"
+check ovn-nbctl lsp-add sw0 sw0-port2
+check ovn-nbctl lsp-set-addresses sw0-port2 "50:54:00:00:00:02 10.0.0.4 1000::4"
+
+check ovn-nbctl lr-add lr0
+check ovn-nbctl lrp-add lr0 lr0-sw0 00:00:00:00:ff:01 10.0.0.1/24 1000::1/64
+check ovn-nbctl lsp-add sw0 sw0-lr0
+check ovn-nbctl lsp-set-type sw0-lr0 router
+check ovn-nbctl lsp-set-addresses sw0-lr0 router
+check ovn-nbctl lsp-set-options sw0-lr0 router-port=lr0-sw0
+
+check ovn-nbctl ls-add public
+check ovn-nbctl lrp-add lr0 lr0-public 00:00:20:20:12:13 172.168.0.100/24 2000::1/64
+check ovn-nbctl lsp-add public public-lr0
+check ovn-nbctl lsp-set-type public-lr0 router
+check ovn-nbctl lsp-set-addresses public-lr0 router
+check ovn-nbctl lsp-set-options public-lr0 router-port=lr0-public
+
+# localnet port
+check ovn-nbctl lsp-add public ln-public
+check ovn-nbctl lsp-set-type ln-public localnet
+check ovn-nbctl lsp-set-addresses ln-public unknown
+check ovn-nbctl lsp-set-options ln-public network_name=phys
+
+check ovn-nbctl lrp-set-gateway-chassis lr0-public gw1 20
+check ovn-nbctl lr-nat-add lr0 snat 172.168.0.100 10.0.0.0/24
+check ovn-nbctl lr-nat-add lr0 dnat_and_snat 172.168.0.110 10.0.0.4 sw0-port2 f0:00:00:01:02:04
+check ovn-nbctl lr-nat-add lr0 snat 2000::1 1000::/64
+check ovn-nbctl lr-nat-add lr0 dnat_and_snat 2000::2 1000::4 sw0-port2 f0:00:00:01:02:04
+
+check ovn-nbctl --wait=hv sync
+
+sw0_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=sw0))
+lr0_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=lr0))
+public_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=public))
+
+check_offlows_for_datapath() {
+    hv=$1
+    dp_key=$2
+    should_be_present=$3
+
+    if [[ "$should_be_present" == "yes" ]]; then
+        echo "Flows should be present for hv - $hv : datapath - $dp_key"
+        OVS_WAIT_UNTIL(
+            [test $(as $hv ovs-ofctl dump-flows br-int | grep -c metadata=0x$dp_key) -gt 0]
+        )
+    else
+        echo "Flows should NOT be present for hv - $hv : datapath - $dp_key"
+        OVS_WAIT_UNTIL(
+            [test $(as $hv ovs-ofctl dump-flows br-int | grep -c metadata=0x$dp_key) -eq 0]
+        )
+    fi
+}
+
+AT_CHECK([ovn-sbctl get datapath_binding public external_ids:only_dgp_peer_ports], [0], [dnl
+"true"
+])
+
+check_offlows_for_datapath hv1 $sw0_dp_key no
+check_offlows_for_datapath hv1 $lr0_dp_key no
+check_offlows_for_datapath hv1 $public_dp_key no
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key no
+
+check_offlows_for_datapath gw1 $sw0_dp_key yes
+check_offlows_for_datapath gw1 $lr0_dp_key yes
+check_offlows_for_datapath gw1 $public_dp_key yes
+
+check_offlows_for_datapath gw2 $sw0_dp_key no
+check_offlows_for_datapath gw2 $lr0_dp_key no
+check_offlows_for_datapath gw2 $public_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+# Create a VIF on hv1 for sw0-port1
+AS_BOX([create a VIF on hv1 for sw0-port1])
+
+as hv1
+ovs-vsctl -- add-port br-int hv1-vif1 -- \
+    set interface hv1-vif1 external-ids:iface-id=sw0-port1 \
+    options:tx_pcap=hv1/vif1-tx.pcap \
+    options:rxq_pcap=hv1/vif1-rx.pcap \
+    ofport-request=1
+
+wait_for_ports_up sw0-port1
+
+AS_BOX([Create a VIF on hv1 for sw0-port1 - hv1 should have flows for sw0, lr0 and public])
+
+check_offlows_for_datapath hv1 $sw0_dp_key yes
+check_offlows_for_datapath hv1 $lr0_dp_key yes
+check_offlows_for_datapath hv1 $public_dp_key yes
+
+AS_BOX([hv2 should NOT have flows for sw0, lr0 and public])
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AS_BOX([create a switch sw1 and router lr1, attach both and attach lr1 to public])
+
+check ovn-nbctl ls-add sw1
+check ovn-nbctl lsp-add sw1 sw1-port1
+check ovn-nbctl lsp-set-addresses sw1-port1 "60:54:00:00:00:01 20.0.0.3"
+
+check ovn-nbctl lr-add lr1
+check ovn-nbctl lrp-add lr1 lr1-sw1 00:00:01:00:ef:01 20.0.0.1/24
+check ovn-nbctl lsp-add sw1 sw1-lr1
+check ovn-nbctl lsp-set-type sw1-lr1 router
+check ovn-nbctl lsp-set-addresses sw1-lr1 router
+check ovn-nbctl lsp-set-options sw1-lr1 router-port=lr1-sw1
+
+check ovn-nbctl lrp-add lr1 lr1-public 00:00:20:30:22:13 172.168.0.101/24
+check ovn-nbctl lsp-add public public-lr1
+check ovn-nbctl lsp-set-type public-lr1 router
+check ovn-nbctl lsp-set-addresses public-lr1 router
+check ovn-nbctl lsp-set-options public-lr1 router-port=lr1-public
+
+sw1_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=sw1))
+lr1_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=lr1))
+
+check ovn-nbctl lr-nat-add lr1 snat 172.168.0.101 20.0.0.0/24
+check ovn-nbctl lr-nat-add lr1 dnat_and_snat 172.168.0.140 20.0.0.3
+
+AS_BOX([create a switch sw2 and router lr2, attach both and attach lr2 to public])
+
+check ovn-nbctl ls-add sw2
+check ovn-nbctl lsp-add sw2 sw2-port1
+check ovn-nbctl lsp-set-addresses sw2-port1 "70:54:00:00:00:01 30.0.0.3"
+
+check ovn-nbctl lr-add lr2
+check ovn-nbctl lrp-add lr2 lr2-sw2 00:00:02:00:ef:01 30.0.0.1/24
+check ovn-nbctl lsp-add sw2 sw2-lr2
+check ovn-nbctl lsp-set-type sw2-lr2 router
+check ovn-nbctl lsp-set-addresses sw2-lr2 router
+check ovn-nbctl lsp-set-options sw2-lr2 router-port=lr2-sw2
+
+check ovn-nbctl lrp-add lr2 lr2-public 00:00:20:40:22:53 172.168.0.102/24
+check ovn-nbctl lsp-add public public-lr2
+check ovn-nbctl lsp-set-type public-lr2 router
+check ovn-nbctl lsp-set-addresses public-lr2 router
+check ovn-nbctl lsp-set-options public-lr2 router-port=lr2-public
+
+sw2_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=sw2))
+lr2_dp_key=$(printf "%x" $(fetch_column Datapath_Binding tunnel_key external_ids:name=lr2))
+
+check ovn-nbctl lr-nat-add lr2 snat 172.168.0.102 30.0.0.0/24
+check ovn-nbctl lr-nat-add lr2 dnat_and_snat 172.168.0.150 30.0.0.3
+
+check ovn-nbctl --wait=hv sync
+
+# Since lr1-public is not a DGP,  public is not a "only_dgp_peer_ports".
+AT_CHECK([ovn-sbctl get datapath_binding public external_ids:only_dgp_peer_ports], [1], [ignore], [ignore])
+
+check_offlows_for_datapath hv1 $sw1_dp_key yes
+check_offlows_for_datapath hv1 $lr1_dp_key yes
+check_offlows_for_datapath hv1 $sw2_dp_key yes
+check_offlows_for_datapath hv1 $lr2_dp_key yes
+
+check_offlows_for_datapath hv2 $sw1_dp_key no
+check_offlows_for_datapath hv2 $lr1_dp_key no
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+check_offlows_for_datapath gw1 $sw1_dp_key yes
+check_offlows_for_datapath gw1 $lr1_dp_key yes
+check_offlows_for_datapath gw1 $sw2_dp_key yes
+check_offlows_for_datapath gw1 $lr2_dp_key yes
+
+check_offlows_for_datapath gw2 $sw1_dp_key no
+check_offlows_for_datapath gw2 $lr1_dp_key no
+check_offlows_for_datapath gw2 $sw2_dp_key no
+check_offlows_for_datapath gw2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AS_BOX([Set gw2 as gateway chassis for lr1-public and lr2-public])
+check ovn-nbctl --wait=hv lrp-set-gateway-chassis lr1-public gw2 20
+check ovn-nbctl --wait=hv lrp-set-gateway-chassis lr2-public gw2 30
+wait_row_count Port_Binding 1 logical_port=cr-lr1-public
+wait_row_count Port_Binding 1 logical_port=cr-lr2-public
+
+AT_CHECK([ovn-sbctl get datapath_binding public external_ids:only_dgp_peer_ports], [0], [dnl
+"true"
+])
+
+check ovn-nbctl --wait=hv sync
+
+check_offlows_for_datapath hv1 $sw0_dp_key yes
+check_offlows_for_datapath hv1 $lr0_dp_key yes
+check_offlows_for_datapath hv1 $public_dp_key yes
+check_offlows_for_datapath hv1 $sw1_dp_key no
+check_offlows_for_datapath hv1 $lr1_dp_key no
+check_offlows_for_datapath hv1 $sw2_dp_key no
+check_offlows_for_datapath hv1 $lr2_dp_key no
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key no
+check_offlows_for_datapath hv2 $sw1_dp_key no
+check_offlows_for_datapath hv2 $lr1_dp_key no
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+check_offlows_for_datapath gw1 $sw0_dp_key yes
+check_offlows_for_datapath gw1 $lr0_dp_key yes
+check_offlows_for_datapath gw1 $public_dp_key yes
+check_offlows_for_datapath gw1 $sw1_dp_key no
+check_offlows_for_datapath gw1 $lr1_dp_key no
+check_offlows_for_datapath gw1 $sw2_dp_key no
+check_offlows_for_datapath gw1 $lr2_dp_key no
+
+check_offlows_for_datapath gw2 $sw0_dp_key no
+check_offlows_for_datapath gw2 $lr0_dp_key no
+check_offlows_for_datapath hv1 $public_dp_key yes
+check_offlows_for_datapath gw2 $sw1_dp_key yes
+check_offlows_for_datapath gw2 $lr1_dp_key yes
+check_offlows_for_datapath gw2 $sw2_dp_key yes
+check_offlows_for_datapath gw2 $lr2_dp_key yes
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Create a VIF on hv2 for sw1-port1])
+
+as hv2
+ovs-vsctl -- add-port br-int hv2-vif1 -- \
+    set interface hv2-vif1 external-ids:iface-id=sw1-port1 \
+    options:tx_pcap=hv2/vif1-tx.pcap \
+    options:rxq_pcap=hv2/vif1-rx.pcap \
+    ofport-request=1
+
+wait_for_ports_up sw1-port1
+
+check_offlows_for_datapath hv1 $sw0_dp_key yes
+check_offlows_for_datapath hv1 $lr0_dp_key yes
+check_offlows_for_datapath hv1 $public_dp_key yes
+check_offlows_for_datapath hv1 $sw1_dp_key no
+check_offlows_for_datapath hv1 $lr1_dp_key no
+check_offlows_for_datapath hv1 $sw2_dp_key no
+check_offlows_for_datapath hv1 $lr2_dp_key no
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+
+# Since there are no distributed dnat_and_snat entries
+# in lr1, hv2 will not have "public" in its
+# local datapaths.
+check_offlows_for_datapath hv2 $public_dp_key no
+check_offlows_for_datapath hv2 $sw1_dp_key yes
+check_offlows_for_datapath hv2 $lr1_dp_key yes
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+check_offlows_for_datapath gw1 $sw0_dp_key yes
+check_offlows_for_datapath gw1 $lr0_dp_key yes
+check_offlows_for_datapath gw1 $public_dp_key yes
+check_offlows_for_datapath gw1 $sw1_dp_key no
+check_offlows_for_datapath gw1 $lr1_dp_key no
+check_offlows_for_datapath gw1 $sw2_dp_key no
+check_offlows_for_datapath gw1 $lr2_dp_key no
+
+# gw2 should have sw1, lr1, sw2 and lr2 and public in its local datapaths.
+check_offlows_for_datapath gw2 $sw0_dp_key no
+check_offlows_for_datapath gw2 $lr0_dp_key no
+check_offlows_for_datapath gw2 $public_dp_key yes
+check_offlows_for_datapath gw2 $sw1_dp_key yes
+check_offlows_for_datapath gw2 $lr1_dp_key yes
+check_offlows_for_datapath gw2 $sw2_dp_key yes
+check_offlows_for_datapath gw2 $lr2_dp_key yes
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+# Add distributed dnat_and_snat in lr1.  hv2 should have
+# public in its local datapaths.
+AS_BOX([ Add distributed dnat_and_snat in lr1])
+
+check ovn-nbctl lr-nat-del lr1 dnat_and_snat
+check ovn-nbctl --wait=hv lr-nat-add lr1 dnat_and_snat 172.168.0.140 20.0.0.3 sw1-port1 10:00:00:01:02:14
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key yes
+check_offlows_for_datapath hv2 $sw1_dp_key yes
+check_offlows_for_datapath hv2 $lr1_dp_key yes
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Create a VIF on hv2 for sw0-port2])
+
+as hv2
+ovs-vsctl -- add-port br-int hv2-vif2 -- \
+    set interface hv2-vif2 external-ids:iface-id=sw0-port2 \
+    options:tx_pcap=hv2/vif2-tx.pcap \
+    options:rxq_pcap=hv2/vif2-rx.pcap \
+    ofport-request=2
+
+wait_for_ports_up sw0-port2
+
+check_offlows_for_datapath hv2 $sw0_dp_key yes
+check_offlows_for_datapath hv2 $lr0_dp_key yes
+check_offlows_for_datapath hv2 $public_dp_key yes
+check_offlows_for_datapath hv2 $sw1_dp_key yes
+check_offlows_for_datapath hv2 $lr1_dp_key yes
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: lr1, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Delete the VIF for sw1-port1 in hv2])
+
+as hv2 ovs-vsctl del-port hv2-vif1
+check ovn-nbctl --wait=hv sync
+check_column "false" Port_Binding up logical_port=sw1-port1
+
+check_offlows_for_datapath hv2 $sw0_dp_key yes
+check_offlows_for_datapath hv2 $lr0_dp_key yes
+check_offlows_for_datapath hv2 $public_dp_key yes
+check_offlows_for_datapath hv2 $sw1_dp_key no
+check_offlows_for_datapath hv2 $lr1_dp_key no
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Delete the VIF for sw0-port2 in hv2])
+
+# Presently when a port binding is released we are not
+# deleting its datapath from the local_datapaths if it
+# is not relevant anymore.
+
+as hv2 ovs-vsctl del-port hv2-vif2
+check ovn-nbctl --wait=hv sync
+check_column "false" Port_Binding up logical_port=sw0-port2
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+# hv2 would still have public, sw0 and lr0 in its local datapaths.
+# Next recompute should delete these datapaths.
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+# Trigger a recompute
+AS_BOX([Trigger a recompute in hv2])
+check as hv2 ovn-appctl inc-engine/recompute
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key no
+check_offlows_for_datapath hv2 $sw1_dp_key no
+check_offlows_for_datapath hv2 $lr1_dp_key no
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Disconnect sw2 from lr2])
+
+check ovn-nbctl --wait=hv lsp-set-options sw2-lr2 router-port=lr2-sw2xxx
+check_offlows_for_datapath hv1 $sw0_dp_key yes
+check_offlows_for_datapath hv1 $lr0_dp_key yes
+check_offlows_for_datapath hv1 $public_dp_key yes
+check_offlows_for_datapath hv1 $sw1_dp_key no
+check_offlows_for_datapath hv1 $lr1_dp_key no
+check_offlows_for_datapath hv1 $sw2_dp_key no
+check_offlows_for_datapath hv1 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Local datapaths:
+])
+
+AS_BOX([Reconnect sw2 to lr2 again])
+
+check ovn-nbctl --wait=hv lsp-set-options sw2-lr2 router-port=lr2-sw2
+check_offlows_for_datapath hv1 $sw0_dp_key yes
+check_offlows_for_datapath hv1 $lr0_dp_key yes
+check_offlows_for_datapath hv1 $public_dp_key yes
+check_offlows_for_datapath hv1 $sw1_dp_key no
+check_offlows_for_datapath hv1 $lr1_dp_key no
+check_offlows_for_datapath hv1 $sw2_dp_key no
+check_offlows_for_datapath hv1 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Create a VIF on gw2 for sw1-port1])
+
+as gw2
+ovs-vsctl -- add-port br-int gw2-vif2 -- \
+    set interface gw2-vif2 external-ids:iface-id=sw1-port1 \
+    options:tx_pcap=gw2/vif2-tx.pcap \
+    options:rxq_pcap=gw2/vif2-rx.pcap \
+    ofport-request=2
+
+wait_for_ports_up sw1-port1
+
+check_offlows_for_datapath gw2 $sw0_dp_key no
+check_offlows_for_datapath gw2 $lr0_dp_key no
+check_offlows_for_datapath gw2 $public_dp_key yes
+check_offlows_for_datapath gw2 $sw1_dp_key yes
+check_offlows_for_datapath gw2 $lr1_dp_key yes
+check_offlows_for_datapath gw2 $sw2_dp_key yes
+check_offlows_for_datapath gw2 $lr2_dp_key yes
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Delete the VIF for sw1-port1 in gw2])
+
+as gw2 ovs-vsctl del-port gw2-vif2
+check ovn-nbctl --wait=hv sync
+check_column "false" Port_Binding up logical_port=sw1-port1
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+# hv2 would still have public in its local datapaths.  Next recompute should
+# delete this datapath from the local datapaths.
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+AS_BOX([Create a logical port for public and bind it on hv2])
+# hv2 will only have public in its local datapaths.
+check ovn-nbctl lsp-add public public-p1
+
+as hv2
+ovs-vsctl -- add-port br-int hv2-vif3 -- \
+    set interface hv2-vif3 external-ids:iface-id=public-p1 \
+    options:tx_pcap=hv2/vif3-tx.pcap \
+    options:rxq_pcap=hv2/vif3-rx.pcap \
+    ofport-request=2
+
+wait_for_ports_up public-p1
+
+# as hv2 ovn-appctl -t ovn-controller inc-engine/recompute
+# check ovn-nbctl --wait=hv sync
+
+as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort
+
+check_offlows_for_datapath hv2 $sw0_dp_key no
+check_offlows_for_datapath hv2 $lr0_dp_key no
+check_offlows_for_datapath hv2 $public_dp_key yes
+check_offlows_for_datapath hv2 $sw1_dp_key no
+check_offlows_for_datapath hv2 $lr1_dp_key no
+check_offlows_for_datapath hv2 $sw2_dp_key no
+check_offlows_for_datapath hv2 $lr2_dp_key no
+
+AT_CHECK([as hv1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as hv2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: public, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw1 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr0, type: router
+Datapath: public, type: switch
+Datapath: sw0, type: switch
+Local datapaths:
+])
+
+AT_CHECK([as gw2 ovn-appctl -t ovn-controller debug/dump-local-datapaths | sort], [0], [dnl
+Datapath: lr1, type: router
+Datapath: lr2, type: router
+Datapath: public, type: switch
+Datapath: sw1, type: switch
+Datapath: sw2, type: switch
+Local datapaths:
+])
+
+OVN_CLEANUP([hv1], [hv2], [gw1], [gw2])
+AT_CLEANUP
+])
+
 OVN_FOR_EACH_NORTHD([
 AT_SETUP([requested-tnl-key-recompute])
 AT_KEYWORDS([requested-tnl-key-recompute])
