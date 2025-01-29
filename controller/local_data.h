@@ -63,6 +63,8 @@ struct local_datapath {
 
     struct shash external_ports;
     struct shash multichassis_ports;
+
+    struct sset claimed_lports;
 };
 
 struct local_datapath *local_datapath_alloc(
@@ -78,7 +80,7 @@ need_add_peer_to_local(
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
     const struct sbrec_port_binding *,
     const struct sbrec_chassis *);
-void add_local_datapath(
+struct local_datapath * add_local_datapath(
     struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
     struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -177,4 +179,8 @@ bool lb_is_local(const struct sbrec_load_balancer *sbrec_lb,
 void local_data_dump_peer_ports(struct hmap *local_datapaths,
                                 struct ds *peer_ports);
 
+void add_local_datapath_claimed_lport(struct local_datapath *,
+                                      char *logical_port);
+void remove_local_datapath_claimed_lport(struct local_datapath *,
+                                         char *logical_port);
 #endif /* controller/local_data.h */

@@ -88,6 +88,7 @@ local_datapath_alloc(const struct sbrec_datapath_binding *dp)
     ld->is_transit_switch = datapath_is_transit_switch(dp);
     shash_init(&ld->external_ports);
     shash_init(&ld->multichassis_ports);
+    sset_init(&ld->claimed_lports);
     /* memory accounting - common part. */
     local_datapath_usage += sizeof *ld;
 
@@ -127,6 +128,7 @@ local_datapath_destroy(struct local_datapath *ld)
     free(ld->peer_ports);
     shash_destroy(&ld->external_ports);
     shash_destroy(&ld->multichassis_ports);
+    sset_destroy(&ld->claimed_lports);
     free(ld);
 }
 
@@ -181,7 +183,7 @@ need_add_peer_to_local(
     return false;
 }
 
-void
+struct local_datapath *
 add_local_datapath(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                    struct ovsdb_idl_index *sbrec_port_binding_by_datapath,
                    struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -190,11 +192,11 @@ add_local_datapath(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                    struct hmap *local_datapaths,
                    struct hmap *tracked_datapaths)
 {
-    add_local_datapath__(sbrec_datapath_binding_by_key,
-                         sbrec_port_binding_by_datapath,
-                         sbrec_port_binding_by_name, 0,
-                         dp, chassis, local_datapaths,
-                         tracked_datapaths);
+    return add_local_datapath__(sbrec_datapath_binding_by_key,
+                                sbrec_port_binding_by_datapath,
+                                sbrec_port_binding_by_name, 0,
+                                dp, chassis, local_datapaths,
+                                tracked_datapaths);
 }
 
 void
@@ -303,6 +305,24 @@ remove_local_datapath_external_port(struct local_datapath *ld,
     if (shash_find_and_delete(&ld->external_ports, logical_port)) {
         local_datapath_usage -= sizeof(struct shash_node) +
                                 strlen(logical_port);
+    }
+}
+
+void
+add_local_datapath_claimed_lport(struct local_datapath *ld,
+                                 char *logical_port)
+{
+    if (!sset_add(&ld->claimed_lports, logical_port)) {
+        local_datapath_usage += strlen(logical_port);
+    }
+}
+
+void
+remove_local_datapath_claimed_lport(struct local_datapath *ld,
+                                    char *logical_port)
+{
+    if (sset_find_and_delete(&ld->claimed_lports, logical_port)) {
+        local_datapath_usage -= strlen(logical_port);
     }
 }
 
