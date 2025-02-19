@@ -6836,7 +6836,7 @@ od_set_acl_flags(struct ovn_datapath *od, struct nbrec_acl **acls,
             od->has_stateful_acl = true;
         }
         if (od->has_stateful_acl &&
-            od->max_acl_tier == nbrec_acl_col_tier.type.value.integer.max) {
+            od->max_acl_tier == nbrec_acl_col_tier.type.key.integer.max) {
             return true;
         }
     }
