@@ -1737,6 +1737,22 @@ runtime_data_sb_datapath_binding_handler(struct engine_node *node OVS_UNUSED,
                 return false;
             }
         }
+
+        if (sbrec_datapath_binding_is_updated(
+                dp, SBREC_DATAPATH_BINDING_COL_EXTERNAL_IDS) &&
+            !sbrec_datapath_binding_is_new(dp)) {
+            struct local_datapath *ld =
+                get_local_datapath(&rt_data->local_datapaths,
+                                dp->tunnel_key);
+            if (ld && ld->is_switch) {
+                bool is_pure_provider_switch =
+                    smap_get_bool(&dp->external_ids, "pure_provider_switch",
+                                    false);
+                if (ld->is_pure_provider_switch != is_pure_provider_switch) {
+                    return false;
+                }
+            }
+        }
     }
 
     return true;

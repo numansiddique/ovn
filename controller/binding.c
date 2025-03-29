@@ -2984,6 +2984,11 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
         get_local_datapath(b_ctx_out->local_datapaths,
                            pb->datapath->tunnel_key);
 
+    if (ld && ld->is_pure_provider_switch) {
+        /* Nothing much to do. */
+        return true;
+    }
+
     if (!ld) {
         /* If 'ld' for this lport is not present, then check if
          * there is a peer for this lport. If peer is present
@@ -2998,7 +3003,7 @@ consider_patch_port_for_local_datapaths(const struct sbrec_port_binding *pb,
                 get_local_datapath(b_ctx_out->local_datapaths,
                                    peer->datapath->tunnel_key);
         }
-        if (peer_ld && need_add_peer_to_local(
+        if (peer_ld && !peer_ld->is_pure_provider_switch && need_add_peer_to_local(
                 b_ctx_in->sbrec_port_binding_by_name, peer,
                 b_ctx_in->chassis_rec)) {
             ld = add_local_datapath(
