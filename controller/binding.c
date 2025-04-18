@@ -1537,14 +1537,15 @@ is_binding_lport_this_chassis(struct binding_lport *b_lport,
              || is_postponed_port(b_lport->pb->logical_port)));
 }
 
-/* Returns 'true' if the 'lbinding' has binding lports of type LP_CONTAINER,
- * 'false' otherwise. */
+/* Returns 'true' if the 'lbinding' has binding lports of type
+ * LP_CONTAINER/LP_MIRROR, 'false' otherwise. */
 static bool
 is_lbinding_container_parent(struct local_binding *lbinding)
 {
     struct binding_lport *b_lport;
     LIST_FOR_EACH (b_lport, list_node, &lbinding->binding_lports) {
-        if (b_lport->type == LP_CONTAINER) {
+        if (b_lport->type == LP_CONTAINER ||
+            b_lport->type == LP_MIRROR) {
             return true;
         }
     }
@@ -1710,7 +1711,11 @@ consider_container_lport(const struct sbrec_port_binding *pb,
 {
     struct shash *local_bindings = &b_ctx_out->lbinding_data->bindings;
     struct local_binding *parent_lbinding;
-    parent_lbinding = local_binding_find(local_bindings, pb->parent_port);
+    bool is_mirror = !strcmp(pb->type, "mirror");
+    const char *binding_port_name = is_mirror ? pb->mirror_port :
+                                    pb->parent_port;
+
+    parent_lbinding = local_binding_find(local_bindings, binding_port_name);
 
     if (!parent_lbinding) {
         /* There is no local_binding for parent port. Create it
@@ -1725,7 +1730,7 @@ consider_container_lport(const struct sbrec_port_binding *pb,
          *     we want the these container ports also be claimed by the
          *     chassis.
          * */
-        parent_lbinding = local_binding_create(pb->parent_port, NULL);
+        parent_lbinding = local_binding_create(binding_port_name, NULL);
         local_binding_add(local_bindings, parent_lbinding);
     }
 
@@ -1739,17 +1744,26 @@ consider_container_lport(const struct sbrec_port_binding *pb,
         remove_related_lport(b_lport->pb, b_ctx_out);
     }
 
-    struct binding_lport *container_b_lport =
-        local_binding_add_lport(binding_lports, parent_lbinding, pb,
-                                LP_CONTAINER);
+    struct binding_lport *container_b_lport;
 
-    struct binding_lport *parent_b_lport =
-        binding_lport_find(binding_lports, pb->parent_port);
+    if (is_mirror) {
+        container_b_lport = local_binding_add_lport(binding_lports,
+                                                    parent_lbinding,
+                                                    pb, LP_MIRROR);
+    } else {
+        container_b_lport = local_binding_add_lport(binding_lports,
+                                                    parent_lbinding,
+                                                    pb, LP_CONTAINER);
+    }
+
+    struct binding_lport *parent_b_lport = binding_lport_find(
+                                                binding_lports,
+                                                binding_port_name);
 
     bool can_consider_c_lport = true;
     if (!parent_b_lport || !parent_b_lport->pb) {
         const struct sbrec_port_binding *parent_pb = lport_lookup_by_name(
-            b_ctx_in->sbrec_port_binding_by_name, pb->parent_port);
+            b_ctx_in->sbrec_port_binding_by_name, binding_port_name);
 
         if (parent_pb && get_lport_type(parent_pb) == LP_VIF) {
             /* Its possible that the parent lport is not considered yet.
@@ -1757,7 +1771,7 @@ consider_container_lport(const struct sbrec_port_binding *pb,
             consider_vif_lport(parent_pb, b_ctx_in, b_ctx_out,
                                parent_lbinding);
             parent_b_lport = binding_lport_find(binding_lports,
-                                                pb->parent_port);
+                                                binding_port_name);
         } else {
             /* The parent lport doesn't exist.  Cannot consider the container
              * lport for binding. */
@@ -1784,7 +1798,8 @@ consider_container_lport(const struct sbrec_port_binding *pb,
     }
 
     ovs_assert(parent_b_lport && parent_b_lport->pb);
-    /* cannot bind to this chassis if the parent_port cannot be bounded. */
+    /* cannot bind to this chassis if the parent_port/mirror_port
+     * cannot be bounded. */
     /* Do not bind neither if parent is postponed */
 
     enum can_bind can_bind =
@@ -2212,6 +2227,10 @@ binding_run(struct binding_ctx_in *b_ctx_in, struct binding_ctx_out *b_ctx_out)
             consider_container_lport(pb, b_ctx_in, b_ctx_out);
             break;
 
+        case LP_MIRROR:
+            consider_container_lport(pb, b_ctx_in, b_ctx_out);
+            break;
+
         case LP_VIRTUAL:
             consider_virtual_lport(pb, b_ctx_in, b_ctx_out);
             break;
@@ -2485,7 +2504,7 @@ consider_iface_claim(const struct ovsrec_interface *iface_rec,
     /* Update the child local_binding's iface (if any children) and try to
      *  claim the container lbindings. */
     LIST_FOR_EACH (b_lport, list_node, &lbinding->binding_lports) {
-        if (b_lport->type == LP_CONTAINER) {
+        if (b_lport->type == LP_CONTAINER || b_lport->type == LP_MIRROR) {
             if (!consider_container_lport(b_lport->pb, b_ctx_in, b_ctx_out)) {
                 return false;
             }
@@ -2575,7 +2594,7 @@ consider_iface_release(const struct ovsrec_interface *iface_rec,
             remove_related_lport(b_lport->pb, b_ctx_out);
         }
 
-        /* Check if the lbinding has children of type PB_CONTAINER.
+        /* Check if the lbinding has children of type PB_CONTAINER/PB_MIRROR.
          * If so, don't delete the local_binding. */
         if (!is_lbinding_container_parent(lbinding)) {
             local_binding_delete(lbinding, local_bindings, binding_lports,
@@ -2883,13 +2902,13 @@ handle_deleted_vif_lport(const struct sbrec_port_binding *pb,
         }
     }
 
-    /* If its a container lport, then delete its entry from local_lports
-     * if present.
+    /* If its a container or mirror lport, then delete its entry from
+     * local_lports if present.
      * Note: If a normal lport is deleted, we don't want to remove
      * it from local_lports if there is a VIF entry.
      * consider_iface_release() takes care of removing from the local_lports
      * when the interface change happens. */
-    if (lport_type == LP_CONTAINER) {
+    if (lport_type == LP_CONTAINER || lport_type == LP_MIRROR) {
         remove_local_lports(pb->logical_port, b_ctx_out);
     }
 
@@ -2912,7 +2931,8 @@ handle_updated_vif_lport(const struct sbrec_port_binding *pb,
 
     if (lport_type == LP_VIRTUAL) {
         handled = consider_virtual_lport(pb, b_ctx_in, b_ctx_out);
-    } else if (lport_type == LP_CONTAINER) {
+    } else if (lport_type == LP_CONTAINER ||
+               lport_type == LP_MIRROR) {
         handled = consider_container_lport(pb, b_ctx_in, b_ctx_out);
     } else {
         handled = consider_vif_lport(pb, b_ctx_in, b_ctx_out, NULL);
@@ -2925,8 +2945,8 @@ handle_updated_vif_lport(const struct sbrec_port_binding *pb,
     bool now_claimed = (pb->chassis == b_ctx_in->chassis_rec);
 
     if (lport_type == LP_VIRTUAL || lport_type == LP_CONTAINER ||
-            (claimed == now_claimed &&
-             !is_additional_chassis(pb, b_ctx_in->chassis_rec))) {
+        lport_type == LP_MIRROR || (claimed == now_claimed &&
+        !is_additional_chassis(pb, b_ctx_in->chassis_rec))) {
         return true;
     }
 
@@ -2944,7 +2964,7 @@ handle_updated_vif_lport(const struct sbrec_port_binding *pb,
 
     struct binding_lport *b_lport;
     LIST_FOR_EACH (b_lport, list_node, &lbinding->binding_lports) {
-        if (b_lport->type == LP_CONTAINER) {
+        if (b_lport->type == LP_CONTAINER || b_lport->type == LP_MIRROR) {
             handled = consider_container_lport(b_lport->pb, b_ctx_in,
                                                b_ctx_out);
             if (!handled) {
@@ -3069,6 +3089,7 @@ handle_updated_port(struct binding_ctx_in *b_ctx_in,
     switch (lport_type) {
     case LP_VIF:
     case LP_CONTAINER:
+    case LP_MIRROR:
     case LP_VIRTUAL:
         /* If port binding type just changed, port might be a "related_lport"
          * while it should not. Remove it from that set. It will be added
@@ -3184,6 +3205,8 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
      */
     struct shash deleted_container_pbs =
         SHASH_INITIALIZER(&deleted_container_pbs);
+    struct shash deleted_mirror_pbs =
+        SHASH_INITIALIZER(&deleted_mirror_pbs);
     struct shash deleted_virtual_pbs =
         SHASH_INITIALIZER(&deleted_virtual_pbs);
     struct shash deleted_vif_pbs =
@@ -3225,6 +3248,8 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
             shash_add(&deleted_vif_pbs, pb->logical_port, pb);
         } else if (lport_type == LP_CONTAINER) {
             shash_add(&deleted_container_pbs, pb->logical_port, pb);
+        } else if (lport_type == LP_MIRROR) {
+            shash_add(&deleted_mirror_pbs, pb->logical_port, pb);
         } else if (lport_type == LP_VIRTUAL) {
             shash_add(&deleted_virtual_pbs, pb->logical_port, pb);
         } else if (lport_type == LP_LOCALPORT) {
@@ -3241,6 +3266,15 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
         handled = handle_deleted_vif_lport(node->data, LP_CONTAINER, b_ctx_in,
                                            b_ctx_out);
         shash_delete(&deleted_container_pbs, node);
+        if (!handled) {
+            goto delete_done;
+        }
+    }
+
+    SHASH_FOR_EACH_SAFE (node, &deleted_mirror_pbs) {
+        handled = handle_deleted_vif_lport(node->data, LP_MIRROR, b_ctx_in,
+                                           b_ctx_out);
+        shash_delete(&deleted_mirror_pbs, node);
         if (!handled) {
             goto delete_done;
         }
@@ -3277,6 +3311,7 @@ binding_handle_port_binding_changes(struct binding_ctx_in *b_ctx_in,
 
 delete_done:
     shash_destroy(&deleted_container_pbs);
+    shash_destroy(&deleted_mirror_pbs);
     shash_destroy(&deleted_virtual_pbs);
     shash_destroy(&deleted_vif_pbs);
     shash_destroy(&deleted_localport_pbs);
@@ -3542,8 +3577,10 @@ local_binding_handle_stale_binding_lports(struct local_binding *lbinding,
             binding_lport_delete(&b_ctx_out->lbinding_data->lports,
                                  b_lport);
             handled = consider_virtual_lport(pb, b_ctx_in, b_ctx_out);
-        } else if (b_lport->type == LP_CONTAINER &&
-                   pb_lport_type == LP_CONTAINER) {
+        } else if ((b_lport->type == LP_CONTAINER &&
+                   pb_lport_type == LP_CONTAINER) ||
+                   (b_lport->type == LP_MIRROR &&
+                   pb_lport_type == LP_MIRROR)) {
             /* For container lport, binding_lport is preserved so that when
              * the parent port is created, it can be considered.
              * consider_container_lport() creates the binding_lport for the parent
@@ -3762,9 +3799,9 @@ binding_lport_get_parent_pb(struct binding_lport *b_lport)
  * If the 'b_lport' type is LP_VIF, then its name and its lbinding->name
  * should match.  Otherwise this should be cleaned up.
  *
- * If the 'b_lport' type is LP_CONTAINER, then its parent_port name should
- * be the same as its lbinding's name.  Otherwise this should be
- * cleaned up.
+ * If the 'b_lport' type is LP_CONTAINER or LP_MIRROR, then its parent_port
+ * name should be the same as its lbinding's name. Otherwise this should
+ * be cleaned up.
  *
  * If the 'b_lport' type is LP_VIRTUAL, then its virtual parent name
  * should be the same as its lbinding's name.  Otherwise this
@@ -3795,6 +3832,12 @@ binding_lport_check_and_cleanup(struct binding_lport *b_lport,
 
     case LP_CONTAINER:
         if (strcmp(b_lport->pb->parent_port, b_lport->lbinding->name)) {
+            cleanup_blport = true;
+        }
+        break;
+
+    case LP_MIRROR:
+        if (strcmp(b_lport->pb->mirror_port, b_lport->lbinding->name)) {
             cleanup_blport = true;
         }
         break;

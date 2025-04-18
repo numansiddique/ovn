@@ -1136,6 +1136,12 @@
             <code>ovn-ic</code> instead of by CMS.  Any change to the port will
             be automatically overwritten by <code>ovn-ic</code>.
           </dd>
+
+          <dt><code>mirror</code></dt>
+          <dd>
+            Service port for lport port mirroring that has a
+            gparent - target port(sink).
+          </dd>
         </dl>
       </column>
     </group>
