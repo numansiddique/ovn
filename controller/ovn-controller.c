@@ -787,7 +787,8 @@ static void
 store_nb_cfg(struct ovsdb_idl_txn *sb_txn, struct ovsdb_idl_txn *ovs_txn,
              const struct sbrec_chassis_private *chassis,
              const struct ovsrec_bridge *br_int,
-             unsigned int delay_nb_cfg_report)
+             unsigned int delay_nb_cfg_report,
+             bool enable_ch_nb_cfg_update)
 {
     struct ofctrl_acked_seqnos *acked_nb_cfg_seqnos =
         ofctrl_acked_seqnos_get(ofctrl_seq_type_nb_cfg);
@@ -809,7 +810,8 @@ store_nb_cfg(struct ovsdb_idl_txn *sb_txn, struct ovsdb_idl_txn *ovs_txn,
 
     long long ts_now = time_wall_msec();
 
-    if (sb_txn && chassis && cur_cfg != chassis->nb_cfg) {
+    if (sb_txn && chassis && cur_cfg != chassis->nb_cfg
+        && enable_ch_nb_cfg_update) {
         sbrec_chassis_private_set_nb_cfg(chassis, cur_cfg);
         sbrec_chassis_private_set_nb_cfg_timestamp(chassis, ts_now);
 
@@ -3453,6 +3455,7 @@ struct ed_type_northd_options {
                          * switch (i.e with localnet port) should
                          * be tunnelled or sent via the localnet
                          * port.  Default value is 'false'. */
+    bool enable_ch_nb_cfg_update;
 };
 
 
@@ -3490,6 +3493,12 @@ en_northd_options_run(struct engine_node *node, void *data)
                             false)
             : false;
 
+    n_opts->enable_ch_nb_cfg_update =
+        sb_global
+        ? smap_get_bool(&sb_global->options, "enable_chassis_nb_cfg_update",
+                        true)
+        : true;
+
     engine_set_node_state(node, EN_UPDATED);
 }
 
@@ -3521,6 +3530,17 @@ en_northd_options_sb_sb_global_handler(struct engine_node *node, void *data)
 
     if (always_tunnel != n_opts->always_tunnel) {
         n_opts->always_tunnel = always_tunnel;
+        engine_set_node_state(node, EN_UPDATED);
+    }
+
+    bool enable_ch_nb_cfg_update =
+        sb_global
+        ? smap_get_bool(&sb_global->options, "enable_chassis_nb_cfg_update",
+                        true)
+        : true;
+
+    if (enable_ch_nb_cfg_update != n_opts->enable_ch_nb_cfg_update) {
+        n_opts->enable_ch_nb_cfg_update = enable_ch_nb_cfg_update;
         engine_set_node_state(node, EN_UPDATED);
     }
 
@@ -5881,8 +5901,11 @@ main(int argc, char *argv[])
                 engine_set_force_recompute(false);
             }
 
+            struct ed_type_northd_options *n_opts =
+                engine_get_data(&en_northd_options);
             store_nb_cfg(ovnsb_idl_txn, ovs_idl_txn, chassis_private,
-                         br_int, delay_nb_cfg_report);
+                         br_int, delay_nb_cfg_report,
+                         n_opts ? n_opts->enable_ch_nb_cfg_update : true);
 
             if (pending_pkt.conn) {
                 struct ed_type_addr_sets *as_data =
