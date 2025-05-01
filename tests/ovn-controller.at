@@ -294,6 +294,20 @@ ovs-vsctl -- set Open_vSwitch . external-ids:hostname="${sysid}" \
           -- set Open_vSwitch . external-ids:ovn-remote="${current_remote}"
 check ovn-sbctl destroy chassis_private . -- destroy chassis .
 
+check ovn-nbctl --wait=hv sync
+
+cat hv/ovn-controller.log
+
+as hv ovn-appctl -t ovn-controller recompte
+
+check ovn-nbctl --wait=hv sync
+
+as hv ovs-appctl --timeout=10 -t ovn-controller exit
+
+cat hv/ovn-controller.log
+
+AT_CHECK([echo hi], [1], [1])
+
 # Gracefully terminate daemons
 # Ignore  following errors:
 # - Invalid ovn-bridge-mappings configuration: 'foo-mapping'
