@@ -560,6 +560,19 @@ default_ic_sb_db(void)
     return def;
 }
 
+const char *
+default_br_db(void)
+{
+    static char *def;
+    if (!def) {
+        def = getenv("OVN_BR_DB");
+        if (!def) {
+            def = xasprintf("unix:%s/ovnbr_db.sock", ovn_rundir());
+        }
+    }
+    return def;
+}
+
 char *
 get_abs_unix_ctl_path(const char *path)
 {

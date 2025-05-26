@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manpage program="ovn-br-controller" section="8" title="ovn-br-controller">
+    <h1>Name</h1>
+    <p>ovn-br-controller -- Open Virtual Network local OVS bridge controller</p>
+</manpage>
