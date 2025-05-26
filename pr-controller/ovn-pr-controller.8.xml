@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manpage program="ovn-pr-controller" section="8" title="ovn-pr-controller">
+    <h1>Name</h1>
+    <p>ovn-pr-controller -- Open Virtual Network local provider bridge controller</p>
+</manpage>
