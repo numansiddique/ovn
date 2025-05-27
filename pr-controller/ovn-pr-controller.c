@@ -35,6 +35,8 @@
 
 
 /* OVN includes. */
+#include "en-runtime-data.h"
+#include "en-lflow.h"
 #include "lib/inc-proc-eng.h"
 #include "lib/ovn-pr-idl.h"
 #include "lib/ovn-util.h"
@@ -51,6 +53,21 @@ static const char *ssl_ca_cert_file;
 
 /* --unixctl-path: Path to use for unixctl server socket. */
 static char *unixctl_path;
+
+#define PR_NODES \
+    PR_NODE(pr_global) \
+    PR_NODE(pr_bridge) \
+    PR_NODE(logical_flow)
+
+enum pr_engine_node {
+#define PR_NODE(NAME) PR_##NAME,
+    PR_NODES
+#undef PR_NODE
+};
+
+#define PR_NODE(NAME) ENGINE_FUNC_PR(NAME);
+    PR_NODES
+#undef PR_NODE
 
 #define OVS_NODES \
     OVS_NODE(open_vswitch) \
@@ -69,27 +86,6 @@ enum ovs_engine_node {
 #undef OVS_NODE
 
 /* Engine static functions. */
-static void *
-en_runtime_data_init(struct engine_node *node OVS_UNUSED,
-                     struct engine_arg *arg OVS_UNUSED)
-{
-    VLOG_INFO("NUMAN ...%s : %s : %d entered", __FILE__, __FUNCTION__, __LINE__);
-    return NULL;
-}
-
-static void
-en_runtime_data_cleanup(void *data OVS_UNUSED)
-{
-    VLOG_INFO("NUMAN ...%s : %s : %d entered", __FILE__, __FUNCTION__, __LINE__);
-}
-
-static enum engine_node_state
-en_runtime_data_run(struct engine_node *node OVS_UNUSED, void *data OVS_UNUSED)
-{
-    VLOG_INFO("NUMAN ...%s : %s : %d entered", __FILE__, __FUNCTION__, __LINE__);
-    return EN_UNCHANGED;
-}
-
 static void *
 en_pr_controller_output_init(struct engine_node *node OVS_UNUSED,
                              struct engine_arg *arg OVS_UNUSED)
@@ -112,6 +108,8 @@ en_pr_controller_output_run(struct engine_node *node OVS_UNUSED,
 
 /* Static function declarations. */
 static void ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl);
+static void update_pr_db(struct ovsdb_idl *ovs_idl,
+                         struct ovsdb_idl *ovnsb_idl);
 
 int
 main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
@@ -146,9 +144,34 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
     ovsdb_idl_get_initial_snapshot(ovs_idl_loop.idl);
 
+    /* Configure OVN provider database. */
+    struct ovsdb_idl_loop ovnpr_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
+        ovsdb_idl_create_unconnected(&prrec_idl_class, true));
+    ovsdb_idl_set_leader_only(ovnpr_idl_loop.idl, false);
+
+    ovsdb_idl_track_add_all(ovnpr_idl_loop.idl);
+
+    unixctl_command_register("connection-status", "", 0, 0,
+                             ovn_conn_show, ovnpr_idl_loop.idl);
+
+    /* We don't want to monitor Connection table at all. So omit all the
+     * columns. */
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_external_ids);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_inactivity_probe);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_is_connected);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_max_backoff);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_other_config);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_status);
+    ovsdb_idl_omit(ovnpr_idl_loop.idl, &prrec_connection_col_target);
+
     /* Define inc-proc-engine nodes. */
     ENGINE_NODE(runtime_data);
+    ENGINE_NODE(lflow_output);
     ENGINE_NODE(pr_controller_output);
+
+#define PR_NODE(NAME) ENGINE_NODE_PR(NAME);
+    PR_NODES
+#undef PR_NODE
 
 #define OVS_NODE(NAME) ENGINE_NODE_OVS(NAME);
     OVS_NODES
@@ -158,15 +181,22 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     engine_add_input(&en_runtime_data, &en_ovs_bridge, NULL);
     engine_add_input(&en_runtime_data, &en_ovs_port, NULL);
     engine_add_input(&en_runtime_data, &en_ovs_interface, NULL);
+    engine_add_input(&en_runtime_data, &en_pr_pr_global, NULL);
+    engine_add_input(&en_runtime_data, &en_pr_pr_bridge, NULL);
 
-    engine_add_input(&en_pr_controller_output, &en_runtime_data, NULL);
+    engine_add_input(&en_lflow_output, &en_runtime_data, NULL);
+    engine_add_input(&en_lflow_output, &en_pr_logical_flow, NULL);
+    engine_add_input(&en_pr_controller_output, &en_lflow_output, NULL);
+
 
     struct engine_arg engine_arg = {
         .ovs_idl = ovs_idl_loop.idl,
+        .pr_idl = ovnpr_idl_loop.idl,
     };
     engine_init(&en_pr_controller_output, &engine_arg);
 
     unsigned int ovs_cond_seqno = UINT_MAX;
+    unsigned int ovnpr_cond_seqno = UINT_MAX;
 
     /* Main loop. */
     while (!exit_args.exiting) {
@@ -183,8 +213,22 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
             ovs_cond_seqno = new_ovs_cond_seqno;
         }
 
+        update_pr_db(ovs_idl_loop.idl, ovnpr_idl_loop.idl);
+        struct ovsdb_idl_txn *ovnpr_idl_txn
+            = ovsdb_idl_loop_run(&ovnpr_idl_loop);
+        unsigned int new_ovnpr_cond_seqno
+            = ovsdb_idl_get_condition_seqno(ovnpr_idl_loop.idl);
+        if (new_ovnpr_cond_seqno != ovnpr_cond_seqno) {
+            if (!new_ovnpr_cond_seqno) {
+                VLOG_INFO("OVNPR IDL reconnected, force recompute.");
+                engine_set_force_recompute();
+            }
+            ovnpr_cond_seqno = new_ovnpr_cond_seqno;
+        }
+
         struct engine_context eng_ctx = {
             .ovs_idl_txn = ovs_idl_txn,
+            .ovnpr_idl_txn = ovnpr_idl_txn,
         };
 
         engine_set_context(&eng_ctx);
@@ -194,7 +238,7 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         const struct ovsrec_open_vswitch *cfg =
             ovsrec_open_vswitch_table_first(ovs_table);
 
-        if (cfg) {
+        if (ovsdb_idl_has_ever_connected(ovnpr_idl_loop.idl) && cfg) {
             engine_run(true);
         }
 
@@ -206,6 +250,8 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         }
 
         ovsdb_idl_loop_commit_and_wait(&ovs_idl_loop);
+        ovsdb_idl_loop_commit_and_wait(&ovnpr_idl_loop);
+        ovsdb_idl_track_clear(ovnpr_idl_loop.idl);
         ovsdb_idl_track_clear(ovs_idl_loop.idl);
 
         poll_block();
@@ -361,9 +407,10 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_add_column(ovs_idl, &ovsrec_open_vswitch_col_other_config);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_open_vswitch_col_bridges);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_open_vswitch_col_datapaths);
+    ovsdb_idl_add_column(ovs_idl, &ovsrec_open_vswitch_col_external_ids);
 
     ovsdb_idl_add_table(ovs_idl, &ovsrec_table_bridge);
-    ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_name);
+    ovsdb_idl_track_add_column(ovs_idl, &ovsrec_bridge_col_name);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_ports);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_external_ids);
 
@@ -375,4 +422,18 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_name);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_ofport);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_external_ids);
+}
+
+/* Retrieves the pointer to the OVN Provider database from 'ovs_idl' and
+ * updates 'prdb_idl' with that pointer. */
+static void
+update_pr_db(struct ovsdb_idl *ovs_idl, struct ovsdb_idl *ovnpr_idl)
+{
+    const struct ovsrec_open_vswitch *cfg = ovsrec_open_vswitch_first(ovs_idl);
+    if (!cfg) {
+        return;
+    }
+
+    const char *remote = smap_get(&cfg->external_ids, "ovn-provider-remote");
+    ovsdb_idl_set_remote(ovnpr_idl, remote, true);
 }

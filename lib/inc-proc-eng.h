@@ -157,6 +157,7 @@ struct engine_context {
     struct ovsdb_idl_txn *ovs_idl_txn;
     struct ovsdb_idl_txn *ovnsb_idl_txn;
     struct ovsdb_idl_txn *ovnnb_idl_txn;
+    struct ovsdb_idl_txn *ovnpr_idl_txn;
 
     void *client_ctx;
 };
@@ -166,6 +167,7 @@ struct engine_arg {
     struct ovsdb_idl *sb_idl;
     struct ovsdb_idl *nb_idl;
     struct ovsdb_idl *ovs_idl;
+    struct ovsdb_idl *pr_idl;
 };
 
 struct engine_node;
@@ -473,6 +475,11 @@ static void en_##DB_NAME##_##TBL_NAME##_cleanup(void *data OVS_UNUSED) \
     ENGINE_FUNC_OVSDB(nb, TBL_NAME)
 
 /* Macro to define member functions of an engine node which represents
+ * a table of OVN PR DB */
+#define ENGINE_FUNC_PR(TBL_NAME) \
+    ENGINE_FUNC_OVSDB(pr, TBL_NAME)
+
+/* Macro to define member functions of an engine node which represents
  * a table of open_vswitch DB */
 #define ENGINE_FUNC_OVS(TBL_NAME) \
     ENGINE_FUNC_OVSDB(ovs, TBL_NAME)
@@ -489,6 +496,10 @@ static void en_##DB_NAME##_##TBL_NAME##_cleanup(void *data OVS_UNUSED) \
 /* Macro to define an engine node which represents a table of OVN NB DB */
 #define ENGINE_NODE_NB(TBL_NAME) \
     ENGINE_NODE_OVSDB(nb, "NB", TBL_NAME, #TBL_NAME);
+
+/* Macro to define an engine node which represents a table of OVN PR DB */
+#define ENGINE_NODE_PR(TBL_NAME) \
+    ENGINE_NODE_OVSDB(pr, "PR", TBL_NAME, #TBL_NAME);
 
 /* Macro to define an engine node which represents a table of open_vswitch
  * DB */
