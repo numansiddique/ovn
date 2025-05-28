@@ -1,5 +1,7 @@
 bin_PROGRAMS += pr-controller/ovn-pr-controller
 pr_controller_ovn_pr_controller_SOURCES = \
+	pr-controller/br-flow-mgr.c \
+	pr-controller/br-flow-mgr.h \
 	pr-controller/ovn-pr-controller.c \
 	pr-controller/en-lflow.c \
 	pr-controller/en-lflow.h \
