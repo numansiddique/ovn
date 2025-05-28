@@ -7,7 +7,30 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/* OVS includes. */
+#include "lib/simap.h"
+#include "lib/uuid.h"
+#include "openvswitch/shash.h"
+
+/* OVN includes. */
 #include "lib/inc-proc-eng.h"
+
+struct prrec_pr_bridge;
+struct ovsrec_bridge;
+
+struct pr_bridge {
+    struct uuid key; /* prrec_bridge->header_.uuid */
+
+    const struct prrec_pr_bridge *db_br;
+    const struct ovsrec_bridge *ovs_br;
+
+    /* simap of ovs interface names to ofport numbers. */
+    struct simap ovs_ifaces;
+};
+
+struct ed_type_runtime_data {
+    struct shash bridges;
+};
 
 enum engine_node_state en_runtime_data_run(struct engine_node *node, void *data);
 void *en_runtime_data_init(struct engine_node *node, struct engine_arg *arg);

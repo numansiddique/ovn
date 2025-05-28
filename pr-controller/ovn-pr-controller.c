@@ -141,6 +141,9 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     struct ovsdb_idl_loop ovs_idl_loop = OVSDB_IDL_LOOP_INITIALIZER(
         ovsdb_idl_create(ovs_remote, &ovsrec_idl_class, false, true));
     ctrl_register_ovs_idl(ovs_idl_loop.idl);
+    struct ovsdb_idl_index *ovsrec_bridge_by_name
+        = ovsdb_idl_index_create1(ovs_idl_loop.idl,
+                                  &ovsrec_bridge_col_name);
 
     ovsdb_idl_get_initial_snapshot(ovs_idl_loop.idl);
 
@@ -194,6 +197,8 @@ main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         .pr_idl = ovnpr_idl_loop.idl,
     };
     engine_init(&en_pr_controller_output, &engine_arg);
+
+    engine_ovsdb_node_add_index(&en_ovs_bridge, "name", ovsrec_bridge_by_name);
 
     unsigned int ovs_cond_seqno = UINT_MAX;
     unsigned int ovnpr_cond_seqno = UINT_MAX;
