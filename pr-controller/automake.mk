@@ -5,6 +5,8 @@ pr_controller_ovn_pr_controller_SOURCES = \
 	pr-controller/ovn-pr-controller.c \
 	pr-controller/en-lflow.c \
 	pr-controller/en-lflow.h \
+	pr-controller/en-pflow.c \
+	pr-controller/en-pflow.h \
 	pr-controller/en-runtime-data.c \
 	pr-controller/en-runtime-data.h
 
