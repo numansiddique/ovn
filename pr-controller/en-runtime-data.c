@@ -22,6 +22,7 @@
 #include "openvswitch/vlog.h"
 #include "include/openvswitch/hmap.h"
 #include "include/openvswitch/shash.h"
+#include "lib/dirs.h"
 #include "lib/vswitch-idl.h"
 
 /* OVN includes. */
@@ -41,6 +42,7 @@ static const struct ovsrec_bridge *ovsbridge_lookup_by_name(
     struct ovsdb_idl_index *ovsrec_bridge_by_name,
     const char *name);
 static void build_pr_bridge_iface_simap(struct pr_bridge *);
+static void update_pr_br_remote(struct pr_bridge *);
 
 void *
 en_runtime_data_init(struct engine_node *node OVS_UNUSED,
@@ -118,6 +120,7 @@ pr_bridges_run(const struct prrec_pr_bridge_table *prrec_br_table,
 
         br->ovs_br = ovs_br;
         build_pr_bridge_iface_simap(br);
+        update_pr_br_remote(br);
     }
 }
 
@@ -125,6 +128,7 @@ static void
 pr_bridge_destroy(struct pr_bridge *br)
 {
     simap_destroy(&br->ovs_ifaces);
+    free(br->conn_target);
     free(br);
 }
 
@@ -159,5 +163,40 @@ build_pr_bridge_iface_simap(struct pr_bridge *pr_br)
                 simap_put(&pr_br->ovs_ifaces, iface_rec->name, ofport);
             }
         }
+    }
+}
+
+static void
+update_pr_br_remote(struct pr_bridge *br)
+{
+    ovs_assert(br->ovs_br);
+
+    const char *ext_target = smap_get(&br->ovs_br->external_ids,
+                                      "ovn-bridge-remote");
+    char *target = ext_target
+        ? xstrdup(ext_target)
+        : xasprintf("unix:%s/%s.mgmt", ovs_rundir(), br->ovs_br->name);
+
+    if (!br->conn_target || strcmp(br->conn_target, target)) {
+        free(br->conn_target);
+        br->conn_target = target;
+    } else {
+        free(target);
+    }
+
+    unsigned long long probe_interval =
+        smap_get_ullong(&br->ovs_br->external_ids,
+                        "ovn-openflow-remote-probe-interval", 0);
+    br->probe_interval = MIN(probe_interval / 1000, INT_MAX);
+
+    unsigned int _wait_before_clear_time =
+        smap_get_uint(&br->ovs_br->external_ids, "ovn-ofctrl-wait-before-clear", 0);
+
+    if (_wait_before_clear_time != br->wait_before_clear_time) {
+        VLOG_INFO("ofctrl-wait-before-clear is now %u ms (was %u ms) "
+                  "for bridge %s",
+                  _wait_before_clear_time, br->wait_before_clear_time,
+                  br->ovs_br->name);
+        br->wait_before_clear_time = _wait_before_clear_time;
     }
 }
