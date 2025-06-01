@@ -35,6 +35,8 @@ lib_libovn_la_SOURCES = \
 	lib/lex.c \
 	lib/objdep.c \
 	lib/objdep.h \
+	lib/ofctrl-seqno.c \
+	lib/ofctrl-seqno.h \
 	lib/ovn-l7.h \
 	lib/ovn-l7.c \
 	lib/ovn-util.c \
