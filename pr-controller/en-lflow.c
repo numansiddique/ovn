@@ -27,6 +27,7 @@
 #include "en-lflow.h"
 #include "en-runtime-data.h"
 #include "include/ovn/actions.h"
+#include "include/ovn/expr.h"
 #include "lib/inc-proc-eng.h"
 #include "lib/ovn-pr-idl.h"
 
@@ -61,6 +62,8 @@ struct lookup_port_aux {
     const struct pr_bridge *br;
 };
 
+static void pr_controller_extend_symtab(struct shash *symtab);
+
 static struct expr *convert_match_to_expr(
     const struct prrec_logical_flow *lflow, struct expr **prereqs,
     struct shash *symtab);
@@ -91,7 +94,7 @@ void *en_lflow_output_init(struct engine_node *node OVS_UNUSED,
 {
     struct ed_type_lflow_output_data *lflow_data = xzalloc(sizeof *lflow_data);
     ovn_init_symtab(&lflow_data->pd.symtab);
-
+    pr_controller_extend_symtab(&lflow_data->pd.symtab);
     return lflow_data;
 }
 
@@ -122,6 +125,18 @@ en_lflow_output_run(struct engine_node *node, void *data_)
 }
 
 /* Static functions. */
+static void
+pr_controller_extend_symtab(struct shash *symtab)
+{
+    expr_symtab_add_field(symtab, "ct_snat_zone", MFF_LOG_SNAT_ZONE, NULL, false);
+    expr_symtab_add_field(symtab, "metadata", MFF_METADATA, NULL, false);
+    expr_symtab_add_field(symtab, "tun.id", MFF_TUN_ID, NULL, false);
+    expr_symtab_add_field(symtab, "tun_ip4.src", MFF_TUN_SRC, "ip4", false);
+    expr_symtab_add_field(symtab, "tun_ip4.dst", MFF_TUN_DST, "ip4", false);
+    expr_symtab_add_field(symtab, "tun_ip6.src", MFF_TUN_IPV6_SRC, "ip6", false);
+    expr_symtab_add_field(symtab, "tun_ip6.dst", MFF_TUN_IPV6_DST, "ip6", false);
+}
+
 static void
 init_lflow_ctx(struct engine_node *node,
                struct ed_type_runtime_data *rt_data,
