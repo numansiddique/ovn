@@ -500,6 +500,17 @@ create_br_datapath(struct ovsdb_idl_txn *ovs_idl_txn,
 
 #define N_FLOW_TABLES 255
 
+/* Downstream only hack:
+ * Stub the update_flow_table_prefixes() function.
+ * We don't want ovn-controller to update the Flow table
+ * with the prefix matches to avoid the crash seen
+ * in ovs-vswitchd.
+ * https://mail.openvswitch.org/pipermail/ovs-dev/2025-April/422765.html
+ * We should revert this once ovs-vswitchd is ugraded
+ * to a version which has this commit:
+ * https://github.com/openvswitch/ovs/commit/7a8b0acfc00cfe49d8b28c58bb72e4ccdcc88b6e
+*/
+#if 0
 static void
 update_flow_table_prefixes(struct ovsdb_idl_txn *ovs_idl_txn,
                            const struct ovsrec_bridge *br_int)
@@ -567,6 +578,14 @@ update_flow_table_prefixes(struct ovsdb_idl_txn *ovs_idl_txn,
 
     ovsrec_flow_table_set_prefixes(ft, prefixes, max_prefixes);
 }
+#else
+static void
+update_flow_table_prefixes(struct ovsdb_idl_txn *ovs_idl_txn OVS_UNUSED,
+                           const struct ovsrec_bridge *br_int OVS_UNUSED)
+{
+
+}
+#endif
 
 static const struct ovsrec_bridge *
 get_br_int(const struct ovsrec_bridge_table *bridge_table,

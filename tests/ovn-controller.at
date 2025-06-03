@@ -3240,7 +3240,7 @@ OVS_WAIT_UNTIL([grep -q 'tcp:127.0.0.1:1235: connected' hv1/ovn-controller.log])
 OVN_CLEANUP([hv1])
 AT_CLEANUP
 
-AT_SETUP([ovn-controller - br-int flow table prefixes])
+AT_SETUP([ovn-controller - br-int flow table prefixes hack])
 AT_KEYWORDS([ovn-controller prefixes])
 ovn_start
 
@@ -3258,10 +3258,15 @@ start_daemon ovsdb-server --remote=punix:db.sock
 dnl Start ovn-controller.
 ovn_attach n1 br-phys 192.168.0.20
 
+# There should be no flow_table prefixes created.
+sleep 2
+
+AT_CHECK([test "$(ovs-vsctl --columns=_uuid --bare list Flow_Table)" = ""])
+
+# Create flow_table manually
+ovs-vsctl -- --id=@ftable create flow_table prefixes="ip_dst,ip_src,ipv6_src" -- set bridge br-int flow_tables:0=@ftable
+
 dnl Wait for exactly 3 prefixes to be configured.
-OVS_WAIT_UNTIL(
-    [grep -q 'Setting flow table prefixes: ip_src, ip_dst, ipv6_src.' \
-             hv1/ovn-controller.log])
 OVS_WAIT_FOR_OUTPUT([ovs-vsctl --columns=prefixes --bare list Flow_Table], [0], [dnl
 ip_dst ip_src ipv6_src
 ])
@@ -3276,16 +3281,16 @@ AT_CHECK([cat $ovs_srcdir/vswitchd/vswitch.ovsschema > new_schema])
 AT_CHECK([ovsdb-tool convert hv1/conf.db new_schema])
 start_daemon ovsdb-server --remote=punix:db.sock
 
-dnl Wait for exactly 4 prefixes to be configured.
-OVS_WAIT_FOR_OUTPUT(
-    [grep -q 'Setting flow table prefixes: ip_src, ip_dst, ipv6_src, ipv6_dst.' \
-             hv1/ovn-controller.log])
+dnl Wait for exactly 3 prefixes to be configured.
 OVS_WAIT_FOR_OUTPUT([ovs-vsctl --columns=prefixes --bare list Flow_Table], [0], [dnl
-ip_dst ip_src ipv6_dst ipv6_src
+ip_dst ip_src ipv6_src
 ])
 
-dnl Check that the record was updated and not replaced.
-AT_CHECK([test "$(ovs-vsctl --columns=_uuid --bare list Flow_Table)" = "${uuid}"])
+# Clear the flow table
+ovs-vsctl clear bridge br-int flow_tables
+sleep 2
+
+AT_CHECK([test "$(ovs-vsctl --columns=_uuid --bare list Flow_Table)" = ""])
 
 OVN_CLEANUP([hv1])
 AT_CLEANUP
