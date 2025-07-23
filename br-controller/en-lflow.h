@@ -12,6 +12,12 @@
 #define BR_OFTABLE_LOG_INGRESS_PIPELINE      8
 #define BR_OFTABLE_SAVE_INPORT               64
 
+/* OpenFlow table numbers. */
+#define BR_OFTABLE_PHY_TO_LOG             0
+#define BR_OFTABLE_LOG_INGRESS_PIPELINE   8
+#define BR_OFTABLE_SAVE_INPORT           64
+#define BR_OFTABLE_LOG_TO_PHY            65
+
 enum engine_node_state en_lflow_output_run(struct engine_node *, void *data);
 void *en_lflow_output_init(struct engine_node *node, struct engine_arg *arg);
 void en_lflow_output_cleanup(void *data);
