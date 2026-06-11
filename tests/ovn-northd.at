@@ -1087,13 +1087,29 @@ check ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
 echo
 echo "IPv4: stateless"
 check ovn-nbctl --wait=sb --stateless lr-nat-add R1 dnat_and_snat  172.16.1.1 50.0.0.11
+dnl Two ip4.dst= flows: the regular stateless DNAT flow plus the default
+dnl stateless_icmp_helper flow that also rewrites the inner ICMPv4 src.
+check_flow_match_sets 2 0 0 2 1 0 0
+dnl stateless_icmp_helper defaults to true, so the inner-IP rewrite flow
+dnl is present.
+check_flow_matches "icmp4.inner_ip4.src" 1
+check ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
+
+echo
+echo "IPv4: stateless, stateless_icmp_helper=false"
+check ovn-nbctl --wait=sb --stateless lr-nat-add R1 dnat_and_snat  172.16.1.1 50.0.0.11
+check ovn-nbctl --wait=sb set NAT . options:stateless_icmp_helper=false
+dnl With the helper disabled, only the regular stateless DNAT flow remains
+dnl and the inner-IP rewrite flow is gone.
 check_flow_match_sets 2 0 0 1 1 0 0
+check_flow_matches "icmp4.inner_ip4.src" 0
 check ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
 
 echo
 echo "IPv4: stateless with match"
 check ovn-nbctl --wait=sb --match="udp" --stateless lr-nat-add R1 dnat_and_snat  172.16.1.1 50.0.0.11
-check_flow_match_sets 2 0 0 1 1 0 0
+dnl As above, the stateless_icmp_helper flow adds a second ip4.dst= flow.
+check_flow_match_sets 2 0 0 2 1 0 0
 check ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
 
 echo

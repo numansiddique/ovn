@@ -17654,6 +17654,39 @@ build_lrouter_in_dnat_flow(struct lflow_table *lflows,
 
     ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, priority, ds_cstr(match),
                   ds_cstr(actions), lflow_ref, WITH_HINT(&nat->header_));
+
+    /* For stateless DNAT, the action above only rewrites the outer IPv4
+     * destination.  An inbound ICMPv4 error (RFC 792 / RFC 1191) carries
+     * the original (post-NAT) packet inside its payload, whose source is
+     * the external (post-SNAT) IP.  The conntrack-based ACL check in the
+     * downstream logical switch zone uses that inner tuple to match the
+     * reverse direction of the tracked outgoing flow; without un-NATing
+     * the inner ip4.src back to the logical IP, that lookup fails and the
+     * error is dropped as ct.inv.
+     *
+     * Emit a higher-priority flow that matches the same external IP plus
+     * ICMPv4 type 3 code 4 (Fragmentation Needed and DF set) and rewrites
+     * the outer ip4.dst and the embedded inner ip4.src to the logical IP,
+     * so PMTUD works end-to-end through stateless NAT. */
+    if (stateless && !is_v6 &&
+        smap_get_bool(&nat_entry->nb->options, "stateless_icmp_helper",
+                      true)) {
+        size_t match_len = match->length;
+
+        ds_put_cstr(match,
+                    " && icmp4 && icmp4.type == 3 && icmp4.code == 4");
+
+        ds_clear(actions);
+        ds_put_format(actions,
+                      "ip4.dst=%s; icmp4.inner_ip4.src = %s; next;",
+                      nat->logical_ip, nat->logical_ip);
+
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, priority + 1,
+                      ds_cstr(match), ds_cstr(actions), lflow_ref,
+                      WITH_HINT(&nat->header_));
+
+        ds_truncate(match, match_len);
+    }
 }
 
 static void
