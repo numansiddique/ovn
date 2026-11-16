@@ -62,6 +62,10 @@ Post v26.09.0
      table at startup; it defers its kernel route updates until the initial
      dump of the advertised routes of the local route-exchange datapaths is
      complete.
+   - A distributed router without a distributed gateway port now un-DNATs
+     the replies from the backends of its load balancers.  The CMS must make
+     sure that the replies re-enter the router on the chassis that load
+     balanced the request.  See ovn-nb(5).
 
 OVN v26.09.0 - xxx xx xxxx
 --------------------------
